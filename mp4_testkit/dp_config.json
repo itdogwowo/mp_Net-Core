@@ -1,0 +1,71 @@
+{
+  "assets_pack": "",
+  "assets_root": "/sd",
+  "tft": {
+    "driver": "ST7789",
+    "width": 240,
+    "height": 320,
+    "rotation": 0,
+    "color_order": "RGB",
+    "invert": true,
+    "spi": {
+      "id": 1,
+      "baudrate": 80000000,
+      "sck": 12,
+      "mosi": 11
+    },
+    "pins": {
+      "dc": 13,
+      "cs": 10,
+      "rst": 14
+    }
+  },
+  "jpeg": {
+    "pixel_format": "RGB565_BE",
+    "rotation": 0,
+    "block": true,
+    "return_bytes": false,
+    "step_blocks": 0,
+    "max_jpeg_bytes": 0
+  },
+  "display_Layout": [
+    {
+      "type": "background",
+      "height": 240,
+      "width": 320,
+      "x": 0,
+      "y": 0,
+      "depth": -1
+    }
+  ],
+  "player": {
+    "pace_ms": 33,
+    "pace_frames": 1,
+    "autoplay": true,
+    "loop": true,
+    "pipeline": {
+      "io_buffers": 3,
+      "frame_buffers": 3,
+      "preload": 16
+    },
+    "stats": {
+      "enabled": true,
+      "interval_ms": 1000,
+      "frames_n": 60
+    }
+  },
+  "SDcard": {
+    "enable": 1,
+    "phat": "/sd",
+    "config": {
+      "slot": 0,
+      "width": 4,
+      "freq": 20000000
+    },
+    "GPIO": {
+      "sck": 7,
+      "cmd": 6,
+      "data": [15, 16, 4, 5]
+    }
+  }
+}

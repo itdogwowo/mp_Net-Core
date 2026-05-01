@@ -1,0 +1,7 @@
+{
+  "group": "sys",
+  "cmds": [
+    {"cmd": "0x1001", "name": "DISCOVER", "payload": [{"name": "server_ip", "type": "str_u16len"}, {"name": "ws_url", "type": "str_u16len"}]},
+    {"cmd": "0x1002", "name": "SLAVE_ANNOUNCE", "payload": [{"name": "slave_id", "type": "str_u16len"}, {"name": "pixel_count", "type": "u16"}, {"name": "hw_version", "type": "str_u16len"}]}
+  ]
+}
