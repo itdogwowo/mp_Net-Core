@@ -4,7 +4,6 @@ from lib.sys_bus import bus
 from lib.net_bus import NetBus
 from action.sys_actions import on_connect_request
 from lib.network_manager import NetworkManager
-from lib.fs_manager import fs
 from action.stream_actions import handle_supply_chain
 from action.heartbeat_actions import send_heartbeat
 from action.status_actions import on_status_get
@@ -49,10 +48,6 @@ class NetworkTask(Task):
 
     def loop(self):
         if not self.running: return
-
-        # 0. System Task: Flash Write (delegated from Core 1)
-        if bus.shared.get("fs_scan_done"):
-            fs.finalize_scan()
 
         # 1. Network Guardian
         # Sync ctrl_bus status to bus.shared for NetworkManager

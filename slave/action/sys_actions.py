@@ -2,6 +2,7 @@
 import machine, time
 import gc
 import os
+import json
 from lib.proto import Proto
 from lib.schema_codec import SchemaCodec
 from lib.sys_bus import bus
@@ -11,6 +12,10 @@ from lib.ConfigManager import cfg_manager
 CMD_DISCOVER = 0x1001
 CMD_ANNOUNCE = 0x1002
 CMD_SYS_INFO_GET = 0x1003
+CMD_SYS_CTRL = 0x1004
+CMD_SYS_TASK_QUERY = 0x1005
+CMD_SYS_TASK_RSP = 0x1006
+CMD_SYS_TASK_SET = 0x1007
 
 # --- 處理函數 (嚴格遵循 ctx, args 兩個參數) ---
 
@@ -102,10 +107,61 @@ def on_sys_info_get(ctx, args):
     gc.collect()
     stat = os.statvfs('/')
     print(f"ℹ️ [Sys] Info Request - RAM Free: {gc.mem_free()//1024}KB, FS Free: {(stat[0]*stat[3])//1024}KB")
-    # 這裡未來可以透過 ctx["send"] 回傳詳細 JSON 給 Server
+
+def on_sys_ctrl(ctx, args):
+    """處理系統控制指令 (0x1004): Wi-Fi 開關 + CPU 任務控制"""
+    wifi_enable = args.get("wifi_enable", 0xFF)
+    core_control = args.get("core_control", 0xFF)
+
+    if wifi_enable != 0xFF:
+        nm = bus.get_service("network_manager")
+        if nm:
+            if wifi_enable == 0:
+                nm.disable_wifi()
+            elif wifi_enable == 1:
+                nm.enable_wifi()
+
+    if core_control != 0xFF:
+        tm = bus.get_service("task_manager")
+        if tm:
+            if core_control == 0:
+                bus.shared["_saved_affinities"] = dict(tm.config)
+                for name in list(tm.config.keys()):
+                    tm.set_affinity(name, (0, 0))
+                print("⏸️ [SysCtrl] 所有任務已暫停 (affinity → (0,0))")
+            elif core_control == 1:
+                saved = bus.shared.pop("_saved_affinities", None)
+                if saved:
+                    for name, affinity in saved.items():
+                        tm.set_affinity(name, affinity)
+                    print("▶️ [SysCtrl] 任務 affinity 已恢復")
+
+def on_sys_task_query(ctx, args):
+    """查詢所有任務的 affinity 與執行核心 (0x1005)"""
+    tm = bus.get_service("task_manager")
+    if not tm: return
+    status = tm.get_status()
+    app = ctx["app"]
+    cmd_def = app.store.get(CMD_SYS_TASK_RSP)
+    payload = SchemaCodec.encode(cmd_def, {"tasks_json": json.dumps(status)})
+    if "send" in ctx:
+        ctx["send"](Proto.pack(CMD_SYS_TASK_RSP, payload))
+
+def on_sys_task_set(ctx, args):
+    """設定單一任務的雙核 affinity (0x1007)"""
+    task_name = args.get("task_name", "")
+    c0 = args.get("affinity_c0", 0)
+    c1 = args.get("affinity_c1", 0)
+    if not task_name: return
+    tm = bus.get_service("task_manager")
+    if not tm: return
+    tm.set_affinity(task_name, (c0, c1))
 
 def register(app):
     """註冊系統指令到分發器"""
     app.disp.on(CMD_DISCOVER, on_discover)
     app.disp.on(CMD_SYS_INFO_GET, on_sys_info_get)
+    app.disp.on(CMD_SYS_CTRL, on_sys_ctrl)
+    app.disp.on(CMD_SYS_TASK_QUERY, on_sys_task_query)
+    app.disp.on(CMD_SYS_TASK_SET, on_sys_task_set)
     print("✅ [Action] Sys actions registered")

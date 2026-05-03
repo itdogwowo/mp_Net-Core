@@ -15,7 +15,7 @@
     }
   },
   "jpeg": {
-    "pixel_format": "RGB565_BE",
+    "pixel_format": "RGB888",
     "rotation": 0,
     "block": true,
     "return_bytes": false,
@@ -36,14 +36,14 @@
     }
   ],
   "player": {
-    "pace_ms": 33,
+    "pace_ms": 0,
     "pace_frames": 1,
     "autoplay": true,
     "loop": true,
     "blend_mode": "interleave",
     "pipeline": {
-      "io_buffers": 3,
-      "frame_buffers": 3
+      "io_buffers": 10,
+      "frame_buffers": 10
     },
     "stats": {
       "enabled": true,

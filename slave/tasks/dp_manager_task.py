@@ -78,63 +78,68 @@ class DpManagerTask(Task):
         if hub is None or not schedule:
             return 0
 
-        wv = hub.get_write_view()
-        if wv is None:
-            return 0
-        cap = int(len(wv)) - HDR_IN
-        if cap <= 0:
-            return 0
+        filled = 0
+        while filled < 3:
+            wv = hub.get_write_view()
+            if wv is None:
+                break
+            cap = int(len(wv)) - HDR_IN
+            if cap <= 0:
+                break
 
-        i = int(src.get("sch_i", 0) or 0)
-        if i < 0 or i >= len(schedule):
-            i = 0
+            i = int(src.get("sch_i", 0) or 0)
+            if i < 0 or i >= len(schedule):
+                i = 0
 
-        job = schedule[i]
-        pack = job.get("pack_source")
+            job = schedule[i]
+            pack = job.get("pack_source")
 
-        if pack is not None:
-            group = int(job.get("frame_group", 0) or 0)
-            label_id = int(job.get("label_id", 0) or 0)
-            x = int(job.get("x", 0) or 0)
-            y = int(job.get("y", 0) or 0)
-            w = int(job.get("w", 0) or 0)
-            h = int(job.get("h", 0) or 0)
-            bpp = int(job.get("bpp", 2) or 2)
-            try:
-                _idx, n, _dt = pack.read_next_into(wv[HDR_IN:], cap)
-            except Exception:
-                _idx, n, _dt = None, 0, 0
-            if _idx is None:
-                src["enable"] = False
-                bus.shared["jpeg_player"] = {"playing": False, "paused": False}
-                src["sch_i"] = 0
-                src["last_ms"] = time.ticks_ms()
-                self._last_group = -1
-                print("⏹ [DP] Pack ended")
-                return 0
-            n = int(n or 0)
-            if n <= 0:
-                return 0
-            seq = int(src.get("seq", 1) or 1)
-            pack_in_header(wv, n, seq=seq, label_id=label_id, x=x, y=y, w=w, h=h, bpp=bpp, flags=group, path_hash=int(_idx or 0))
-            hub.commit()
-            src["seq"] = (seq + 1) & 0xFFFF
-            next_i = i + 1
-            if next_i >= len(schedule):
-                if not bus.shared.get("jpeg_loop", True):
+            if pack is not None:
+                group = int(job.get("frame_group", 0) or 0)
+                label_id = int(job.get("label_id", 0) or 0)
+                x = int(job.get("x", 0) or 0)
+                y = int(job.get("y", 0) or 0)
+                w = int(job.get("w", 0) or 0)
+                h = int(job.get("h", 0) or 0)
+                bpp = int(job.get("bpp", 2) or 2)
+                try:
+                    _idx, n, _dt = pack.read_next_into(wv[HDR_IN:], cap)
+                except Exception:
+                    _idx, n, _dt = None, 0, 0
+                if _idx is None:
                     src["enable"] = False
-                    return 0
-                next_i = 0
-                self._last_group = -1
-            src["sch_i"] = next_i
-            if group != self._last_group:
-                src["last_frame_ms"] = time.ticks_ms()
-            self._last_group = group
+                    bus.shared["jpeg_player"] = {"playing": False, "paused": False}
+                    src["sch_i"] = 0
+                    src["last_ms"] = time.ticks_ms()
+                    self._last_group = -1
+                    print("⏹ [DP] Pack ended")
+                    return filled
+                n = int(n or 0)
+                if n <= 0:
+                    break
+                seq = int(src.get("seq", 1) or 1)
+                pack_in_header(wv, n, seq=seq, label_id=label_id, x=x, y=y, w=w, h=h, bpp=bpp, flags=group, path_hash=int(_idx or 0))
+                hub.commit()
+                src["seq"] = (seq + 1) & 0xFFFF
+                filled += 1
+                next_i = i + 1
+                if next_i >= len(schedule):
+                    if not bus.shared.get("jpeg_loop", True):
+                        src["enable"] = False
+                        return filled
+                    next_i = 0
+                    self._last_group = -1
+                src["sch_i"] = next_i
+                if group != self._last_group:
+                    src["last_frame_ms"] = time.ticks_ms()
+                self._last_group = group
+                continue
+            break
+
+        if filled > 0:
             src["last_err"] = ""
             src["last_ms"] = time.ticks_ms()
-            return 1
-
-        return 0
+        return filled
 
     def loop(self):
         if not self.running:

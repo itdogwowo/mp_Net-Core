@@ -2,6 +2,19 @@
   "group": "sys",
   "cmds": [
     {"cmd": "0x1001", "name": "DISCOVER", "payload": [{"name": "server_ip", "type": "str_u16len"}, {"name": "ws_url", "type": "str_u16len"}]},
-    {"cmd": "0x1002", "name": "SLAVE_ANNOUNCE", "payload": [{"name": "slave_id", "type": "str_u16len"}, {"name": "pixel_count", "type": "u16"}, {"name": "hw_version", "type": "str_u16len"}]}
+    {"cmd": "0x1002", "name": "SLAVE_ANNOUNCE", "payload": [{"name": "slave_id", "type": "str_u16len"}, {"name": "pixel_count", "type": "u16"}, {"name": "hw_version", "type": "str_u16len"}]},
+    {"cmd": "0x1004", "name": "SYS_CTRL", "payload": [
+      {"name": "wifi_enable", "type": "u8"},
+      {"name": "core_control", "type": "u8"}
+    ]},
+    {"cmd": "0x1005", "name": "SYS_TASK_QUERY", "payload": []},
+    {"cmd": "0x1006", "name": "SYS_TASK_RSP", "payload": [
+      {"name": "tasks_json", "type": "str_u16len"}
+    ]},
+    {"cmd": "0x1007", "name": "SYS_TASK_SET", "payload": [
+      {"name": "task_name", "type": "str_u16len"},
+      {"name": "affinity_c0", "type": "u8"},
+      {"name": "affinity_c1", "type": "u8"}
+    ]}
   ]
 }

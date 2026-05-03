@@ -9,9 +9,9 @@ class DpBufferTask(Task):
     def on_start(self):
         super().on_start()
         self._svc = ensure_dp_buffer_service(bus)
-        self._fps_t0 = time.ticks_ms()
-        self._fps_count = 0
-        self._fps_current = 0
+        self._fps_window_t0 = 0
+        self._fps_window_count = 0
+        self._fps_start_ms = 0
         self._fb_buf = None
         self._fb = None
         self._fb_group = -1
@@ -37,6 +37,36 @@ class DpBufferTask(Task):
         if self._fb is not None:
             self._fb.fill(0)
         self._fb_group = -1
+
+    def _tick_fps(self):
+        self._fps_window_count += 1
+        total_frames = int(self._svc.get("frames", 0) or 0)
+        if self._fps_start_ms == 0 and total_frames > 0:
+            self._fps_start_ms = time.ticks_ms()
+
+        now = time.ticks_ms()
+        if self._fps_window_t0 == 0:
+            self._fps_window_t0 = now
+            return
+
+        dt = time.ticks_diff(now, self._fps_window_t0)
+        interval = int(bus.shared.get("fps_stats_interval", 1000) or 1000)
+        if dt < interval:
+            return
+
+        fps_window = self._fps_window_count
+        self._svc["fps_window"] = fps_window
+
+        if self._fps_start_ms > 0:
+            total_elapsed = time.ticks_diff(now, self._fps_start_ms)
+            if total_elapsed > 0:
+                fps_cumulative = total_frames * 1000 // total_elapsed
+                self._svc["fps_total"] = fps_cumulative
+            else:
+                self._svc["fps_total"] = 0
+
+        self._fps_window_t0 = now
+        self._fps_window_count = 0
 
     def loop(self):
         if not self.running:
@@ -105,21 +135,7 @@ class DpBufferTask(Task):
             self._svc["pending"] = None
             self._svc["last_err"] = ""
             self._svc["last_ms"] = time.ticks_ms()
-
-            self._fps_count += 1
-            now = time.ticks_ms()
-            dt = time.ticks_diff(now, self._fps_t0)
-            interval = int(bus.shared.get("fps_stats_interval", 1000) or 1000)
-            if dt >= interval:
-                self._fps_current = self._fps_count
-                self._svc["fps_current"] = self._fps_count
-                self._fps_t0 = now
-                self._fps_count = 0
-                if bool(bus.shared.get("fps_stats_enabled", True)):
-                    try:
-                        print("📊 [FPS] {}".format(self._fps_current))
-                    except Exception:
-                        pass
+            self._tick_fps()
             return
 
         payload = wv[HDR_OUT : HDR_OUT + payload_len]
@@ -160,20 +176,7 @@ class DpBufferTask(Task):
         self._svc["last_err"] = ""
         self._svc["last_ms"] = time.ticks_ms()
 
-        self._fps_count += 1
-        now = time.ticks_ms()
-        dt = time.ticks_diff(now, self._fps_t0)
-        interval = int(bus.shared.get("fps_stats_interval", 1000) or 1000)
-        if dt >= interval:
-            self._fps_current = self._fps_count
-            self._svc["fps_current"] = self._fps_count
-            self._fps_t0 = now
-            self._fps_count = 0
-            if bool(bus.shared.get("fps_stats_enabled", True)):
-                try:
-                    print("📊 [FPS] {}".format(self._fps_current))
-                except Exception:
-                    pass
+        self._tick_fps()
 
     def _flush_blit(self, wv):
         if self._fb_buf is None or self._fb_group < 0:

@@ -119,18 +119,6 @@ class JpegDecodeTask(Task):
         if self._job is None:
             self._pick_job(dp)
             if self._job is None:
-                now = time.ticks_ms()
-                if time.ticks_diff(now, int(self._last_idle_log_ms or 0)) > 1000:
-                    self._last_idle_log_ms = now
-                    try:
-                        fills = []
-                        for it in dp.get("layout") or []:
-                            fills.append((str(it.get("label") or ""), -1))
-                        hub = dp.get("jpeg_in")
-                        fill = hub.get_fill_level() if hub else -1
-                        print(f"⏳ [JPEG] waiting dp_in={fill}")
-                    except Exception:
-                        pass
                 return
 
         job = self._job
