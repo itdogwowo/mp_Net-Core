@@ -30,7 +30,7 @@ class JpegDecodeTask(Task):
 
             dp = self._resolve_dp()
             cfg = {} if dp is None else (dp.get("jpeg") or {})
-            pixel_format = cfg.get("pixel_format") or "RGB565_LE"
+            pixel_format = cfg.get("pixel_format") or "RGB565_BE"
             rotation = int(cfg.get("rotation", 0) or 0)
             block = bool(cfg.get("block", True))
             self._decoder = jpeg.Decoder(pixel_format=pixel_format, rotation=rotation, block=block, return_bytes=False)
@@ -48,7 +48,8 @@ class JpegDecodeTask(Task):
             return True
         self._seen_epoch = epoch
         try:
-            configure_for_layout(bus, dp.get("layout") or [], pixel_format=(dp.get("jpeg") or {}).get("pixel_format") or "RGB565_LE")
+            frame_bufs = int(bus.shared.get("pipeline_frame_buffers", 3) or 3)
+            configure_for_layout(bus, dp.get("layout") or [], pixel_format=(dp.get("jpeg") or {}).get("pixel_format") or "RGB565_BE", num_buffers=frame_bufs)
             self._buf = bus.get_service("dp_buffer") or self._buf
             return True
         except Exception as e:
@@ -82,6 +83,8 @@ class JpegDecodeTask(Task):
                 "w": int(w),
                 "h": int(h),
                 "bpp": int(bpp),
+                "flags": int(flags),
+                "path_hash": int(path_hash),
                 "fmt_code": 0,
             }
             return self._job
@@ -155,7 +158,8 @@ class JpegDecodeTask(Task):
             self._buf["last_err"] = str(e)
             self._buf["last_ms"] = time.ticks_ms()
             try:
-                job["hub"].release_read()
+                if job["hub"] is not None:
+                    job["hub"].release_read()
             except Exception:
                 pass
             self._job = None
@@ -173,13 +177,15 @@ class JpegDecodeTask(Task):
             "h": int(job["h"]),
             "bpp": int(job["bpp"]),
             "payload_len": int(frame_bytes),
+            "frame_group": int(job.get("flags", 0) or 0),
             "fmt_code": int(job.get("fmt_code", 0) or 0),
         }
         self._buf["last_ms"] = time.ticks_ms()
         self._buf["last_err"] = ""
 
         try:
-            job["hub"].release_read()
+            if job["hub"] is not None:
+                job["hub"].release_read()
         except Exception:
             pass
         self._job = None

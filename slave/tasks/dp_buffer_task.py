@@ -9,6 +9,34 @@ class DpBufferTask(Task):
     def on_start(self):
         super().on_start()
         self._svc = ensure_dp_buffer_service(bus)
+        self._fps_t0 = time.ticks_ms()
+        self._fps_count = 0
+        self._fps_current = 0
+        self._fb_buf = None
+        self._fb = None
+        self._fb_group = -1
+
+    def _ensure_fb(self):
+        w = int(bus.shared.get("tft_width", 240) or 240)
+        h = int(bus.shared.get("tft_height", 320) or 320)
+        bpp = int((self._svc.get("pixel_format") or "RGB565_BE").startswith("RGB888") and 3 or 2)
+        needed = w * h * bpp
+        if self._fb_buf is not None and len(self._fb_buf) >= needed:
+            return True
+        try:
+            import framebuf
+            self._fb_buf = bytearray(needed)
+            self._fb = framebuf.FrameBuffer(self._fb_buf, w, h, framebuf.RGB565)
+            return True
+        except Exception as e:
+            self._svc["last_err"] = "fb alloc: " + str(e)
+            self._svc["last_ms"] = time.ticks_ms()
+            return False
+
+    def _reset_fb(self):
+        if self._fb is not None:
+            self._fb.fill(0)
+        self._fb_group = -1
 
     def loop(self):
         if not self.running:
@@ -16,6 +44,7 @@ class DpBufferTask(Task):
 
         self._svc = bus.get_service("dp_buffer") or self._svc
         if not self._svc or not self._svc.get("enable", True):
+            self._fb_group = -1
             return
 
         pending = self._svc.get("pending")
@@ -36,10 +65,69 @@ class DpBufferTask(Task):
             return
 
         payload = wv[HDR_OUT : HDR_OUT + payload_len]
+        group = int(pending.get("frame_group", 0) or 0)
+        x = int(pending.get("x", 0) or 0)
+        y = int(pending.get("y", 0) or 0)
+        w = int(pending.get("w", 0) or 0)
+        h = int(pending.get("h", 0) or 0)
+
+        blend_mode = str(bus.shared.get("jpeg_blend_mode", "interleave") or "interleave")
+
+        if blend_mode == "blit":
+            if not self._ensure_fb():
+                self._svc["pending"] = None
+                return
+
+            if group != self._fb_group:
+                self._flush_blit(wv)
+                self._reset_fb()
+                self._fb_group = group
+                if not self._ensure_fb():
+                    self._svc["pending"] = None
+                    return
+
+            try:
+                import framebuf
+                layer_fb = framebuf.FrameBuffer(payload, w, h, framebuf.RGB565)
+                label_id = int(pending.get("label_id", 0) or 0)
+                dp = bus.get_service("dp_manager")
+                layout = (dp.get("layout") or []) if dp else []
+                key = -1
+                if label_id < len(layout):
+                    key = int(layout[label_id].get("key", -1))
+                self._fb.blit(layer_fb, x, y, key)
+            except Exception as e:
+                self._svc["last_err"] = "blit: " + str(e)
+                self._svc["last_ms"] = time.ticks_ms()
+                self._svc["pending"] = None
+                return
+
+            self._svc["pending"] = None
+            self._svc["last_err"] = ""
+            self._svc["last_ms"] = time.ticks_ms()
+
+            self._fps_count += 1
+            now = time.ticks_ms()
+            dt = time.ticks_diff(now, self._fps_t0)
+            interval = int(bus.shared.get("fps_stats_interval", 1000) or 1000)
+            if dt >= interval:
+                self._fps_current = self._fps_count
+                self._svc["fps_current"] = self._fps_count
+                self._fps_t0 = now
+                self._fps_count = 0
+                if bool(bus.shared.get("fps_stats_enabled", True)):
+                    try:
+                        print("📊 [FPS] {}".format(self._fps_current))
+                    except Exception:
+                        pass
+            return
+
+        payload = wv[HDR_OUT : HDR_OUT + payload_len]
 
         hook = self._svc.get("hook", None)
         if bool(self._svc.get("hook_enable", False)) and hook is not None:
             info = dict(pending)
+            info["pixel_format"] = str(self._svc.get("pixel_format", "RGB565_BE"))
             try:
                 res = hook(payload, info)
                 if res is not None:
@@ -72,3 +160,40 @@ class DpBufferTask(Task):
         self._svc["last_err"] = ""
         self._svc["last_ms"] = time.ticks_ms()
 
+        self._fps_count += 1
+        now = time.ticks_ms()
+        dt = time.ticks_diff(now, self._fps_t0)
+        interval = int(bus.shared.get("fps_stats_interval", 1000) or 1000)
+        if dt >= interval:
+            self._fps_current = self._fps_count
+            self._svc["fps_current"] = self._fps_count
+            self._fps_t0 = now
+            self._fps_count = 0
+            if bool(bus.shared.get("fps_stats_enabled", True)):
+                try:
+                    print("📊 [FPS] {}".format(self._fps_current))
+                except Exception:
+                    pass
+
+    def _flush_blit(self, wv):
+        if self._fb_buf is None or self._fb_group < 0:
+            return
+        w = int(bus.shared.get("tft_width", 240) or 240)
+        h = int(bus.shared.get("tft_height", 320) or 320)
+        bpp = int((self._svc.get("pixel_format") or "RGB565_BE").startswith("RGB888") and 3 or 2)
+        frame_bytes = w * h * bpp
+        payload = wv[HDR_OUT : HDR_OUT + frame_bytes]
+        payload[:] = memoryview(self._fb_buf)[:frame_bytes]
+        pack_out_header(wv, frame_bytes, seq=0, label_id=0, x=0, y=0, w=w, h=h, flags=3, fmt_code=0)
+        hub = self._svc.get("out_hub")
+        if hub:
+            hub.commit()
+        self._svc["frames"] = int(self._svc.get("frames", 0) or 0) + 1
+        self._svc["last_done"] = {"ms": time.ticks_ms()}
+        self._svc["last_ms"] = time.ticks_ms()
+
+    def on_stop(self):
+        super().on_stop()
+        self._fb_buf = None
+        self._fb = None
+        self._fb_group = -1

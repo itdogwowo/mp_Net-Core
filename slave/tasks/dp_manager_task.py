@@ -35,9 +35,10 @@ class DpManagerTask(Task):
     def on_start(self):
         super().on_start()
         self._svc = ensure_dp_manager_service(bus)
-        self._seen_epoch = None
+        self._seen_epoch = int(self._svc.get("cfg_epoch", 0) or 0)
         self._last_scan_count = None
         self._last_log_ms = 0
+        self._last_group = -1
 
     def _ensure_loaded(self):
         cfg_path = str(self._svc.get("dp_config_path") or "/dp_config.json")
@@ -59,6 +60,7 @@ class DpManagerTask(Task):
             configure_from_dp_config(bus, dp, dp_config_path=cfg_path, service_name="dp_manager")
             self._svc = bus.get_service("dp_manager") or self._svc
             self._seen_epoch = int(self._svc.get("cfg_epoch", 0) or 0)
+            self._last_group = -1
             try:
                 self._svc["last_loaded"] = {"path": cfg_path, "ms": now}
             except Exception:
@@ -68,6 +70,71 @@ class DpManagerTask(Task):
             self._svc["last_err"] = str(e)
             self._svc["last_ms"] = now
             return False
+
+    def _fill_hub(self):
+        src = self._svc
+        hub = src.get("jpeg_in")
+        schedule = src.get("schedule") or []
+        if hub is None or not schedule:
+            return 0
+
+        wv = hub.get_write_view()
+        if wv is None:
+            return 0
+        cap = int(len(wv)) - HDR_IN
+        if cap <= 0:
+            return 0
+
+        i = int(src.get("sch_i", 0) or 0)
+        if i < 0 or i >= len(schedule):
+            i = 0
+
+        job = schedule[i]
+        pack = job.get("pack_source")
+
+        if pack is not None:
+            group = int(job.get("frame_group", 0) or 0)
+            label_id = int(job.get("label_id", 0) or 0)
+            x = int(job.get("x", 0) or 0)
+            y = int(job.get("y", 0) or 0)
+            w = int(job.get("w", 0) or 0)
+            h = int(job.get("h", 0) or 0)
+            bpp = int(job.get("bpp", 2) or 2)
+            try:
+                _idx, n, _dt = pack.read_next_into(wv[HDR_IN:], cap)
+            except Exception:
+                _idx, n, _dt = None, 0, 0
+            if _idx is None:
+                src["enable"] = False
+                bus.shared["jpeg_player"] = {"playing": False, "paused": False}
+                src["sch_i"] = 0
+                src["last_ms"] = time.ticks_ms()
+                self._last_group = -1
+                print("⏹ [DP] Pack ended")
+                return 0
+            n = int(n or 0)
+            if n <= 0:
+                return 0
+            seq = int(src.get("seq", 1) or 1)
+            pack_in_header(wv, n, seq=seq, label_id=label_id, x=x, y=y, w=w, h=h, bpp=bpp, flags=group, path_hash=int(_idx or 0))
+            hub.commit()
+            src["seq"] = (seq + 1) & 0xFFFF
+            next_i = i + 1
+            if next_i >= len(schedule):
+                if not bus.shared.get("jpeg_loop", True):
+                    src["enable"] = False
+                    return 0
+                next_i = 0
+                self._last_group = -1
+            src["sch_i"] = next_i
+            if group != self._last_group:
+                src["last_frame_ms"] = time.ticks_ms()
+            self._last_group = group
+            src["last_err"] = ""
+            src["last_ms"] = time.ticks_ms()
+            return 1
+
+        return 0
 
     def loop(self):
         if not self.running:
@@ -84,15 +151,37 @@ class DpManagerTask(Task):
         if hub is None or not schedule:
             return
 
-        if hub.get_fill_level() >= 1:
+        pace_ms = int(bus.shared.get("jpeg_pace_ms", 0) or 0)
+        if pace_ms > 0:
+            last_frame_ms = int(self._svc.get("last_frame_ms", 0) or 0)
+            now = time.ticks_ms()
+            if time.ticks_diff(now, last_frame_ms) < pace_ms:
+                return
+
+        if self._fill_hub() > 0:
             return
 
-        i = int(self._svc.get("sch_i", 0) or 0)
+        src = self._svc
+        wv = hub.get_write_view()
+        if wv is None:
+            return
+        cap = int(len(wv)) - HDR_IN
+        if cap <= 0:
+            return
+
+        i = int(src.get("sch_i", 0) or 0)
         if i < 0 or i >= len(schedule):
             i = 0
-
         job = schedule[i]
-        assets_root = str(self._svc.get("assets_root") or "")
+        group = int(job.get("frame_group", 0) or 0)
+
+        if pace_ms > 0 and group != self._last_group and self._last_group >= 0:
+            last_frame_ms = int(src.get("last_frame_ms", 0) or 0)
+            now = time.ticks_ms()
+            if time.ticks_diff(now, last_frame_ms) < pace_ms:
+                return
+
+        assets_root = str(src.get("assets_root") or "")
         label = str(job.get("label") or "")
         frame = int(job.get("frame", 0) or 0)
         x = int(job.get("x", 0) or 0)
@@ -102,17 +191,9 @@ class DpManagerTask(Task):
         bpp = int(job.get("bpp", 2) or 2)
         label_id = int(job.get("label_id", 0) or 0)
 
-        fmt = str(self._svc.get("frame_format") or "{frame:03d}.jpeg")
+        fmt = str(src.get("frame_format") or "{frame:03d}.jpeg")
         filename = _fmt_frame(fmt, frame)
         path = _join(_join(assets_root, label), filename)
-
-        wv = hub.get_write_view()
-        if wv is None:
-            return
-
-        cap = int(len(wv)) - HDR_IN
-        if cap <= 0:
-            return
 
         n = 0
         try:
@@ -128,8 +209,8 @@ class DpManagerTask(Task):
                     pass
         except Exception as e:
             now = time.ticks_ms()
-            self._svc["last_err"] = str(e)
-            self._svc["last_ms"] = now
+            src["last_err"] = str(e)
+            src["last_ms"] = now
             if time.ticks_diff(now, int(self._last_log_ms or 0)) > 1000:
                 self._last_log_ms = now
                 try:
@@ -142,12 +223,26 @@ class DpManagerTask(Task):
         if n <= 0:
             return
 
-        seq = int(self._svc.get("seq", 1) or 1)
-        pack_in_header(wv, n, seq=seq, label_id=label_id, x=x, y=y, w=w, h=h, bpp=bpp, flags=0, path_hash=0)
+        seq = int(src.get("seq", 1) or 1)
+        pack_in_header(wv, n, seq=seq, label_id=label_id, x=x, y=y, w=w, h=h, bpp=bpp, flags=group, path_hash=0)
         hub.commit()
+        src["seq"] = (seq + 1) & 0xFFFF
 
-        self._svc["seq"] = (seq + 1) & 0xFFFF
-        self._svc["sch_i"] = (i + 1) % len(schedule)
-        self._svc["last_ms"] = time.ticks_ms()
-        self._svc["last_err"] = ""
-
+        next_i = i + 1
+        if next_i >= len(schedule):
+            if not bus.shared.get("jpeg_loop", True):
+                src["enable"] = False
+                bus.shared["jpeg_player"] = {"playing": False, "paused": False}
+                src["sch_i"] = 0
+                src["last_ms"] = time.ticks_ms()
+                self._last_group = -1
+                print("⏹ [DP] Loop disabled, playback ended")
+                return
+            next_i = 0
+            self._last_group = -1
+        src["sch_i"] = next_i
+        src["last_ms"] = time.ticks_ms()
+        if pace_ms > 0 and group != self._last_group:
+            src["last_frame_ms"] = time.ticks_ms()
+        self._last_group = group
+        src["last_err"] = ""

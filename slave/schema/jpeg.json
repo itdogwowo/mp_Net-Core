@@ -1,0 +1,54 @@
+{
+  "group": "jpeg",
+  "cmds": [
+    {
+      "cmd": "0x3101",
+      "name": "JPEG_PLAYER_CTL",
+      "payload": [
+        {"name": "action", "type": "u8"},
+        {"name": "seek_frame", "type": "u32"}
+      ]
+    },
+    {
+      "cmd": "0x3102",
+      "name": "JPEG_CONFIG_LOAD",
+      "payload": [
+        {"name": "config_path", "type": "str_u16len"}
+      ]
+    },
+    {
+      "cmd": "0x3103",
+      "name": "JPEG_PLAYER_PARAMS",
+      "payload": [
+        {"name": "pace_ms", "type": "u16"},
+        {"name": "loop", "type": "u8"},
+        {"name": "blend_mode", "type": "u8"}
+      ]
+    },
+    {
+      "cmd": "0x3104",
+      "name": "JPEG_HOOK_CTL",
+      "payload": [
+        {"name": "enable", "type": "u8"},
+        {"name": "hook_type", "type": "u8"},
+        {"name": "config_json", "type": "str_u16len"}
+      ]
+    },
+    {
+      "cmd": "0x3105",
+      "name": "JPEG_STATUS_GET",
+      "payload": []
+    },
+    {
+      "cmd": "0x3106",
+      "name": "JPEG_STATUS_RSP",
+      "payload": [
+        {"name": "playing", "type": "u8"},
+        {"name": "frame", "type": "u32"},
+        {"name": "total", "type": "u32"},
+        {"name": "fps", "type": "u16"},
+        {"name": "err", "type": "str_u16len"}
+      ]
+    }
+  ]
+}

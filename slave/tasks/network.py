@@ -26,7 +26,6 @@ class NetworkTask(Task):
     def on_start(self):
         super().on_start()
         
-        # Initialize NetworkManager if needed
         self.nm = bus.get_service("network_manager")
         if not self.nm:
             print("⚠️ NetworkManager not found in bus, creating new instance...")
@@ -34,8 +33,7 @@ class NetworkTask(Task):
             self.nm.init_from_config()
 
         bus_sys = bus.shared["System"]
-        
-        # Initialize NetBus
+
         self.ctrl_bus = NetBus(NetBus.TYPE_WS, label="CTRL-WS")
         self.discovery_bus = NetBus(NetBus.TYPE_UDP, label="UDP-DISCV")
         self.discovery_bus.connect(None, bus_sys["discovery_port"])

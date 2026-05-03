@@ -1,4 +1,5 @@
 {
+    "scan_ignore": ["/sd"],
     "System": {
         "c_lum": 1.0,
         "hostname": "",
@@ -12,15 +13,15 @@
         "buffer_frames": 1
     },
     "Buffer": {
-        "size": 16384,
-        "rx_hub_buffers": 16,
+        "size": 1024,
+        "rx_hub_buffers": 1,
         "drop_on_full": 1,
         "drain_reads": 1
     },
     "Network": {
         "priority": ["lan", "wifi"],
         "lan": {
-            "enable": 1,
+            "enable": 0,
             "active_mode": 1,
             "driver": "RMII",
             "phy_addr": 1,
@@ -40,11 +41,11 @@
         }
     },
     "SDcard": {
-        "enable": 0,
+        "enable": 1,
         "phat":"/sd",
         "LDO":{"id":4,"mv":3300},
         "config": { "slot": 0, "width": 4, "freq": 40000000 },
-        "GPIO": { "sck": 43, "cmd": 44, "data": [39, 40, 41, 42] }
+        "GPIO": { "sck": 7, "cmd": 6, "data": [5, 4, 16, 15] }
     },
     "UART": {
         "enable": 0,
@@ -57,7 +58,7 @@
         ]
     },
     "I2C": {
-        "enable": 1,
+        "enable": 0,
         "list": [
             {
                 "id": 1,
@@ -75,6 +76,13 @@
                 "phase":1,
                 "polarity":1,
                 "GPIO": { "sck": 8, "mosi": 7, "miso": null }
+            },
+            {
+                "id": 2,
+                "baudrate": 80000000,
+                "phase":0,
+                "polarity":0,
+                "GPIO": { "sck": 12, "mosi": 11, "miso": null }
             }
         ]
     },
@@ -88,7 +96,7 @@
         ]
     },
     "PCA9685": {
-        "enable": 1,
+        "enable": 0,
         "list": [
             {"GPIO":{"i2c":0,"dArc":0,"type":0},"address":["0x40"]}
         ]
@@ -100,7 +108,7 @@
         ]
     },
     "WS2812": {
-        "enable": 1,
+        "enable": 0,
         "list": [
             {"GPIO":15,"Q":10,"order":"GRB"},
             {"GPIO":16,"Q":10,"order":"GRB"},
@@ -108,7 +116,7 @@
         ]
     },
     "APA102": {
-        "enable": 1,
+        "enable": 0,
         "list": [
             {"GPIO":{"spi":0 },"Q":290,"order":"BGRW"}
         ]

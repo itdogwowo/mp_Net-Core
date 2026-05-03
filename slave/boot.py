@@ -34,6 +34,7 @@ def init_bus(sysBus):
     # 這裡保持你的硬體配置
     SPI_config = sysBus.shared['SPI']
     spi_list = []
+    spi_by_id = {}
     if SPI_config['enable']:
         for i in SPI_config['list']:
             spi = machine.SPI(i['id'],
@@ -45,7 +46,9 @@ def init_bus(sysBus):
                 miso=machine.Pin(i['GPIO']['miso']) if i['GPIO']['miso'] else None
             )
             spi_list.append(spi)            
+            spi_by_id[i['id']] = spi
         sysBus.register_service("spi_list", spi_list)
+        sysBus.register_service("spi_by_id", spi_by_id)
         
     I2C_config = sysBus.shared['I2C']
     i2c_list = []
@@ -133,14 +136,21 @@ def init_sd(sysBus):
     config = sysBus.shared['SDcard']
     _phat = ''
     if config['enable'] and not exists(config["phat"]):
+        _phat = config["phat"]
         try:
             from esp32 import LDO
-            _phat = config["phat"]
             ldo = LDO(config['LDO']['id'], config['LDO']['mv'], adjustable=True)
+
+            
+        except Exception as e:
+            print(f"LEO error: {e}")
+            
+            
+        try:
             sd = machine.SDCard(slot=config['config']['slot'], width=config['config']['width'],
-                sck=config['GPIO']['sck'], cmd=config['GPIO']['cmd'],
-                data=config['GPIO']['data'],
-                freq=config['config']['freq'])
+            sck=config['GPIO']['sck'], cmd=config['GPIO']['cmd'],
+            data=config['GPIO']['data'],
+            freq=config['config']['freq'])
             os.mount(sd, f'{config["phat"]}')
         except Exception as e:
             print(f"❌ SD card init error: {e}")
@@ -153,4 +163,7 @@ init_bus(bus)
 init_led(bus)
 init_st(bus)
 init_sd(bus)
+
+from lib.dp_bootstrap import init_lcd
+init_lcd()
 

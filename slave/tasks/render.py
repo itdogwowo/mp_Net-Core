@@ -1,7 +1,6 @@
 import time
 from lib.task import Task
 from lib.sys_bus import bus
-from lib.fs_manager import fs
 
 class RenderTask(Task):
     def __init__(self, name, ctx):
@@ -47,13 +46,7 @@ class RenderTask(Task):
     def loop(self):
         if not self.running: return
 
-        # 0. System Task: Flash Scan (Priority)
-        if bus.shared.get("fs_scan_requested"):
-            fs.perform_scan()
-            bus.shared["fs_scan_requested"] = False
-            self.next_tick_us = time.ticks_us() # Reset timing
-            
-        # Stop Mode
+        # 0. Stop Mode
         if not bus.shared.get("is_streaming"):
             if bus.shared.get("is_ready") == False:
                 # Clear buffer
