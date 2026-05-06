@@ -1,0 +1,58 @@
+{
+  "assets_root": "/sd",
+  "tft": {
+    "driver": "ST7789",
+    "width": 240,
+    "height": 320,
+    "rotation": 0,
+    "color_order": "RGB",
+    "invert": 0,
+    "spi": 1,
+    "pins": {
+      "dc": 12,
+      "cs": 11,
+      "rst": 13
+    }
+  },
+  "jpeg": {
+    "pixel_format": "RGB888",
+    "rotation": 0,
+    "block": true,
+    "return_bytes": false,
+    "step_blocks": 0,
+    "max_jpeg_bytes": 0
+  },
+  "display_Layout": [
+    {
+      "type": "output",
+      "level": 0,
+      "height": 320,
+      "width": 240,
+      "x": 0,
+      "y": 0,
+      "depth": -1,
+      "assets_pack": 1,
+      "blit_key": -1
+    }
+  ],
+  "player": {
+    "pace_ms": 0,
+    "pace_frames": 1,
+    "autoplay": true,
+    "loop": true,
+    "blend_mode": "interleave",
+    "pipeline": {
+      "io_buffers": 10,
+      "frame_buffers": 10
+    },
+    "stats": {
+      "enabled": true,
+      "interval_ms": 1000,
+      "frames_n": 60
+    },
+    "fps_stats": {
+      "enabled": true,
+      "interval_ms": 1000
+    }
+  }
+}
