@@ -145,28 +145,28 @@ class DpManagerTask(Task):
         if not self.running:
             return
         self._svc = bus.get_service("dp_manager") or self._svc
-        if not self._svc or not self._svc.get("enable", True):
+        src = self._svc
+        if not src or not src.get("enable", True):
             return
 
         if not self._ensure_loaded():
             return
 
-        hub = self._svc.get("jpeg_in")
-        schedule = self._svc.get("schedule") or []
+        hub = src.get("jpeg_in")
+        schedule = src.get("schedule") or []
         if hub is None or not schedule:
             return
 
         pace_ms = int(bus.shared.get("jpeg_pace_ms", 0) or 0)
         if pace_ms > 0:
-            last_frame_ms = int(self._svc.get("last_frame_ms", 0) or 0)
+            last_ft = int(src.get("last_frame_ms", 0) or 0)
             now = time.ticks_ms()
-            if time.ticks_diff(now, last_frame_ms) < pace_ms:
+            if time.ticks_diff(now, last_ft) < pace_ms:
                 return
 
         if self._fill_hub() > 0:
             return
 
-        src = self._svc
         wv = hub.get_write_view()
         if wv is None:
             return
@@ -181,9 +181,9 @@ class DpManagerTask(Task):
         group = int(job.get("frame_group", 0) or 0)
 
         if pace_ms > 0 and group != self._last_group and self._last_group >= 0:
-            last_frame_ms = int(src.get("last_frame_ms", 0) or 0)
+            last_ft = int(src.get("last_frame_ms", 0) or 0)
             now = time.ticks_ms()
-            if time.ticks_diff(now, last_frame_ms) < pace_ms:
+            if time.ticks_diff(now, last_ft) < pace_ms:
                 return
 
         assets_root = str(src.get("assets_root") or "")

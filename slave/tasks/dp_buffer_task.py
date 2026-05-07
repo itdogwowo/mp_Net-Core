@@ -3,6 +3,7 @@ import time
 from lib.task import Task
 from lib.sys_bus import bus
 from lib.dp_buffer_service import HDR_OUT, ensure_dp_buffer_service, pack_out_header
+from lib.buffer_hub import viper_copy
 
 
 class DpBufferTask(Task):
@@ -94,12 +95,12 @@ class DpBufferTask(Task):
             self._svc["pending"] = None
             return
 
-        payload = wv[HDR_OUT : HDR_OUT + payload_len]
+        seg = wv[HDR_OUT : HDR_OUT + payload_len]
         group = int(pending.get("frame_group", 0) or 0)
-        x = int(pending.get("x", 0) or 0)
-        y = int(pending.get("y", 0) or 0)
-        w = int(pending.get("w", 0) or 0)
-        h = int(pending.get("h", 0) or 0)
+        _px = int(pending.get("x", 0) or 0)
+        _py = int(pending.get("y", 0) or 0)
+        _pw = int(pending.get("w", 0) or 0)
+        _ph = int(pending.get("h", 0) or 0)
 
         blend_mode = str(bus.shared.get("jpeg_blend_mode", "interleave") or "interleave")
 
@@ -118,14 +119,14 @@ class DpBufferTask(Task):
 
             try:
                 import framebuf
-                layer_fb = framebuf.FrameBuffer(payload, w, h, framebuf.RGB565)
+                layer_fb = framebuf.FrameBuffer(seg, _pw, _ph, framebuf.RGB565)
                 label_id = int(pending.get("label_id", 0) or 0)
                 dp = bus.get_service("dp_manager")
                 layout = (dp.get("layout") or []) if dp else []
                 key = -1
                 if label_id < len(layout):
                     key = int(layout[label_id].get("key", -1))
-                self._fb.blit(layer_fb, x, y, key)
+                self._fb.blit(layer_fb, _px, _py, key)
             except Exception as e:
                 self._svc["last_err"] = "blit: " + str(e)
                 self._svc["last_ms"] = time.ticks_ms()
@@ -138,18 +139,20 @@ class DpBufferTask(Task):
             self._tick_fps()
             return
 
-        payload = wv[HDR_OUT : HDR_OUT + payload_len]
+        seq = int(pending.get("seq", 0) or 0)
+        label_id = int(pending.get("label_id", 0) or 0)
+        fmt_code = int(pending.get("fmt_code", 0) or 0)
 
         hook = self._svc.get("hook", None)
         if bool(self._svc.get("hook_enable", False)) and hook is not None:
-            info = dict(pending)
-            info["pixel_format"] = str(self._svc.get("pixel_format", "RGB565_BE"))
+            info = [payload_len, seq, label_id, _px, _py, _pw, _ph, group]
+            info.append(str(self._svc.get("pixel_format", "RGB565_BE")))
             try:
-                res = hook(payload, info)
+                res = hook(seg, info)
                 if res is not None:
                     if int(len(res)) != payload_len:
                         raise ValueError("hook payload length mismatch")
-                    payload[:] = memoryview(res)[:payload_len]
+                    viper_copy(seg, res, 0, payload_len)
             except Exception as e:
                 self._svc["last_err"] = str(e)
                 self._svc["last_ms"] = time.ticks_ms()
@@ -159,20 +162,20 @@ class DpBufferTask(Task):
         pack_out_header(
             wv,
             payload_len,
-            seq=int(pending.get("seq", 0) or 0),
-            label_id=int(pending.get("label_id", 0) or 0),
-            x=int(pending.get("x", 0) or 0),
-            y=int(pending.get("y", 0) or 0),
-            w=int(pending.get("w", 0) or 0),
-            h=int(pending.get("h", 0) or 0),
+            seq=seq,
+            label_id=label_id,
+            x=_px,
+            y=_py,
+            w=_pw,
+            h=_ph,
             flags=3,
-            fmt_code=int(pending.get("fmt_code", 0) or 0),
+            fmt_code=fmt_code,
         )
         hub.commit()
 
         self._svc["pending"] = None
         self._svc["frames"] = int(self._svc.get("frames", 0) or 0) + 1
-        self._svc["last_done"] = {"seq": int(pending.get("seq", 0) or 0), "ms": time.ticks_ms()}
+        self._svc["last_done"] = {"seq": seq, "ms": time.ticks_ms()}
         self._svc["last_err"] = ""
         self._svc["last_ms"] = time.ticks_ms()
 
@@ -185,8 +188,8 @@ class DpBufferTask(Task):
         h = int(bus.shared.get("tft_height", 320) or 320)
         bpp = int((self._svc.get("pixel_format") or "RGB565_BE").startswith("RGB888") and 3 or 2)
         frame_bytes = w * h * bpp
-        payload = wv[HDR_OUT : HDR_OUT + frame_bytes]
-        payload[:] = memoryview(self._fb_buf)[:frame_bytes]
+        seg = wv[HDR_OUT : HDR_OUT + frame_bytes]
+        viper_copy(seg, self._fb_buf, 0, frame_bytes)
         pack_out_header(wv, frame_bytes, seq=0, label_id=0, x=0, y=0, w=w, h=h, flags=3, fmt_code=0)
         hub = self._svc.get("out_hub")
         if hub:

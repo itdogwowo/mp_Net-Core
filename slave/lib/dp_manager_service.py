@@ -8,17 +8,21 @@ try:
 except Exception:
     import struct as _struct
 
+import micropython
+
 from lib.buffer_hub import AtomicStreamHub
 
 
-HDR_IN = 32
+HDR_IN = micropython.const(32)
 IN_FMT = "<IHHhhHHHHI"
 
 
+@micropython.native
 def _pack_into(buf, offset, *args):
     _struct.pack_into(IN_FMT, buf, offset, *args)
 
 
+@micropython.native
 def _unpack_from(buf, offset=0):
     return _struct.unpack_from(IN_FMT, buf, offset)
 

@@ -1,4 +1,5 @@
 import time
+import micropython
 
 
 def _ticks_us():
@@ -13,6 +14,7 @@ def _ticks_diff(a, b):
     return a - b
 
 
+@micropython.native
 def _u32_le(b, off):
     return b[off + 0] | (b[off + 1] << 8) | (b[off + 2] << 16) | (b[off + 3] << 24)
 

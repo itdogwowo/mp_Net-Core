@@ -6,6 +6,22 @@ _READY = micropython.const(1)
 _READING = micropython.const(2)
 
 
+@micropython.viper
+def viper_copy(dst, src, src_off: int, n: int):
+    pd = ptr8(dst)
+    ps = ptr8(src)
+    for i in range(n):
+        pd[i] = ps[src_off + i]
+
+
+@micropython.viper
+def viper_copy_full(dst, src, n: int):
+    pd = ptr8(dst)
+    ps = ptr8(src)
+    for i in range(n):
+        pd[i] = ps[i]
+
+
 class AtomicStreamHub:
     IDLE = _IDLE
     READY = _READY
@@ -46,8 +62,11 @@ class AtomicStreamHub:
         if self._status[ptr] != _IDLE:
             return False
         
-        # 執行高效內存拷貝 (底層 C 實現)
-        self._views[ptr][:] = source
+        # 執行高效內存拷貝 (viper 級優化)
+        n = len(source)
+        if n > self.size:
+            n = self.size
+        viper_copy_full(self._views[ptr], source, n)
         
         # 更新狀態與指標
         self._status[ptr] = _READY
@@ -75,7 +94,10 @@ class AtomicStreamHub:
             return False
             
         # 執行高效內存拷貝
-        target[:] = self._views[ptr]
+        n = len(target)
+        if n > self.size:
+            n = self.size
+        viper_copy_full(target, self._views[ptr], n)
         
         # 釋放槽位並更新指標
         self._status[ptr] = _IDLE

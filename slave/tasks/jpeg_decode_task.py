@@ -5,6 +5,32 @@ from lib.sys_bus import bus
 from lib.dp_manager_service import HDR_IN, unpack_in_header
 from lib.dp_buffer_service import HDR_OUT, ensure_dp_buffer_service, configure_for_layout
 
+_JOB_HUB = 0
+_JOB_RV = 1
+_JOB_JPEG = 2
+_JOB_PAYLOAD = 3
+_JOB_SEQ = 4
+_JOB_LABEL = 5
+_JOB_X = 6
+_JOB_Y = 7
+_JOB_W = 8
+_JOB_H = 9
+_JOB_BPP = 10
+_JOB_FLAGS = 11
+_JOB_PATH = 12
+_JOB_FMT = 13
+
+_PEND_SEQ = 0
+_PEND_LABEL = 1
+_PEND_X = 2
+_PEND_Y = 3
+_PEND_W = 4
+_PEND_H = 5
+_PEND_BPP = 6
+_PEND_PAYLOAD = 7
+_PEND_FRAME_GROUP = 8
+_PEND_FMT = 9
+
 
 class JpegDecodeTask(Task):
     def on_start(self):
@@ -15,6 +41,7 @@ class JpegDecodeTask(Task):
         self._job = None
         self._last_idle_log_ms = 0
         self._seen_epoch = None
+        self._pending_list = [0] * 10
 
     def _resolve_dp(self):
         if self._dp is not None:
@@ -71,22 +98,22 @@ class JpegDecodeTask(Task):
                 hub.release_read()
                 return None
             jpeg_data = rv[HDR_IN : HDR_IN + payload_len]
-            self._job = {
-                "hub": hub,
-                "rv": rv,
-                "jpeg_data": jpeg_data,
-                "payload_len": payload_len,
-                "seq": int(seq),
-                "label_id": int(label_id),
-                "x": int(x),
-                "y": int(y),
-                "w": int(w),
-                "h": int(h),
-                "bpp": int(bpp),
-                "flags": int(flags),
-                "path_hash": int(path_hash),
-                "fmt_code": 0,
-            }
+            self._job = [
+                hub,
+                rv,
+                jpeg_data,
+                payload_len,
+                int(seq),
+                int(label_id),
+                int(x),
+                int(y),
+                int(w),
+                int(h),
+                int(bpp),
+                int(flags),
+                int(path_hash),
+                0,
+            ]
             return self._job
         except Exception:
             try:
@@ -122,9 +149,9 @@ class JpegDecodeTask(Task):
                 return
 
         job = self._job
-        w = int(job["w"])
-        h = int(job["h"])
-        bpp = int(job["bpp"])
+        w = int(job[_JOB_W])
+        h = int(job[_JOB_H])
+        bpp = int(job[_JOB_BPP])
         frame_bytes = w * h * bpp
 
         wv = out_hub.get_write_view()
@@ -141,13 +168,13 @@ class JpegDecodeTask(Task):
             step_blocks = 0
 
         try:
-            done = bool(self._decoder.decode_into(job["jpeg_data"], fb, blocks=step_blocks))
+            done = bool(self._decoder.decode_into(job[_JOB_JPEG], fb, blocks=step_blocks))
         except Exception as e:
             self._buf["last_err"] = str(e)
             self._buf["last_ms"] = time.ticks_ms()
             try:
-                if job["hub"] is not None:
-                    job["hub"].release_read()
+                if job[_JOB_HUB] is not None:
+                    job[_JOB_HUB].release_read()
             except Exception:
                 pass
             self._job = None
@@ -156,24 +183,36 @@ class JpegDecodeTask(Task):
         if not done:
             return
 
+        pl = self._pending_list
+        pl[_PEND_SEQ] = int(job[_JOB_SEQ])
+        pl[_PEND_LABEL] = int(job[_JOB_LABEL])
+        pl[_PEND_X] = int(job[_JOB_X])
+        pl[_PEND_Y] = int(job[_JOB_Y])
+        pl[_PEND_W] = int(job[_JOB_W])
+        pl[_PEND_H] = int(job[_JOB_H])
+        pl[_PEND_BPP] = int(job[_JOB_BPP])
+        pl[_PEND_PAYLOAD] = int(frame_bytes)
+        pl[_PEND_FRAME_GROUP] = int(job[_JOB_FLAGS])
+        pl[_PEND_FMT] = int(job[_JOB_FMT])
+
         self._buf["pending"] = {
-            "seq": int(job["seq"]),
-            "label_id": int(job["label_id"]),
-            "x": int(job["x"]),
-            "y": int(job["y"]),
-            "w": int(job["w"]),
-            "h": int(job["h"]),
-            "bpp": int(job["bpp"]),
-            "payload_len": int(frame_bytes),
-            "frame_group": int(job.get("flags", 0) or 0),
-            "fmt_code": int(job.get("fmt_code", 0) or 0),
+            "seq": pl[_PEND_SEQ],
+            "label_id": pl[_PEND_LABEL],
+            "x": pl[_PEND_X],
+            "y": pl[_PEND_Y],
+            "w": pl[_PEND_W],
+            "h": pl[_PEND_H],
+            "bpp": pl[_PEND_BPP],
+            "payload_len": pl[_PEND_PAYLOAD],
+            "frame_group": pl[_PEND_FRAME_GROUP],
+            "fmt_code": pl[_PEND_FMT],
         }
         self._buf["last_ms"] = time.ticks_ms()
         self._buf["last_err"] = ""
 
         try:
-            if job["hub"] is not None:
-                job["hub"].release_read()
+            if job[_JOB_HUB] is not None:
+                job[_JOB_HUB].release_read()
         except Exception:
             pass
         self._job = None

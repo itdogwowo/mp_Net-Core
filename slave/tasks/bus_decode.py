@@ -1,6 +1,11 @@
 from lib.task import Task
 from lib.sys_bus import bus
-import struct
+import micropython
+
+
+@micropython.native
+def _peek_u16(buf, off):
+    return int(buf[off]) | (int(buf[off + 1]) << 8)
 
 
 class BusDecodeTask(Task):
@@ -9,11 +14,26 @@ class BusDecodeTask(Task):
         self.app = ctx["app"]
         self._buses = []
         self._parsers = {}
+        self._max_slots = 32
+        self._buf_cfg_cached = 0
+        self._buf_cfg_ms = 0
 
     def on_start(self):
         super().on_start()
         self._buses = []
         self._parsers = {}
+
+    def _refresh_buf_cfg(self):
+        import time
+        now = time.ticks_ms()
+        if time.ticks_diff(now, self._buf_cfg_ms) < 500:
+            return
+        self._buf_cfg_ms = now
+        buf_cfg = bus.shared.get("Buffer", {}) or {}
+        max_slots = int(buf_cfg.get("decode_budget_slots", 32) or 0)
+        if max_slots <= 0:
+            max_slots = 1
+        self._max_slots = max_slots
 
     def loop(self):
         if not self.running:
@@ -28,10 +48,8 @@ class BusDecodeTask(Task):
             if not self._buses:
                 return
 
-        buf_cfg = bus.shared.get("Buffer", {}) or {}
-        max_slots = int(buf_cfg.get("decode_budget_slots", 32) or 0)
-        if max_slots <= 0:
-            max_slots = 1
+        self._refresh_buf_cfg()
+        max_slots = self._max_slots
         used = 0
         for b in self._buses:
             hub = getattr(b, "rx_hub", None)
@@ -48,7 +66,7 @@ class BusDecodeTask(Task):
                 v = hub.get_read_view()
                 if v is None:
                     break
-                ln = struct.unpack_from("<H", v, 0)[0]
+                ln = _peek_u16(v, 0)
                 if ln <= 0:
                     continue
                 data = v[2:2 + ln]

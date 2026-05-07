@@ -11,6 +11,9 @@ class TaskManager:
         self.layers = {}
         self._layer_enabled = {}
         self.active_tasks = {0: {}, 1: {}}
+        self._cached_tasks = {0: [], 1: []}
+        self._tasks_dirty = {0: True, 1: True}
+        self._last_update_ms = {0: 0, 1: 0}
         self._boot_layer = 0
         self._boot_done = False
         self._max_layer = -1
@@ -88,9 +91,7 @@ class TaskManager:
         return layer <= self._boot_layer
 
     def _update_tasks(self, core_id):
-        current_config = list(self.config.items())
-
-        for name, affinity in current_config:
+        for name, affinity in self.config.items():
             should_run = (affinity[core_id] == 1)
             if should_run and not self._task_eligible_for_boot(name):
                 should_run = False
@@ -117,6 +118,7 @@ class TaskManager:
                 try:
                     task.on_start()
                     self.active_tasks[core_id][name] = task
+                    self._tasks_dirty[core_id] = True
                 except Exception as e:
                     print(f"❌ [Core {core_id}] Failed to start {name}: {e}")
 
@@ -128,9 +130,33 @@ class TaskManager:
                 except Exception as e:
                     print(f"❌ [Core {core_id}] Error stopping {name}: {e}")
                 del self.active_tasks[core_id][name]
+                self._tasks_dirty[core_id] = True
 
         if not self._boot_done:
             self._check_boot_layer_done()
+
+    def _maybe_update_tasks(self, core_id):
+        now = time.ticks_ms()
+        if time.ticks_diff(now, self._last_update_ms[core_id]) >= self._update_interval_ms(core_id):
+            self._last_update_ms[core_id] = now
+            self._update_tasks(core_id)
+            self._rebuild_cached_tasks(core_id)
+
+    def _update_interval_ms(self, core_id):
+        if self._tasks_dirty.get(core_id, True):
+            return 0
+        if not self._boot_done:
+            return 20
+        if not self.active_tasks[core_id]:
+            return 100
+        return 250
+
+    def _rebuild_cached_tasks(self, core_id):
+        if not self._tasks_dirty.get(core_id, True):
+            return
+        active = self.active_tasks[core_id]
+        self._cached_tasks[core_id] = list(active.items())
+        self._tasks_dirty[core_id] = False
 
     def _check_boot_layer_done(self):
         layer = self._boot_layer
@@ -170,27 +196,28 @@ class TaskManager:
 
         loop_count = 0
         start_time = time.ticks_ms()
-        idle_start = time.ticks_ms()
         busy_total_us = 0
+        perf_enabled = bus.shared.get("perf_enabled", False)
+        engine_run = bus.shared
 
         if "perf" not in bus.shared:
             bus.shared["perf"] = {}
 
-        while bus.shared.get("engine_run", True):
-            if bus.shared.get("perf_enabled", True):
-                t0 = time.ticks_us()
-            self._update_tasks(core_id)
+        while engine_run.get("engine_run", True):
+            self._maybe_update_tasks(core_id)
 
-            if not self.active_tasks[core_id]:
+            cached = self._cached_tasks[core_id]
+            if not cached:
                 time.sleep_ms(100)
                 loop_count = 0
                 start_time = time.ticks_ms()
                 busy_total_us = 0
                 continue
 
-            current_tasks = list(self.active_tasks[core_id].items())
+            need_rebuild = False
+            t0 = time.ticks_us() if perf_enabled else 0
 
-            for name, task in current_tasks:
+            for name, task in cached:
                 try:
                     task.loop()
 
@@ -200,15 +227,19 @@ class TaskManager:
                             task.on_stop()
                         except Exception:
                             pass
-                        del self.active_tasks[core_id][name]
+                        self.active_tasks[core_id].pop(name, None)
                         self.config[name] = (0, 0)
+                        need_rebuild = True
 
                 except Exception as e:
                     print(f"❌ [Core {core_id}] Task {task.name} Loop Error: {e}")
                     time.sleep_ms(1000)
 
-            time.sleep_ms(0)  # yield to allow interrupts
-            if bus.shared.get("perf_enabled", True):
+            if need_rebuild:
+                self._tasks_dirty[core_id] = True
+
+            time.sleep_ms(1)
+            if perf_enabled:
                 t1 = time.ticks_us()
                 busy_total_us += time.ticks_diff(t1, t0)
                 loop_count += 1
