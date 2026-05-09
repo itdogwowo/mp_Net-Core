@@ -13,8 +13,8 @@
         "buffer_frames": 1
     },
     "Buffer": {
-        "size": 1024,
-        "rx_hub_buffers": 1,
+        "size": 16384,
+        "rx_hub_buffers": 16,
         "drop_on_full": 1,
         "drain_reads": 1
     },
@@ -32,7 +32,7 @@
             }
         },
         "wifi": {
-            "enable": 0,
+            "enable": 1,
             "active_mode": 2,
             "timeout": 300,
             "ssid": "Home_WiFi",
@@ -45,7 +45,7 @@
         "phat":"/sd",
         "LDO":{"id":4,"mv":3300},
         "config": { "slot": 0, "width": 4, "freq": 40000000 },
-        "GPIO": { "sck": 7, "cmd": 6, "data": [5, 4, 16, 15] }
+        "GPIO": { "sck": 7, "cmd": 6, "data": [15, 16, 4, 5] }
     },
     "UART": {
         "enable": 0,
@@ -70,19 +70,13 @@
     "SPI": {
         "enable": 1,
         "list": [
+
             {
                 "id": 1,
-                "baudrate": 8000000,
-                "phase":1,
-                "polarity":1,
-                "GPIO": { "sck": 8, "mosi": 7, "miso": null }
-            },
-            {
-                "id": 2,
                 "baudrate": 80000000,
                 "phase":0,
                 "polarity":0,
-                "GPIO": { "sck": 12, "mosi": 11, "miso": null }
+                "GPIO": { "sck": 21, "mosi": 14, "miso": null }
             }
         ]
     },

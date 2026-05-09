@@ -44,9 +44,9 @@ def launcher():
     
     # ── Layer 0: 網路 + 通訊 + FS 掃描，最先啟動 ──
     tm.register_task("log", LogTask, default_affinity=(1, 0), layer=0)
-    tm.register_task("network", NetworkTask, default_affinity=(1, 0), layer=-1)
-    tm.register_task("bus_decode", BusDecodeTask, default_affinity=(1, 0), layer=-1)
-    tm.register_task("web_ui",  WebUITask,   default_affinity=(1, 0), layer=-1)
+    tm.register_task("network", NetworkTask, default_affinity=(1, 0), layer=0)
+    tm.register_task("bus_decode", BusDecodeTask, default_affinity=(1, 0), layer=0)
+    tm.register_task("web_ui",  WebUITask,   default_affinity=(1, 0), layer=0)
     tm.register_task("fs_scan", FsScanTask,   default_affinity=(0, 1), layer=0)
     
     # ── Layer 1: display pipeline ──

@@ -346,6 +346,14 @@ class NetworkManager:
                         elif hasattr(iface, 'status'): connected_now = (iface.status() == 2)
                     except: pass
 
+                    ap_mode = False
+                    if name == 'wifi':
+                        try:
+                            ap = network.WLAN(network.AP_IF)
+                            ap_mode = ap.active() and (iface is ap)
+                        except:
+                            ap_mode = False
+
                     # 如果底層沒連接，或者 (底層連接了 但 應用層沒連接)，則關閉
                     # 換句話說：只有當 (底層連接 AND 應用層連接) 時才豁免
                     # 但用戶原話是 "當有任何成功連接的時候就不需要關閉接口"
@@ -353,7 +361,7 @@ class NetworkManager:
                     # 用戶補充說明: "我是指這種連接,成功建立了一條ws"
                     # 所以必須檢查 app_connected
                     
-                    should_keep = connected_now and app_connected
+                    should_keep = app_connected and (connected_now or ap_mode)
                     
                     if not should_keep:
                         if iface.active():

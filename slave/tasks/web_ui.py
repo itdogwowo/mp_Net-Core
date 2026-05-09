@@ -1,6 +1,7 @@
 import socket
 import json
 import time
+import os
 from lib.task import Task
 from lib.sys_bus import bus
 
@@ -11,6 +12,10 @@ class WebUITask(Task):
         self.sock = None
         self.clients = []
         self.app = ctx.get('app')
+        self.web_root = "web"
+        self._keep_alive_until = 0
+        self._keep_alive_owned = False
+        self._pending_wifi_connect = None
         
     def on_start(self):
         super().on_start()
@@ -62,6 +67,27 @@ class WebUITask(Task):
                     if cl in self.clients: self.clients.remove(cl)
                     cl.close()
 
+        if self._pending_wifi_connect:
+            self._pending_wifi_connect = None
+            try:
+                nm = bus.get_service("network_manager")
+                if nm:
+                    try:
+                        nm.disable_wifi()
+                    except:
+                        pass
+                    nm.enable_wifi()
+            except Exception as e:
+                print(f"Web WiFi Connect Error: {e}")
+
+        if self._keep_alive_until and time.time() > self._keep_alive_until:
+            if self._keep_alive_owned:
+                if bus.shared.get("manual_keep_alive"):
+                    bus.shared["manual_keep_alive"] = False
+                    bus.shared["app_connected"] = False
+                self._keep_alive_owned = False
+            self._keep_alive_until = 0
+
     def _handle_request(self, cl, request):
         try:
             req_str = request.decode('utf-8')
@@ -72,98 +98,65 @@ class WebUITask(Task):
             parts = first_line.split(' ')
             if len(parts) < 2: return
             method, path = parts[0], parts[1]
+            path = path.split('?', 1)[0]
             
             if path == '/' or path == '/index.html':
+                self._touch_keep_alive()
                 self._serve_file(cl, '/index.html')
+            elif path == '/app.js' or path == '/styles.css':
+                self._touch_keep_alive()
+                self._serve_file(cl, path)
+            elif path == '/api/wifi/status' and method == 'GET':
+                self._touch_keep_alive()
+                self._handle_wifi_status(cl)
+            elif path == '/api/wifi/scan' and method == 'GET':
+                self._touch_keep_alive()
+                self._handle_wifi_scan(cl)
+            elif path == '/api/wifi/connect' and method == 'POST':
+                self._touch_keep_alive()
+                body = self._extract_body(lines)
+                if body.strip().startswith('{'):
+                    self._handle_wifi_connect(cl, body)
+                else:
+                    self._send_text(cl, 400, "text/plain", "Body missing or invalid")
             elif path.startswith('/api/cmd') and method == 'POST':
                 # Find body
-                body = ""
-                for i, line in enumerate(lines):
-                    if line == "":
-                        body = "\r\n".join(lines[i+1:])
-                        break
+                body = self._extract_body(lines)
                 
                 # Simple check if body is JSON
                 if body.strip().startswith('{'):
                     self._handle_api(cl, body)
                 else:
-                    cl.send(b'HTTP/1.1 400 Bad Request\r\n\r\nBody missing or invalid')
+                    self._send_text(cl, 400, "text/plain", "Body missing or invalid")
             elif path == '/api/perf':
                 # Return performance metrics
                 perf = bus.shared.get('perf', {})
-                resp = json.dumps(perf)
-                cl.send('HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n' + resp)
+                self._send_json(cl, 200, perf)
             else:
-                 cl.send(b'HTTP/1.1 404 Not Found\r\n\r\n')
+                 self._send_text(cl, 404, "text/plain", "Not Found")
         except Exception as e:
             print(f"Web Request Error: {e}")
-            try: cl.send(b'HTTP/1.1 500 Internal Error\r\n\r\n')
+            try: self._send_text(cl, 500, "text/plain", "Internal Error")
             except: pass
 
     def _serve_file(self, cl, path):
-        # Basic HTML for testing
-        response = """<html>
-<head>
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Net-Light Control</title>
-<style>
-body { font-family: sans-serif; padding: 20px; background: #222; color: #eee; }
-button { padding: 10px 20px; font-size: 16px; margin: 5px; cursor: pointer; }
-.red { background: #d32f2f; color: white; border: none; }
-.green { background: #388e3c; color: white; border: none; }
-.blue { background: #1976d2; color: white; border: none; }
-pre { background: #333; padding: 10px; }
-</style>
-</head>
-<body>
-<h1>Net-Light Control</h1>
-<p>Status: <span id="status">Online</span></p>
-<p>Core 0: <span id="perf0">...</span> ms/loop (<span id="hz0">...</span> Hz)</p>
-<p>Core 1: <span id="perf1">...</span> ms/loop (<span id="hz1">...</span> Hz)</p>
-
-<h3>Test Controls</h3>
-<button class="green" onclick="cmd(0x1101, {'query_type':1})">Get Status</button>
-<button class="blue" onclick="send_cmd('status_get', {})">Status (Alias)</button>
-<button class="red" onclick="refresh_perf()">Refresh Perf</button>
-
-<div id="log"></div>
-
-<script>
-function log(msg) {
-    document.getElementById('log').innerHTML = '<pre>' + JSON.stringify(msg, null, 2) + '</pre>';
-}
-
-function cmd(c, p) {
-  fetch('/api/cmd', {
-    method: 'POST',
-    body: JSON.stringify({cmd: c, payload: p})
-  }).then(r=>r.json()).then(log).catch(e=>log(e));
-}
-
-function send_cmd(name, p) {
-    // Mapping for convenience
-    const cmds = {
-        'status_get': 0x1101
-    };
-    if(cmds[name]) cmd(cmds[name], p);
-}
-
-function refresh_perf() {
-    fetch('/api/perf')
-    .then(r=>r.json())
-    .then(d => {
-        if(d.core0_loop_ms) document.getElementById('perf0').innerText = d.core0_loop_ms.toFixed(3);
-        if(d.core0_loops_per_sec) document.getElementById('hz0').innerText = d.core0_loops_per_sec.toFixed(1);
-        
-        if(d.core1_loop_ms) document.getElementById('perf1').innerText = d.core1_loop_ms.toFixed(3);
-        if(d.core1_loops_per_sec) document.getElementById('hz1').innerText = d.core1_loops_per_sec.toFixed(1);
-    });
-}
-// Auto refresh
-setInterval(refresh_perf, 2000);
-</script>
-</body></html>"""
-        cl.send('HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n' + response)
+        file_path = self._web_path(path)
+        if file_path:
+            try:
+                st = os.stat(file_path)
+                size = st[6] if len(st) > 6 else None
+                ct = self._content_type(path)
+                self._send_headers(cl, 200, ct, size)
+                with open(file_path, "rb") as f:
+                    while True:
+                        chunk = f.read(1024)
+                        if not chunk:
+                            break
+                        cl.send(chunk)
+                return
+            except Exception as e:
+                print(f"Web Serve Error: {e}")
+        self._send_text(cl, 404, "text/plain", "Web file not found")
 
     def _handle_api(self, cl, body):
         try:
@@ -189,12 +182,232 @@ setInterval(refresh_perf, 2000);
                 }
                 
                 self.app.disp.dispatch(cmd_id, payload, ctx)
-                cl.send(b'HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{"status":"ok", "dispatched": true}')
+                self._send_json(cl, 200, {"status": "ok", "dispatched": True})
             else:
-                cl.send(b'HTTP/1.1 400 Bad Request\r\n\r\nMissing cmd')
+                self._send_text(cl, 400, "text/plain", "Missing cmd")
         except Exception as e:
             print(f"API Error: {e}")
-            cl.send(b'HTTP/1.1 500 Error\r\n\r\n' + str(e).encode())
+            self._send_json(cl, 500, {"status": "error", "error": str(e)})
+
+    def _touch_keep_alive(self):
+        was_keep = bool(bus.shared.get("manual_keep_alive", False))
+        nm = bus.get_service("network_manager")
+        if nm:
+            try:
+                nm.set_app_connected(True)
+            except:
+                bus.shared["manual_keep_alive"] = True
+                bus.shared["app_connected"] = True
+        else:
+            bus.shared["manual_keep_alive"] = True
+            bus.shared["app_connected"] = True
+        if not was_keep:
+            self._keep_alive_owned = True
+        keep_alive_secs = 300
+        try:
+            keep_alive_secs = int(bus.shared.get("Network", {}).get("wifi", {}).get("timeout", 300))
+        except:
+            keep_alive_secs = 300
+        if keep_alive_secs < 5:
+            keep_alive_secs = 5
+        self._keep_alive_until = time.time() + keep_alive_secs
+
+    def _extract_body(self, lines):
+        body = ""
+        for i, line in enumerate(lines):
+            if line == "":
+                body = "\r\n".join(lines[i+1:])
+                break
+        return body
+
+    def _send_headers(self, cl, code, content_type=None, content_length=None):
+        reason = "OK" if code == 200 else "Bad Request" if code == 400 else "Not Found" if code == 404 else "Error"
+        headers = f"HTTP/1.1 {code} {reason}\r\n"
+        headers += "Connection: close\r\n"
+        if content_type:
+            headers += f"Content-Type: {content_type}\r\n"
+        if content_length is not None:
+            headers += f"Content-Length: {content_length}\r\n"
+        headers += "\r\n"
+        cl.send(headers.encode())
+
+    def _send_text(self, cl, code, content_type, text):
+        body = text.encode() if isinstance(text, str) else text
+        self._send_headers(cl, code, content_type, len(body))
+        cl.send(body)
+
+    def _send_json(self, cl, code, obj):
+        body = json.dumps(obj).encode()
+        self._send_headers(cl, code, "application/json", len(body))
+        cl.send(body)
+
+    def _content_type(self, path):
+        if path.endswith(".html"):
+            return "text/html; charset=utf-8"
+        if path.endswith(".css"):
+            return "text/css; charset=utf-8"
+        if path.endswith(".js"):
+            return "application/javascript; charset=utf-8"
+        return "application/octet-stream"
+
+    def _web_path(self, path):
+        if not path.startswith("/"):
+            return None
+        if ".." in path:
+            return None
+        return self.web_root + path
+
+    def _handle_wifi_status(self, cl):
+        try:
+            import network
+            sta = network.WLAN(network.STA_IF)
+            ap = network.WLAN(network.AP_IF)
+            mode = "off"
+            active = False
+            connected = False
+            ip = ""
+            gw = ""
+            ssid = ""
+
+            try:
+                if sta.active():
+                    mode = "sta"
+                    active = True
+                    try:
+                        connected = bool(sta.isconnected())
+                    except:
+                        connected = False
+                    try:
+                        cfg = sta.ifconfig()
+                        ip = cfg[0]
+                        gw = cfg[2]
+                    except:
+                        pass
+            except:
+                pass
+
+            try:
+                if ap.active() and not active:
+                    mode = "ap"
+                    active = True
+                    try:
+                        cfg = ap.ifconfig()
+                        ip = cfg[0]
+                        gw = cfg[2]
+                    except:
+                        pass
+                    try:
+                        ssid = ap.config("essid")
+                    except:
+                        pass
+            except:
+                pass
+
+            if not ssid:
+                try:
+                    ssid = bus.shared.get("Network", {}).get("wifi", {}).get("ssid", "")
+                except:
+                    ssid = ""
+
+            self._send_json(cl, 200, {
+                "mode": mode,
+                "active": active,
+                "connected": connected,
+                "ip": ip,
+                "gw": gw,
+                "ssid": ssid,
+                "slave_id": bus.slave_id
+            })
+        except Exception as e:
+            self._send_json(cl, 500, {"status": "error", "error": str(e)})
+
+    def _handle_wifi_scan(self, cl):
+        try:
+            import network
+            try:
+                import binascii
+            except:
+                binascii = None
+
+            sta = network.WLAN(network.STA_IF)
+            try:
+                if not sta.active():
+                    sta.active(True)
+                    time.sleep(0.5)
+            except:
+                pass
+
+            nets = []
+            try:
+                res = sta.scan()
+                res.sort(key=lambda x: x[3], reverse=True)
+                for info in res:
+                    ssid_b = info[0]
+                    bssid_b = info[1]
+                    ch = info[2]
+                    rssi = info[3]
+                    auth = info[4]
+                    hidden = info[5]
+                    try:
+                        ssid = ssid_b.decode("utf-8") if ssid_b else ""
+                    except:
+                        ssid = ""
+                    bssid = ""
+                    if binascii and bssid_b:
+                        try:
+                            bssid = binascii.hexlify(bssid_b).decode()
+                        except:
+                            bssid = ""
+                    nets.append({
+                        "ssid": ssid,
+                        "bssid": bssid,
+                        "channel": ch,
+                        "rssi": rssi,
+                        "auth": auth,
+                        "hidden": hidden
+                    })
+            except Exception as e:
+                self._send_json(cl, 500, {"status": "error", "error": str(e), "networks": []})
+                return
+
+            self._send_json(cl, 200, {"status": "ok", "networks": nets})
+        except Exception as e:
+            self._send_json(cl, 500, {"status": "error", "error": str(e)})
+
+    def _handle_wifi_connect(self, cl, body):
+        try:
+            body = body.strip('\x00')
+            data = json.loads(body)
+            ssid = (data.get("ssid") or "").strip()
+            password = data.get("password") or ""
+            save = bool(data.get("save", True))
+
+            if not ssid:
+                self._send_json(cl, 400, {"status": "error", "error": "ssid required"})
+                return
+
+            if "Network" not in bus.shared:
+                bus.shared["Network"] = {}
+            if "wifi" not in bus.shared["Network"]:
+                bus.shared["Network"]["wifi"] = {}
+
+            wifi_cfg = bus.shared["Network"]["wifi"]
+            wifi_cfg["enable"] = 1
+            wifi_cfg["ssid"] = ssid
+            wifi_cfg["ssid_pw"] = password
+
+            if save:
+                try:
+                    from lib.ConfigManager import cfg_manager
+                    cfg_manager.save_from_bus(update_key="Network.wifi.ssid")
+                    cfg_manager.save_from_bus(update_key="Network.wifi.ssid_pw")
+                except Exception as e:
+                    print(f"Web WiFi Save Error: {e}")
+
+            self._pending_wifi_connect = {"ssid": ssid}
+            self._send_json(cl, 200, {"status": "ok", "queued": True})
+        except Exception as e:
+            self._send_json(cl, 500, {"status": "error", "error": str(e)})
 
     def on_stop(self):
         super().on_stop()
