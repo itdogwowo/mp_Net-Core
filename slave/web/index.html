@@ -105,21 +105,17 @@
             <section class="panel">
               <div class="panel__head">
                 <div class="panel__title">指令台</div>
-                <div class="panel__meta">你可以用自己的 WS 方式連到 MCU（此頁只做前端工具）</div>
+                <div class="panel__meta">透過裝置的 HTTP API 送出指令（/api/cmd）</div>
               </div>
               <div class="grid2">
                 <section class="card">
                   <div class="card__head">
-                    <div class="card__title">WS 連線</div>
-                    <button class="btn btn--ghost" id="btnWsToggle" type="button">連接</button>
+                    <div class="card__title">送出指令</div>
+                    <div></div>
                   </div>
                   <label class="field">
-                    <span class="field__label">WS URL</span>
-                    <input class="field__input" id="wsUrlInput" autocomplete="off" placeholder="ws://host:port/..." />
-                  </label>
-                  <label class="field">
-                    <span class="field__label">送出內容（Ctrl/Cmd + Enter）</span>
-                    <textarea class="field__input area" id="wsSendInput" rows="8"></textarea>
+                    <span class="field__label">JSON（cmd + payload，Ctrl/Cmd + Enter 送出）</span>
+                    <textarea class="field__input area" id="wsSendInput" rows="8" placeholder='{"cmd":"0x1003","payload":{}}'></textarea>
                   </label>
                   <div class="actions">
                     <button class="btn btn--primary" id="btnWsSend" type="button">送出</button>

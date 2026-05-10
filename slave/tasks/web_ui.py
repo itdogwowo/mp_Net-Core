@@ -15,6 +15,7 @@ class WebUITask(Task):
         self.web_root = "web"
         self._keep_alive_until = 0
         self._keep_alive_owned = False
+        self._last_keep_alive_touch = 0
         self._pending_wifi_connect = None
         
     def on_start(self):
@@ -39,7 +40,13 @@ class WebUITask(Task):
         # Accept new connections
         try:
             cl, addr = self.sock.accept()
-            cl.setblocking(False)
+            try:
+                cl.settimeout(2)
+            except:
+                try:
+                    cl.setblocking(True)
+                except:
+                    pass
             self.clients.append(cl)
             # print(f"Web Client connected: {addr}")
         except OSError:
@@ -135,9 +142,49 @@ class WebUITask(Task):
             else:
                  self._send_text(cl, 404, "text/plain", "Not Found")
         except Exception as e:
+            try:
+                if isinstance(e, OSError) and e.args and e.args[0] == 11:
+                    return
+            except:
+                pass
             print(f"Web Request Error: {e}")
             try: self._send_text(cl, 500, "text/plain", "Internal Error")
             except: pass
+
+    def _sleep_ms(self, ms):
+        try:
+            time.sleep_ms(ms)
+        except:
+            try:
+                time.sleep(ms / 1000)
+            except:
+                pass
+
+    def _send_all(self, cl, data, retry_ms=10, retry_n=80):
+        mv = memoryview(data)
+        off = 0
+        nmax = len(mv)
+        while off < nmax:
+            try:
+                n = cl.send(mv[off:])
+                if n is None:
+                    n = 0
+                if n > 0:
+                    off += n
+                    continue
+            except OSError as e:
+                if e.args and e.args[0] == 11:
+                    retry_n -= 1
+                    if retry_n <= 0:
+                        return False
+                    self._sleep_ms(retry_ms)
+                    continue
+                raise
+            retry_n -= 1
+            if retry_n <= 0:
+                return False
+            self._sleep_ms(retry_ms)
+        return True
 
     def _serve_file(self, cl, path):
         file_path = self._web_path(path)
@@ -152,9 +199,15 @@ class WebUITask(Task):
                         chunk = f.read(1024)
                         if not chunk:
                             break
-                        cl.send(chunk)
+                        if not self._send_all(cl, chunk):
+                            break
                 return
             except Exception as e:
+                try:
+                    if isinstance(e, OSError) and e.args and e.args[0] == 11:
+                        return
+                except:
+                    pass
                 print(f"Web Serve Error: {e}")
         self._send_text(cl, 404, "text/plain", "Web file not found")
 
@@ -233,6 +286,22 @@ class WebUITask(Task):
             self._send_json(cl, 500, {"status": "error", "error": str(e)})
 
     def _touch_keep_alive(self):
+        now = 0
+        try:
+            now = time.time()
+        except:
+            now = 0
+        if now and self._last_keep_alive_touch and (now - self._last_keep_alive_touch) < 1:
+            keep_alive_secs = 300
+            try:
+                keep_alive_secs = int(bus.shared.get("Network", {}).get("wifi", {}).get("timeout", 300))
+            except:
+                keep_alive_secs = 300
+            if keep_alive_secs < 5:
+                keep_alive_secs = 5
+            self._keep_alive_until = now + keep_alive_secs
+            return
+        self._last_keep_alive_touch = now or self._last_keep_alive_touch
         was_keep = bool(bus.shared.get("manual_keep_alive", False))
         nm = bus.get_service("network_manager")
         if nm:
@@ -272,17 +341,17 @@ class WebUITask(Task):
         if content_length is not None:
             headers += f"Content-Length: {content_length}\r\n"
         headers += "\r\n"
-        cl.send(headers.encode())
+        self._send_all(cl, headers.encode())
 
     def _send_text(self, cl, code, content_type, text):
         body = text.encode() if isinstance(text, str) else text
         self._send_headers(cl, code, content_type, len(body))
-        cl.send(body)
+        self._send_all(cl, body)
 
     def _send_json(self, cl, code, obj):
         body = json.dumps(obj).encode()
         self._send_headers(cl, code, "application/json", len(body))
-        cl.send(body)
+        self._send_all(cl, body)
 
     def _content_type(self, path):
         if path.endswith(".html"):
