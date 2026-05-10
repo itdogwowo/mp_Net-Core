@@ -1,43 +1,54 @@
 import struct
 
-# --- 跨平台兼容墊片 (PC 與 MicroPython 共享) ---
 import sys
 
-# 檢測是否為 MicroPython
 IS_MICROPYTHON = (sys.implementation.name == 'micropython')
 
 if not IS_MICROPYTHON:
-    # 這裡是 PC (Standard Python) 環境
-    # 定義模擬的 MicroPython 裝飾器
     class micropython:
         @staticmethod
         def viper(f): return f
         @staticmethod
         def native(f): return f
-    
-    # 定義模擬的 Viper 類型關鍵字，防止 NameError
     ptr8 = bytes
     ptr16 = bytes
     int32 = int
     uint16 = int
 else:
-    # 這裡是 MicroPython 環境
     import micropython
     import ubinascii as binascii
 
 if not IS_MICROPYTHON:
     import binascii
 
-# --- 協議常量 ---
 SOF = b"NL"
 CUR_VER = 4
 ADDR_BROADCAST = 0xFFFF
 MAX_LEN_DEFAULT = 8192
 
 HDR_FMT = "<2sBHHH"
-HDR_LEN = 9 # struct.calcsize(HDR_FMT)
+HDR_LEN = 9
 CRC_FMT = "<I"
 CRC_LEN = 4
+
+
+@micropython.viper
+def _viper_compact(buf, start: int, end: int, keep: int):
+    p = ptr8(buf)
+    s = int(p) + start
+    d = int(p)
+    for i in range(keep):
+        ptr8(d)[i] = ptr8(s)[i]
+
+
+@micropython.viper
+def _viper_append(buf, src, end: int, n: int):
+    p = ptr8(buf)
+    s = ptr8(src)
+    d = int(p) + end
+    for i in range(n):
+        ptr8(d)[i] = s[i]
+
 
 class Proto:
     @staticmethod
@@ -53,14 +64,14 @@ class Proto:
         crc_val = Proto.crc32_update(payload, crc_val)
         return header + payload + struct.pack(CRC_FMT, crc_val)
 
+
 class StreamParser:
     def __init__(self, max_len=MAX_LEN_DEFAULT):
         self.max_len = max_len
         self._buf = bytearray(max_len + HDR_LEN + CRC_LEN)
-        self._mv = memoryview(self._buf)
         self._start = 0
         self._end = 0
-        
+
     def feed(self, data):
         if not data:
             return
@@ -75,7 +86,7 @@ class StreamParser:
         if free < ln and self._start:
             keep = self._end - self._start
             if keep:
-                self._mv[:keep] = self._mv[self._start:self._end]
+                _viper_compact(self._buf, self._start, self._end, keep)
             self._start = 0
             self._end = keep
             free = cap - self._end
@@ -85,7 +96,7 @@ class StreamParser:
             self._end = 0
             return
 
-        self._mv[self._end:self._end + ln] = data
+        _viper_append(self._buf, data, self._end, ln)
         self._end += ln
 
     def pop(self):
@@ -117,9 +128,9 @@ class StreamParser:
 
             crc_start = self._start + 2
             crc_len = payload_end - crc_start
-            crc_calc = Proto.crc32_update(self._mv[crc_start:payload_end], 0)
+            crc_calc = Proto.crc32_update(self._buf[crc_start:payload_end], 0)
             if (crc_calc & 0xFFFFFFFF) == crc_received:
-                payload = self._mv[payload_start:payload_end]
+                payload = self._buf[payload_start:payload_end]
                 self._start += total_len
                 if self._start == self._end:
                     self._start = 0

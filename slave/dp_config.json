@@ -7,7 +7,7 @@
     "rotation": 0,
     "color_order": "RGB",
     "invert": true,
-    "spi": 2,
+    "spi": 1,
     "pins": {
       "dc": 13,
       "cs": 10,

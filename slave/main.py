@@ -57,7 +57,7 @@ def launcher():
     tm.register_task("dp_manager", DpManagerTask, default_affinity=(1, 0), layer=1)
     tm.register_task("jpeg_decode", JpegDecodeTask, default_affinity=(0, 1), layer=1)
     tm.register_task("dp_buffer", DpBufferTask, default_affinity=(0, 1), layer=1)
-    tm.register_task("display", DisplayTask, default_affinity=(1, 0), layer=1)
+    tm.register_task("display", DisplayTask, default_affinity=(0, 1), layer=1)
     
 #     bus.shared["fps_stats_enabled"] = False
     bus.shared["perf_enabled"] = False

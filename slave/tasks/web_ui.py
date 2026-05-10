@@ -269,7 +269,7 @@ class WebUITask(Task):
                                 cmd_def2 = self.app.store.get(cmd)
                                 if cmd_def2:
                                     try:
-                                        args = SchemaCodec.decode(cmd_def2, payload)
+                                        args = SchemaCodec.decode(cmd_def2, payload, self.app.store)
                                     except Exception as e:
                                         args = {"_decode_error": str(e)}
                                     rsp.append({"cmd": cmd, "name": cmd_def2.get("name", ""), "args": args})

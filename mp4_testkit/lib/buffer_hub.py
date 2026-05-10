@@ -6,6 +6,14 @@ _READY = micropython.const(1)
 _READING = micropython.const(2)
 
 
+@micropython.viper
+def _viper_copy(dst, src, n: int):
+    d = ptr8(dst)
+    s = ptr8(src)
+    for i in range(n):
+        d[i] = s[i]
+
+
 class AtomicStreamHub:
     IDLE = _IDLE
     READY = _READY
@@ -21,7 +29,7 @@ class AtomicStreamHub:
 
         self.size = size
         self.num_buffers = num_buffers
-        self._last_read_idx = None
+        self._last_read_idx = -1
 
         print("[BufferHub] Ready: {} KB total".format((size * num_buffers) // 1024))
 
@@ -34,46 +42,38 @@ class AtomicStreamHub:
         ptr = self._w_ptr
         if self._status[ptr] != _IDLE:
             return False
-
-        self._views[ptr][:] = source
-
+        _viper_copy(self._views[ptr], source, self.size)
         self._status[ptr] = _READY
         self._w_ptr = (ptr + 1) % self.num_buffers
-
         return True
 
     @micropython.native
     def read_into(self, target):
-        if self._last_read_idx is not None:
+        if self._last_read_idx != -1:
             self._status[self._last_read_idx] = _IDLE
-            self._last_read_idx = None
-
+            self._last_read_idx = -1
         ptr = self._r_ptr
         if self._status[ptr] != _READY:
             return False
-
-        target[:] = self._views[ptr]
-
+        _viper_copy(target, self._views[ptr], self.size)
         self._status[ptr] = _IDLE
         self._r_ptr = (ptr + 1) % self.num_buffers
-
         return True
 
     @micropython.native
     def release_read(self):
         idx = self._last_read_idx
-        if idx is not None:
+        if idx != -1:
             self._status[idx] = _IDLE
-            self._last_read_idx = None
+            self._last_read_idx = -1
 
     @micropython.native
     def flush(self):
         for i in range(self.num_buffers):
             self._status[i] = _IDLE
-
         self._w_ptr = 0
         self._r_ptr = 0
-        self._last_read_idx = None
+        self._last_read_idx = -1
 
     def get_fill_level(self):
         count = 0
@@ -104,7 +104,6 @@ class AtomicStreamHub:
             self._last_read_idx = ptr
             self._r_ptr = (ptr + 1) % self.num_buffers
             return self._views[ptr]
-
         return None
 
     def force_get_view(self):

@@ -10,7 +10,7 @@ class DisplayTask(Task):
         super().on_start()
         self._buf = ensure_dp_buffer_service(bus)
         self._lcd = None
-        self._swap_buf = None
+        self._read_buf = None
 
     def _resolve_lcd(self):
         if self._lcd is not None:
@@ -37,17 +37,19 @@ class DisplayTask(Task):
         if hub is None:
             return
 
-        rv = hub.get_read_view()
-        if rv is None:
+        hub_size = HDR_OUT + int(self._buf.get("max_frame_bytes", 0) or 0)
+        if self._read_buf is None or len(self._read_buf) < hub_size:
+            self._read_buf = bytearray(hub_size)
+
+        if not hub.read_into(self._read_buf):
             return
 
         try:
-            payload_len, seq, label_id, x, y, w, h, flags, fmt = unpack_out_header(rv)
+            payload_len, seq, label_id, x, y, w, h, flags, fmt = unpack_out_header(self._read_buf)
             payload_len = int(payload_len)
             if payload_len <= 0:
-                hub.release_read()
                 return
-            payload = rv[HDR_OUT : HDR_OUT + payload_len]
+            payload = self._read_buf[HDR_OUT : HDR_OUT + payload_len]
             try:
                 lcd.set_window(int(x), int(y), int(x) + int(w) - 1, int(y) + int(h) - 1)
             except Exception:
@@ -56,20 +58,7 @@ class DisplayTask(Task):
                 except Exception:
                     pass
 
-            pf = str(self._buf.get("pixel_format") or "")
-            if pf.endswith("_LE") and (payload_len & 1) == 0:
-                if self._swap_buf is None or len(self._swap_buf) < payload_len:
-                    self._swap_buf = bytearray(payload_len)
-                sb = self._swap_buf
-                j = 0
-                while j < payload_len:
-                    b0 = payload[j]
-                    sb[j] = payload[j + 1]
-                    sb[j + 1] = b0
-                    j += 2
-                lcd.write_data(memoryview(sb)[:payload_len])
-            else:
-                lcd.write_data(payload)
+            lcd.write_data(payload)
 
             self._buf["last_ms"] = time.ticks_ms()
             self._buf["last_err"] = ""
@@ -80,9 +69,3 @@ class DisplayTask(Task):
             except Exception:
                 pass
             self._lcd = None
-        finally:
-            try:
-                hub.release_read()
-            except Exception:
-                pass
-

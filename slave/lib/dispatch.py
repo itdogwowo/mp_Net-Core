@@ -45,7 +45,7 @@ class Dispatcher:
 
         # 2. 解析數據
         try:
-            args = SchemaCodec.decode(cmd_def, payload_bytes)
+            args = SchemaCodec.decode(cmd_def, payload_bytes, self.store)
             
             # 3. 調試輸出面板 (現代化風格)
             if self.debug_level >= 1:

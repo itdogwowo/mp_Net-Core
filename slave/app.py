@@ -11,6 +11,7 @@ class App:
         # 1. 核心組件
         self.store = SchemaStore()
         self.store.load_dir("/schema")
+        self.store.finalize()
         self.disp = Dispatcher(self.store)
         
         # 統一緩衝區管理

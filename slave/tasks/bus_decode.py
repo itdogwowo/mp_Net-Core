@@ -1,6 +1,6 @@
+import struct
 from lib.task import Task
 from lib.sys_bus import bus
-import struct
 
 
 class BusDecodeTask(Task):
@@ -9,6 +9,7 @@ class BusDecodeTask(Task):
         self.app = ctx["app"]
         self._buses = []
         self._parsers = {}
+        self._read_buf = None
 
     def on_start(self):
         super().on_start()
@@ -32,6 +33,10 @@ class BusDecodeTask(Task):
             for cb in circuit_list:
                 self._buses.append(cb)
 
+    def _ensure_read_buf(self, size):
+        if self._read_buf is None or len(self._read_buf) < size:
+            self._read_buf = bytearray(size)
+
     def loop(self):
         if not self.running:
             return
@@ -48,6 +53,7 @@ class BusDecodeTask(Task):
             hub = getattr(b, "rx_hub", None)
             if hub is None:
                 continue
+            self._ensure_read_buf(hub.size)
             p = self._parsers.get(id(b))
             if p is None:
                 p = self.app.create_parser()
@@ -56,13 +62,12 @@ class BusDecodeTask(Task):
             while True:
                 if used >= max_slots:
                     return
-                v = hub.get_read_view()
-                if v is None:
+                if not hub.read_into(self._read_buf):
                     break
-                ln = struct.unpack_from("<H", v, 0)[0]
+                ln = struct.unpack_from("<H", self._read_buf, 0)[0]
                 if ln <= 0:
                     continue
-                data = v[2:2 + ln]
+                data = self._read_buf[2:2 + ln]
                 self.app.handle_stream(
                     p,
                     data,
