@@ -2,6 +2,7 @@ import time, gc
 from lib.task import Task
 from lib.sys_bus import bus
 from lib.net_bus import NetBus
+from lib.bus_sources import BusSources
 from action.sys_actions import on_connect_request
 from lib.network_manager import NetworkManager
 from action.stream_actions import handle_supply_chain
@@ -38,6 +39,12 @@ class NetworkTask(Task):
         self.discovery_bus.connect(None, bus_sys["discovery_port"])
         bus.register_service("net_bus_ctrl", self.ctrl_bus)
         bus.register_service("net_bus_discovery", self.discovery_bus)
+        sources = bus.get_service("bus_sources")
+        if not sources:
+            sources = BusSources()
+            bus.register_service("bus_sources", sources)
+        sources.add(self.discovery_bus)
+        sources.add(self.ctrl_bus)
         
         self.hub = bus.get_service("pixel_stream")
         

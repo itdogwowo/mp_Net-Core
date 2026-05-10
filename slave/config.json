@@ -57,6 +57,12 @@
             }
         ]
     },
+    "CircuitDecode": {
+        "enable": 0,
+        "list": [
+            { "GPIO": { "uart": 0 } }
+        ]
+    },
     "I2C": {
         "enable": 0,
         "list": [

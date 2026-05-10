@@ -15,18 +15,29 @@ class BusDecodeTask(Task):
         self._buses = []
         self._parsers = {}
 
+    def _refresh_sources(self):
+        sources = bus.get_service("bus_sources")
+        if sources:
+            self._buses = list(sources.list() or [])
+            return
+        self._buses = []
+        ctrl = bus.get_service("net_bus_ctrl")
+        discv = bus.get_service("net_bus_discovery")
+        if ctrl:
+            self._buses.append(ctrl)
+        if discv:
+            self._buses.append(discv)
+        circuit_list = bus.get_service("circuit_bus_list")
+        if circuit_list:
+            for cb in circuit_list:
+                self._buses.append(cb)
+
     def loop(self):
         if not self.running:
             return
+        self._refresh_sources()
         if not self._buses:
-            ctrl = bus.get_service("net_bus_ctrl")
-            discv = bus.get_service("net_bus_discovery")
-            if ctrl:
-                self._buses.append(ctrl)
-            if discv:
-                self._buses.append(discv)
-            if not self._buses:
-                return
+            return
 
         buf_cfg = bus.shared.get("Buffer", {}) or {}
         max_slots = int(buf_cfg.get("decode_budget_slots", 32) or 0)
