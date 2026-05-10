@@ -3,78 +3,363 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Wi‑Fi 設定</title>
+    <title>Net‑Core Web</title>
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
     <div class="bg"></div>
-    <main class="shell">
-      <header class="hero">
-        <div class="hero__top">
-          <div class="brand">
-            <div class="brand__mark" aria-hidden="true"></div>
-            <div class="brand__text">
-              <div class="brand__title">Wi‑Fi 設定</div>
-              <div class="brand__sub" id="deviceLine">裝置：—</div>
-            </div>
+    <div class="app">
+      <aside class="side">
+        <div class="side__brand">
+          <div class="brand__mark" aria-hidden="true"></div>
+          <div class="side__meta">
+            <div class="side__title">Net‑Core</div>
+            <div class="side__sub" id="deviceLine">裝置：—</div>
           </div>
-          <div class="pill" id="netPill">狀態讀取中</div>
         </div>
-        <div class="hero__grid">
-          <section class="card">
-            <div class="card__head">
-              <div class="card__title">目前狀態</div>
-              <button class="btn btn--ghost" id="btnRefresh" type="button">更新</button>
-            </div>
-            <div class="kv">
-              <div class="kv__row"><div class="kv__k">模式</div><div class="kv__v" id="stMode">—</div></div>
-              <div class="kv__row"><div class="kv__k">SSID</div><div class="kv__v" id="stSsid">—</div></div>
-              <div class="kv__row"><div class="kv__k">IP</div><div class="kv__v" id="stIp">—</div></div>
-              <div class="kv__row"><div class="kv__k">Gateway</div><div class="kv__v" id="stGw">—</div></div>
-            </div>
-            <div class="hint" id="ipHint"></div>
-          </section>
-          <section class="card">
-            <div class="card__head">
-              <div class="card__title">連線設定</div>
-              <button class="btn btn--ghost" id="btnScan" type="button">掃描</button>
-            </div>
-            <form class="form" id="connectForm">
-              <label class="field">
-                <span class="field__label">SSID</span>
-                <input class="field__input" id="ssidInput" name="ssid" autocomplete="off" placeholder="選擇或輸入 Wi‑Fi 名稱" />
-              </label>
-              <label class="field">
-                <span class="field__label">密碼</span>
-                <div class="pw">
-                  <input class="field__input pw__input" id="pwInput" name="password" type="password" autocomplete="new-password" placeholder="若為開放網路可留空" />
-                  <button class="btn btn--tiny" id="btnTogglePw" type="button">顯示</button>
-                </div>
-              </label>
-              <label class="check">
-                <input class="check__box" id="saveCheck" type="checkbox" checked />
-                <span class="check__text">保存到裝置</span>
-              </label>
-              <div class="actions">
-                <button class="btn btn--primary" id="btnConnect" type="submit">連接</button>
-                <button class="btn btn--quiet" id="btnClear" type="button">清除</button>
+        <nav class="nav">
+          <a class="nav__item" href="#/wifi" data-route="wifi">
+            <span class="nav__dot"></span>
+            <span class="nav__label">Wi‑Fi 設定</span>
+          </a>
+          <a class="nav__item" href="#/console" data-route="console">
+            <span class="nav__dot"></span>
+            <span class="nav__label">指令台</span>
+          </a>
+          <a class="nav__item" href="#/mp4" data-route="mp4">
+            <span class="nav__dot"></span>
+            <span class="nav__label">MP4 處理器</span>
+          </a>
+        </nav>
+        <div class="side__foot">
+          <div class="pill pill--mut" id="netPill">狀態讀取中</div>
+        </div>
+      </aside>
+      <main class="main">
+        <header class="top">
+          <div class="top__title" id="pageTitle">Wi‑Fi 設定</div>
+          <div class="top__right">
+            <div class="pill" id="pagePill">—</div>
+          </div>
+        </header>
+        <div class="content">
+          <section class="page" id="page-wifi" data-page="wifi">
+            <div class="hero">
+              <div class="hero__grid">
+                <section class="card">
+                  <div class="card__head">
+                    <div class="card__title">目前狀態</div>
+                    <button class="btn btn--ghost" id="btnRefresh" type="button">更新</button>
+                  </div>
+                  <div class="kv">
+                    <div class="kv__row"><div class="kv__k">模式</div><div class="kv__v" id="stMode">—</div></div>
+                    <div class="kv__row"><div class="kv__k">SSID</div><div class="kv__v" id="stSsid">—</div></div>
+                    <div class="kv__row"><div class="kv__k">IP</div><div class="kv__v" id="stIp">—</div></div>
+                    <div class="kv__row"><div class="kv__k">Gateway</div><div class="kv__v" id="stGw">—</div></div>
+                  </div>
+                  <div class="hint" id="ipHint"></div>
+                </section>
+                <section class="card">
+                  <div class="card__head">
+                    <div class="card__title">連線設定</div>
+                    <button class="btn btn--ghost" id="btnScan" type="button">掃描</button>
+                  </div>
+                  <form class="form" id="connectForm">
+                    <label class="field">
+                      <span class="field__label">SSID</span>
+                      <input class="field__input" id="ssidInput" name="ssid" autocomplete="off" placeholder="選擇或輸入 Wi‑Fi 名稱" />
+                    </label>
+                    <label class="field">
+                      <span class="field__label">密碼</span>
+                      <div class="pw">
+                        <input class="field__input pw__input" id="pwInput" name="password" type="password" autocomplete="new-password" placeholder="若為開放網路可留空" />
+                        <button class="btn btn--tiny" id="btnTogglePw" type="button">顯示</button>
+                      </div>
+                    </label>
+                    <label class="check">
+                      <input class="check__box" id="saveCheck" type="checkbox" checked />
+                      <span class="check__text">保存到裝置</span>
+                    </label>
+                    <div class="actions">
+                      <button class="btn btn--primary" id="btnConnect" type="submit">連接</button>
+                      <button class="btn btn--quiet" id="btnClear" type="button">清除</button>
+                    </div>
+                    <div class="msg" id="msgLine" role="status" aria-live="polite"></div>
+                  </form>
+                </section>
               </div>
-              <div class="msg" id="msgLine" role="status" aria-live="polite"></div>
-            </form>
+            </div>
+            <section class="panel">
+              <div class="panel__head">
+                <div class="panel__title">可用網路</div>
+                <div class="panel__meta" id="scanMeta">—</div>
+              </div>
+              <div class="list" id="netList"></div>
+            </section>
+            <footer class="foot">
+              <div class="foot__muted">提示：如果裝置切換到新的 Wi‑Fi，瀏覽器可能需要改用新的 IP 重新開啟此頁。</div>
+            </footer>
+          </section>
+
+          <section class="page" id="page-console" data-page="console" hidden>
+            <section class="panel">
+              <div class="panel__head">
+                <div class="panel__title">指令台</div>
+                <div class="panel__meta">你可以用自己的 WS 方式連到 MCU（此頁只做前端工具）</div>
+              </div>
+              <div class="grid2">
+                <section class="card">
+                  <div class="card__head">
+                    <div class="card__title">WS 連線</div>
+                    <button class="btn btn--ghost" id="btnWsToggle" type="button">連接</button>
+                  </div>
+                  <label class="field">
+                    <span class="field__label">WS URL</span>
+                    <input class="field__input" id="wsUrlInput" autocomplete="off" placeholder="ws://host:port/..." />
+                  </label>
+                  <label class="field">
+                    <span class="field__label">送出內容（Ctrl/Cmd + Enter）</span>
+                    <textarea class="field__input area" id="wsSendInput" rows="8"></textarea>
+                  </label>
+                  <div class="actions">
+                    <button class="btn btn--primary" id="btnWsSend" type="button">送出</button>
+                    <button class="btn btn--quiet" id="btnWsClear" type="button">清除</button>
+                  </div>
+                  <div class="msg" id="cmdMsg" role="status" aria-live="polite"></div>
+                </section>
+                <section class="card">
+                  <div class="card__head">
+                    <div class="card__title">回覆</div>
+                    <div></div>
+                  </div>
+                  <pre class="pre" id="cmdOut">{}</pre>
+                </section>
+              </div>
+            </section>
+          </section>
+
+          <section class="page" id="page-mp4" data-page="mp4" hidden>
+            <section class="panel">
+              <div class="panel__head">
+                <div class="panel__title">MP4 處理器</div>
+                <div class="panel__meta">匯入 MP4 / 圖片序列 / JPK → 預覽 → 輸出 JPK</div>
+              </div>
+              <div class="grid2">
+                <section class="card">
+                  <div class="card__head">
+                    <div class="card__title">來源素材</div>
+                    <button class="btn btn--ghost" id="btnMp4Reset" type="button">重置</button>
+                  </div>
+                  <div class="drop" id="mp4Drop">
+                    <div class="drop__title">拖放檔案到這裡</div>
+                    <div class="drop__sub">支援 MP4、JPK、圖片（或資料夾）</div>
+                  </div>
+                  <label class="field">
+                    <span class="field__label">匯入方式</span>
+                    <select class="field__input" id="mp4ImportMode">
+                      <option value="files" selected>上傳檔案</option>
+                      <option value="folder">上傳資料夾</option>
+                    </select>
+                  </label>
+                  <label class="field" id="mp4ImportFilesWrap">
+                    <span class="field__label">選擇檔案（MP4 / JPK / 圖片）</span>
+                    <input class="field__input" id="mp4ImportFiles" type="file" multiple accept="video/mp4,.mp4,.jpk,image/*" />
+                  </label>
+                  <label class="field" id="mp4ImportFolderWrap" hidden>
+                    <span class="field__label">選擇資料夾（圖片序列）</span>
+                    <input class="field__input" id="mp4ImportFolder" type="file" webkitdirectory multiple />
+                  </label>
+                  <div class="scrub">
+                    <div class="scrub__row">
+                      <div class="scrub__k">Range</div>
+                      <input class="scrub__rng" id="mp4RangeStart" type="range" min="0" max="100" step="0.1" value="0" />
+                      <input class="scrub__rng" id="mp4RangeEnd" type="range" min="0" max="100" step="0.1" value="100" />
+                    </div>
+                    <div class="scrub__row">
+                      <div class="scrub__k">Scrub</div>
+                      <input class="scrub__rng" id="mp4Scrub" type="range" min="0" max="100" step="0.1" value="0" />
+                      <button class="btn btn--tiny" id="btnMp4Play" type="button">播放</button>
+                    </div>
+                    <div class="scrub__meta" id="mp4ScrubMeta">—</div>
+                  </div>
+                  <div class="vidWrap">
+                    <video id="mp4Video" class="vid" controls playsinline></video>
+                  </div>
+                  <div class="canvasWrap">
+                    <canvas id="mp4CanvasLive" class="canvas"></canvas>
+                  </div>
+                  <div class="msg" id="mp4Msg" role="status" aria-live="polite"></div>
+                </section>
+                <section class="card">
+                  <div class="card__head">
+                    <div class="card__title">抽幀設定</div>
+                    <button class="btn btn--primary" id="btnMp4Build" type="button">產生 jpk</button>
+                  </div>
+                  <div class="grid2mini">
+                    <label class="field">
+                      <span class="field__label">FPS</span>
+                      <input class="field__input" id="mp4Fps" type="number" min="1" max="30" value="10" />
+                    </label>
+                    <label class="field">
+                      <span class="field__label">步進模式</span>
+                      <select class="field__input" id="mp4StepMode">
+                        <option value="fps">FPS</option>
+                        <option value="frames" selected>相隔幾張</option>
+                      </select>
+                    </label>
+                    <label class="field">
+                      <span class="field__label">最大片數</span>
+                      <input class="field__input" id="mp4Max" type="number" min="1" max="2000" value="300" />
+                    </label>
+                    <label class="field">
+                      <span class="field__label">相隔幾張（1=全部）</span>
+                      <input class="field__input" id="mp4StepFrames" type="number" min="1" max="100000" value="1" />
+                    </label>
+                    <label class="field">
+                      <span class="field__label">JPEG 品質（0~1）</span>
+                      <input class="field__input" id="mp4Q" type="number" step="0.05" min="0.2" max="1" value="0.8" />
+                    </label>
+                    <label class="field">
+                      <span class="field__label">JPEG 上限（KB / 0=不限制）</span>
+                      <input class="field__input" id="mp4CapKB" type="number" min="0" max="5000" value="0" />
+                    </label>
+                    <label class="field">
+                      <span class="field__label">輸出寬度（px）</span>
+                      <input class="field__input" id="mp4W" type="number" min="64" max="1920" value="480" />
+                    </label>
+                    <label class="field">
+                      <span class="field__label">輸出高度（px / 0=自動）</span>
+                      <input class="field__input" id="mp4H" type="number" min="0" max="1920" value="0" />
+                    </label>
+                    <label class="field">
+                      <span class="field__label">縮放模式</span>
+                      <select class="field__input" id="mp4ResizeMode">
+                        <option value="contain" selected>contain</option>
+                        <option value="cover">cover</option>
+                        <option value="stretch">stretch</option>
+                      </select>
+                    </label>
+                    <label class="field">
+                      <span class="field__label">旋轉</span>
+                      <select class="field__input" id="mp4Rot">
+                        <option value="0" selected>0°</option>
+                        <option value="90">90°</option>
+                        <option value="180">180°</option>
+                        <option value="-90">270°</option>
+                      </select>
+                    </label>
+                  </div>
+                  <details class="fold" id="mp4Adv">
+                    <summary class="fold__sum">進階設定</summary>
+                    <div class="fold__body">
+                      <div class="grid2mini">
+                        <label class="field">
+                          <span class="field__label">起始時間（秒）</span>
+                          <input class="field__input" id="mp4Start" type="number" step="0.01" min="0" value="0" />
+                        </label>
+                        <label class="field">
+                          <span class="field__label">結束時間（秒 / 0=直到結尾）</span>
+                          <input class="field__input" id="mp4End" type="number" step="0.01" min="0" value="0" />
+                        </label>
+                        <label class="field">
+                          <span class="field__label">自動適配最大片數</span>
+                          <select class="field__input" id="mp4AutoFit">
+                            <option value="on" selected>開</option>
+                            <option value="off">關</option>
+                          </select>
+                        </label>
+                        <label class="field">
+                          <span class="field__label">背景色（contain）</span>
+                          <input class="field__input" id="mp4Bg" type="text" value="#000000" />
+                        </label>
+                        <label class="field">
+                          <span class="field__label">灰階</span>
+                          <select class="field__input" id="mp4Gray">
+                            <option value="off" selected>關</option>
+                            <option value="on">開</option>
+                          </select>
+                        </label>
+                        <label class="field">
+                          <span class="field__label">Flip X</span>
+                          <select class="field__input" id="mp4FlipX">
+                            <option value="off" selected>關</option>
+                            <option value="on">開</option>
+                          </select>
+                        </label>
+                        <label class="field">
+                          <span class="field__label">Flip Y</span>
+                          <select class="field__input" id="mp4FlipY">
+                            <option value="off" selected>關</option>
+                            <option value="on">開</option>
+                          </select>
+                        </label>
+                        <label class="field">
+                          <span class="field__label">裁切（%）啟用</span>
+                          <select class="field__input" id="mp4CropOn">
+                            <option value="off" selected>關</option>
+                            <option value="on">開</option>
+                          </select>
+                        </label>
+                        <label class="field">
+                          <span class="field__label">裁切 X（0~100）</span>
+                          <input class="field__input" id="mp4CropX" type="number" step="0.1" min="0" max="100" value="0" />
+                        </label>
+                        <label class="field">
+                          <span class="field__label">裁切 Y（0~100）</span>
+                          <input class="field__input" id="mp4CropY" type="number" step="0.1" min="0" max="100" value="0" />
+                        </label>
+                        <label class="field">
+                          <span class="field__label">裁切 W（0~100）</span>
+                          <input class="field__input" id="mp4CropW" type="number" step="0.1" min="1" max="100" value="100" />
+                        </label>
+                        <label class="field">
+                          <span class="field__label">裁切 H（0~100）</span>
+                          <input class="field__input" id="mp4CropH" type="number" step="0.1" min="1" max="100" value="100" />
+                        </label>
+                        <label class="field">
+                          <span class="field__label">輸出資料夾</span>
+                          <input class="field__input" id="mp4Folder" type="text" value="frames" />
+                        </label>
+                        <label class="field">
+                          <span class="field__label">檔名前綴</span>
+                          <input class="field__input" id="mp4Prefix" type="text" value="" />
+                        </label>
+                        <label class="field">
+                          <span class="field__label">數字補零位數</span>
+                          <input class="field__input" id="mp4Pad" type="number" min="2" max="10" value="6" />
+                        </label>
+                        <label class="field">
+                          <span class="field__label">tar 檔名</span>
+                          <input class="field__input" id="mp4TarName" type="text" value="output" />
+                        </label>
+                      </div>
+                      <label class="check">
+                        <input class="check__box" id="mp4DlManifest" type="checkbox" checked />
+                        <span class="check__text">同時下載 manifest.json</span>
+                      </label>
+                      <div class="actions">
+                        <button class="btn btn--ghost" id="btnMp4Preview" type="button">預覽當前設定</button>
+                        <input class="field__input mini" id="mp4PreviewT" type="number" step="0.01" min="0" value="0" />
+                      </div>
+                      <div class="hint">預覽畫面已顯示於左側 After。</div>
+                    </div>
+                  </details>
+                  <div class="kv">
+                    <div class="kv__row"><div class="kv__k">影片長度</div><div class="kv__v" id="mp4Dur">—</div></div>
+                    <div class="kv__row"><div class="kv__k">輸出預估</div><div class="kv__v" id="mp4Est">—</div></div>
+                  </div>
+                  <div class="prog">
+                    <div class="prog__bar"><div class="prog__fill" id="mp4Prog"></div></div>
+                    <div class="prog__txt" id="mp4ProgText">—</div>
+                  </div>
+                  <div class="hint">輸出 .jpk（JPK1 串流包），可直接給 MCU 使用。</div>
+                </section>
+              </div>
+            </section>
           </section>
         </div>
-      </header>
-      <section class="panel">
-        <div class="panel__head">
-          <div class="panel__title">可用網路</div>
-          <div class="panel__meta" id="scanMeta">—</div>
-        </div>
-        <div class="list" id="netList"></div>
-      </section>
-      <footer class="foot">
-        <div class="foot__muted">提示：如果裝置切換到新的 Wi‑Fi，瀏覽器可能需要改用新的 IP 重新開啟此頁。</div>
-      </footer>
-    </main>
-    <script src="/app.js"></script>
+      </main>
+    </div>
+    <script type="module" src="/app.mjs"></script>
   </body>
 </html>

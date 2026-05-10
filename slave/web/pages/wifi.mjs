@@ -1,13 +1,12 @@
-(() => {
-  const el = (id) => document.getElementById(id);
+export const init = async (ctx) => {
+  const el = ctx.el;
+
   const netList = el("netList");
   const scanMeta = el("scanMeta");
   const msgLine = el("msgLine");
   const ssidInput = el("ssidInput");
   const pwInput = el("pwInput");
   const saveCheck = el("saveCheck");
-  const netPill = el("netPill");
-  const deviceLine = el("deviceLine");
   const stMode = el("stMode");
   const stSsid = el("stSsid");
   const stIp = el("stIp");
@@ -23,35 +22,7 @@
   const state = {
     lastScanAt: 0,
     connecting: false,
-    pollTimer: null,
-  };
-
-  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-
-  const fetchJson = async (url, opts = {}) => {
-    const ctl = new AbortController();
-    const t = setTimeout(() => ctl.abort(), opts.timeoutMs ?? 8000);
-    try {
-      const res = await fetch(url, {
-        ...opts,
-        headers: {
-          "Content-Type": "application/json",
-          ...(opts.headers || {}),
-        },
-        signal: ctl.signal,
-      });
-      const text = await res.text();
-      let data = null;
-      try {
-        data = text ? JSON.parse(text) : null;
-      } catch {
-        data = { raw: text };
-      }
-      if (!res.ok) throw Object.assign(new Error("HTTP " + res.status), { data });
-      return data;
-    } finally {
-      clearTimeout(t);
-    }
+    scannedOnce: false,
   };
 
   const setMsg = (kind, text) => {
@@ -79,7 +50,14 @@
 
   const renderNetworks = (list) => {
     netList.innerHTML = "";
-    if (!Array.isArray(list) || list.length === 0) {
+    if (!Array.isArray(list)) {
+      const empty = document.createElement("div");
+      empty.className = "net";
+      empty.textContent = "尚未掃描。需要列表時請按「掃描」，或直接手動輸入 SSID。";
+      netList.appendChild(empty);
+      return;
+    }
+    if (list.length === 0) {
       const empty = document.createElement("div");
       empty.className = "net";
       empty.textContent = "未掃描到網路。可以再按一次掃描，或手動輸入 SSID。";
@@ -151,30 +129,26 @@
     const ip = st?.ip || "—";
     const gw = st?.gw || "—";
     const ssid = st?.ssid || "—";
-    const slaveId = st?.slave_id || "";
 
     stMode.textContent = mode;
     stSsid.textContent = ssid;
     stIp.textContent = ip;
     stGw.textContent = gw;
-    deviceLine.textContent = slaveId ? "裝置：" + slaveId : "裝置：—";
 
     if (connected) {
-      netPill.textContent = "已連線";
-      netPill.style.color = "rgba(73,247,177,.95)";
-      netPill.style.borderColor = "rgba(73,247,177,.25)";
+      ctx.setPagePill("good", "已連線");
       ipHint.innerHTML = ip && ip !== "—" ? `可嘗試用新 IP 開啟：<span style="font-family:var(--mono)">${ip}</span>` : "";
     } else {
-      netPill.textContent = mode === "ap" ? "AP 模式" : "未連線";
-      netPill.style.color = mode === "ap" ? "rgba(255,207,90,.95)" : "rgba(170,179,214,.95)";
-      netPill.style.borderColor = mode === "ap" ? "rgba(255,207,90,.25)" : "rgba(255,255,255,.10)";
+      ctx.setPagePill(mode === "ap" ? "warn" : "info", mode === "ap" ? "AP 模式" : "未連線");
       ipHint.textContent = "";
     }
   };
 
-  const refreshStatus = async (silent = false) => {
+  const refresh = async (silent = false) => {
     try {
-      const st = await fetchJson("/api/wifi/status", { timeoutMs: 5000 });
+      const st = await ctx.fetchJson("/api/wifi/status", { timeoutMs: 5000 });
+      ctx.state.wifiStatus = st;
+      ctx.renderGlobalStatus(st);
       renderStatus(st);
       if (!silent) setMsg("info", "狀態已更新");
       return st;
@@ -185,11 +159,12 @@
   };
 
   const scan = async () => {
+    state.scannedOnce = true;
     btnScan.disabled = true;
     scanMeta.textContent = "掃描中…";
     setMsg("info", "正在掃描附近 Wi‑Fi");
     try {
-      const res = await fetchJson("/api/wifi/scan", { timeoutMs: 12000 });
+      const res = await ctx.fetchJson("/api/wifi/scan", { timeoutMs: 12000 });
       const list = res?.networks || [];
       renderNetworks(list);
       state.lastScanAt = Date.now();
@@ -217,7 +192,7 @@
     setMsg("info", "已送出連接請求，裝置可能會切換網路");
 
     try {
-      await fetchJson("/api/wifi/connect", {
+      await ctx.fetchJson("/api/wifi/connect", {
         method: "POST",
         body: JSON.stringify({ ssid, password: password || "", save: !!save }),
         timeoutMs: 5000,
@@ -233,8 +208,8 @@
 
     let ok = false;
     for (let i = 0; i < 12; i++) {
-      await sleep(1500);
-      const st = await refreshStatus(true);
+      await ctx.sleep(1500);
+      const st = await refresh(true);
       if (st?.connected) {
         ok = true;
         break;
@@ -268,7 +243,7 @@
   });
 
   btnScan.addEventListener("click", () => scan());
-  btnRefresh.addEventListener("click", () => refreshStatus());
+  btnRefresh.addEventListener("click", () => refresh());
 
   connectForm.addEventListener("submit", (ev) => {
     ev.preventDefault();
@@ -278,10 +253,14 @@
     connect(ssid, password, saveCheck.checked);
   });
 
-  const boot = async () => {
-    await refreshStatus(true);
-    await scan();
-  };
+  renderNetworks(null);
+  scanMeta.textContent = "尚未掃描";
+  await refresh(true);
 
-  boot();
-})();
+  return {
+    onShow: () => {
+      const st = ctx.state.wifiStatus;
+      if (st) renderStatus(st);
+    },
+  };
+};

@@ -103,9 +103,6 @@ class WebUITask(Task):
             if path == '/' or path == '/index.html':
                 self._touch_keep_alive()
                 self._serve_file(cl, '/index.html')
-            elif path == '/app.js' or path == '/styles.css':
-                self._touch_keep_alive()
-                self._serve_file(cl, path)
             elif path == '/api/wifi/status' and method == 'GET':
                 self._touch_keep_alive()
                 self._handle_wifi_status(cl)
@@ -132,6 +129,9 @@ class WebUITask(Task):
                 # Return performance metrics
                 perf = bus.shared.get('perf', {})
                 self._send_json(cl, 200, perf)
+            elif method == 'GET' and self._is_static_path(path):
+                self._touch_keep_alive()
+                self._serve_file(cl, path)
             else:
                  self._send_text(cl, 404, "text/plain", "Not Found")
         except Exception as e:
@@ -164,25 +164,68 @@ class WebUITask(Task):
             body = body.strip('\x00')
             cmd_data = json.loads(body)
             cmd_id = cmd_data.get('cmd')
-            payload = cmd_data.get('payload', {})
+            payload_obj = cmd_data.get('payload', {})
             
             if self.app and cmd_id:
-                # Convert cmd_id to int if it's hex string
-                if isinstance(cmd_id, str) and cmd_id.startswith('0x'):
-                    cmd_id = int(cmd_id, 16)
-                
-                # Mock send function
-                def mock_send(data):
-                    pass
+                if isinstance(cmd_id, str):
+                    s = cmd_id.strip().lower()
+                    if s.startswith('0x'):
+                        cmd_id = int(s, 16)
+                    else:
+                        cmd_id = int(s)
+
+                if not isinstance(payload_obj, dict):
+                    payload_obj = {}
+
+                from lib.schema_codec import SchemaCodec
+                from lib.proto import StreamParser
+
+                cmd_def = self.app.store.get(cmd_id)
+                if not cmd_def:
+                    self._send_json(cl, 400, {"status": "error", "error": "Unknown cmd"})
+                    return
+
+                try:
+                    payload_bytes = SchemaCodec.encode(cmd_def, payload_obj)
+                except Exception as e:
+                    self._send_json(cl, 400, {"status": "error", "error": "Payload encode failed", "detail": str(e)})
+                    return
+
+                frames = []
+                def collect_send(data):
+                    try:
+                        frames.append(data)
+                    except:
+                        pass
 
                 ctx = {
                     "app": self.app,
                     "transport": "WebUI",
-                    "send": mock_send 
+                    "send": collect_send
                 }
-                
-                self.app.disp.dispatch(cmd_id, payload, ctx)
-                self._send_json(cl, 200, {"status": "ok", "dispatched": True})
+
+                self.app.disp.dispatch(cmd_id, payload_bytes, ctx)
+
+                rsp = []
+                if frames:
+                    parser = StreamParser(max_len=4096 * 4)
+                    for fr in frames:
+                        try:
+                            parser.feed(fr)
+                            for ver, addr, cmd, payload in parser.pop():
+                                cmd_def2 = self.app.store.get(cmd)
+                                if cmd_def2:
+                                    try:
+                                        args = SchemaCodec.decode(cmd_def2, payload)
+                                    except Exception as e:
+                                        args = {"_decode_error": str(e)}
+                                    rsp.append({"cmd": cmd, "name": cmd_def2.get("name", ""), "args": args})
+                                else:
+                                    rsp.append({"cmd": cmd, "name": "", "len": len(payload)})
+                        except Exception as e:
+                            rsp.append({"_frame_error": str(e)})
+
+                self._send_json(cl, 200, {"status": "ok", "cmd": cmd_id, "name": cmd_def.get("name", ""), "responses": rsp})
             else:
                 self._send_text(cl, 400, "text/plain", "Missing cmd")
         except Exception as e:
@@ -248,6 +291,8 @@ class WebUITask(Task):
             return "text/css; charset=utf-8"
         if path.endswith(".js"):
             return "application/javascript; charset=utf-8"
+        if path.endswith(".mjs"):
+            return "application/javascript; charset=utf-8"
         return "application/octet-stream"
 
     def _web_path(self, path):
@@ -256,6 +301,23 @@ class WebUITask(Task):
         if ".." in path:
             return None
         return self.web_root + path
+
+    def _is_static_path(self, path):
+        if not path.startswith("/"):
+            return False
+        if ".." in path:
+            return False
+        if path.startswith("/api/"):
+            return False
+        if path == "/":
+            return False
+        if path.endswith(".html") or path.endswith(".css") or path.endswith(".js") or path.endswith(".mjs"):
+            return True
+        if path.endswith(".png") or path.endswith(".jpg") or path.endswith(".jpeg") or path.endswith(".svg"):
+            return True
+        if path.endswith(".json") or path.endswith(".txt") or path.endswith(".ico"):
+            return True
+        return False
 
     def _handle_wifi_status(self, cl):
         try:
