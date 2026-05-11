@@ -1,9 +1,11 @@
 from lib.task import Task
 from lib.sys_bus import bus
+from lib.log_service import get_log
 from lib.fs_manager import fs
 
 
 class FsScanTask(Task):
+    log_schema = ["fs_scan_total", "fs_scan_progress", "fs_scan_done"]
     def on_start(self):
         super().on_start()
         self._phase = 0  # 0=idle, 1=collect, 2=hash, 3=finalize, 4=shutdown
@@ -13,7 +15,7 @@ class FsScanTask(Task):
             return
 
         if self._phase == 0:
-            if not bus.shared.get("fs_scan_requested"):
+            if not self.fcache_get("fs_scan_requested"):
                 self._shutdown()
                 return
             fs.scan_init()
@@ -26,12 +28,13 @@ class FsScanTask(Task):
 
         if self._phase == 2:
             fs.scan_step()
-            if bus.shared.get("fs_scan_done"):
+            if self.fcache_get("fs_scan_done"):
                 self._phase = 3
             return
 
         if self._phase == 3:
             fs.finalize_scan()
+            self.fcache_flush()
             bus.shared["fs_scan_requested"] = False
             self._shutdown()
             return

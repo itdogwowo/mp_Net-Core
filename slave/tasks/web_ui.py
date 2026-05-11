@@ -4,6 +4,7 @@ import time
 import os
 from lib.task import Task
 from lib.sys_bus import bus
+from lib.log_service import get_log
 
 class WebUITask(Task):
     def __init__(self, name, ctx):
@@ -29,9 +30,9 @@ class WebUITask(Task):
             self.sock.bind(addr)
             self.sock.listen(1)
             self.sock.setblocking(False)
-            print(f"🌍 [WebUI] Listening on port {self.port}")
+            get_log().info(f"🌍 [WebUI] Listening on port {self.port}")
         except Exception as e:
-            print(f"❌ [WebUI] Start failed: {e}")
+            get_log().error(f"❌ [WebUI] Start failed: {e}")
             self.sock = None
 
     def loop(self):
@@ -85,7 +86,7 @@ class WebUITask(Task):
                         pass
                     nm.enable_wifi()
             except Exception as e:
-                print(f"Web WiFi Connect Error: {e}")
+                get_log().error(f"Web WiFi Connect Error: {e}")
 
         if self._keep_alive_until and time.time() > self._keep_alive_until:
             if self._keep_alive_owned:
@@ -147,7 +148,7 @@ class WebUITask(Task):
                     return
             except:
                 pass
-            print(f"Web Request Error: {e}")
+            get_log().error(f"Web Request Error: {e}")
             try: self._send_text(cl, 500, "text/plain", "Internal Error")
             except: pass
 
@@ -208,7 +209,7 @@ class WebUITask(Task):
                         return
                 except:
                     pass
-                print(f"Web Serve Error: {e}")
+                get_log().error(f"Web Serve Error: {e}")
         self._send_text(cl, 404, "text/plain", "Web file not found")
 
     def _handle_api(self, cl, body):
@@ -282,7 +283,7 @@ class WebUITask(Task):
             else:
                 self._send_text(cl, 400, "text/plain", "Missing cmd")
         except Exception as e:
-            print(f"API Error: {e}")
+            get_log().error(f"API Error: {e}")
             self._send_json(cl, 500, {"status": "error", "error": str(e)})
 
     def _touch_keep_alive(self):
@@ -533,7 +534,7 @@ class WebUITask(Task):
                     cfg_manager.save_from_bus(update_key="Network.wifi.ssid")
                     cfg_manager.save_from_bus(update_key="Network.wifi.ssid_pw")
                 except Exception as e:
-                    print(f"Web WiFi Save Error: {e}")
+                    get_log().error(f"Web WiFi Save Error: {e}")
 
             self._pending_wifi_connect = {"ssid": ssid}
             self._send_json(cl, 200, {"status": "ok", "queued": True})
@@ -549,4 +550,4 @@ class WebUITask(Task):
             try: cl.close()
             except: pass
         self.clients = []
-        print("WebUI Stopped")
+        get_log().info("WebUI Stopped")

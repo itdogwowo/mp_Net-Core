@@ -20,7 +20,8 @@ from lib.log_service import get_log
 from apa102 import APA102
 
 def launcher():
-    print(f"📂 [FS] Initializing File System Manager...")
+    log = get_log()
+    log.info("📂 [FS] Initializing File System Manager...")
     
     st_LED = bus.get_service("st_LED")
     
@@ -43,6 +44,13 @@ def launcher():
 
     bus.register_service("log", get_log())
     
+    log_cfg = bus.shared.get("Log", {})
+    bus.shared["log_print"] = log_cfg.get("log_print", True)
+    bus.shared["log_print_interval_ms"] = log_cfg.get("print_interval_ms", 1000)
+    bus.shared["log_print_levels"] = log_cfg.get("print_levels", ["info", "warn", "error", "immediate"])
+    bus.shared["log_print_params"] = log_cfg.get("print_params", True)
+    bus.shared["log_record"] = log_cfg.get("record_states", True)
+    
     # ── Layer 0: 網路 + 通訊 + FS 掃描，最先啟動 ──
     tm.register_task("log", LogTask, default_affinity=(1, 0), layer=0)
     tm.register_task("network", NetworkTask, default_affinity=(1, 0), layer=0)
@@ -59,30 +67,29 @@ def launcher():
     tm.register_task("dp_buffer", DpBufferTask, default_affinity=(0, 1), layer=1)
     tm.register_task("display", DisplayTask, default_affinity=(0, 1), layer=1)
     
-#     bus.shared["fps_stats_enabled"] = False
     bus.shared["perf_enabled"] = False
-#     bus.shared["log_print"] = False
-#     bus.shared["log_record"] = False
+
+    log.allocate()
 
     try:
-        print("✨ Starting Core 1 Runner...")
+        log.info("✨ Starting Core 1 Runner...")
         _thread.start_new_thread(tm.runner_loop, (1,))
 
-        print(f"✨ NetBus System Online: {bus.slave_id}")
-        print("✨ Starting Core 0 Runner...")
+        log.info("✨ NetBus System Online: {}".format(bus.slave_id))
+        log.info("✨ Starting Core 0 Runner...")
         tm.runner_loop(0)
 
     except KeyboardInterrupt:
-        print("\n👋 User stop requested.")
+        log.warn("👋 User stop requested.")
     except Exception as e:
-        print(f"❌ System Error: {e}")
+        log.error("❌ System Error: {}".format(e))
     finally:
         bus.shared["engine_run"] = False
-        print("🛑 All cores stopping...")
+        log.info("🛑 All cores stopping...")
         time.sleep_ms(500)
         st_LED.big_buffer = bytearray(st_LED.total_bytes) 
         st_LED.show_all()
-        print("🏁 Clean Exit.")
+        log.info("🏁 Clean Exit.")
 
 if __name__ == "__main__":
     launcher()

@@ -305,7 +305,8 @@ class FileSystemManager:
         """
         if self.scanning: return
         from lib.sys_bus import bus
-        print("🔄 [FS] Scan requested (Queued for Core 1)")
+        from lib.log_service import get_log
+        get_log().info("FS Scan requested (Queued for Core 1)")
         bus.shared["fs_scan_requested"] = True
 
     def scan_init(self):
@@ -332,7 +333,7 @@ class FileSystemManager:
                     else:
                         file_list.append(full_path)
             except Exception as e:
-                print(f"  ⚠️ Scan collect error {dir_path}: {e}")
+                get_log().error("Scan collect error {}: {}".format(dir_path, e))
         _collect("/")
 
         self.scanning = True
@@ -341,9 +342,12 @@ class FileSystemManager:
         self._scan_idx = 0
 
         from lib.sys_bus import bus
+        from lib.log_service import get_log
         bus.shared["fs_scan_total"] = len(file_list)
         bus.shared["fs_scan_progress"] = 0
-        print(f"🔍 [FS] Scan phase 1: {len(file_list)} files to hash (Core 1)")
+        get_log().set_metric("fs_scan_total", len(file_list))
+        get_log().set_metric("fs_scan_progress", 0)
+        get_log().info("FS Scan phase 1: {} files to hash (Core 1)".format(len(file_list)))
 
     def scan_step(self):
         """
@@ -352,13 +356,15 @@ class FileSystemManager:
         Yields every 256KB to keep interrupts responsive.
         """
         from lib.sys_bus import bus
+        from lib.log_service import get_log
 
         if not self.scanning or self._scan_idx >= len(self._scan_files):
             bus.shared["fs_scan_result"] = self._scan_manifest
             bus.shared["fs_scan_done"] = True
+            get_log().set_metric("fs_scan_done", 1)
             self.scanning = False
             total = len(self._scan_files)
-            print(f"✅ [FS] Scan complete (Core 1). Found {total} files. Handing over to Core 0...")
+            get_log().info("FS Scan complete (Core 1). Found {} files. Handing over to Core 0...".format(total))
             return True
 
         path = self._scan_files[self._scan_idx]
@@ -368,7 +374,7 @@ class FileSystemManager:
         # Fast-path abort check between files
         if not bus.shared.get("engine_run", True):
             self.scanning = False
-            print("⏹ [FS] Scan aborted by Core 0")
+            get_log().warn("FS Scan aborted by Core 0")
             return False
 
         try:
@@ -389,25 +395,28 @@ class FileSystemManager:
                         chunk_since_yield = 0
                         if not bus.shared.get("engine_run", True):
                             self.scanning = False
-                            print("⏹ [FS] Scan aborted by Core 0")
+                            get_log().warn("FS Scan aborted by Core 0")
                             return False
             sha = ubinascii.hexlify(h.digest()).decode()
             self._scan_manifest[path] = {"s": size, "h": sha}
         except Exception as e:
-            print(f"  ⚠️ Scan error {path}: {e}")
+            get_log().error("Scan error {}: {}".format(path, e))
 
         bus.shared["fs_scan_progress"] = self._scan_idx
+        get_log().set_metric("fs_scan_progress", self._scan_idx)
         return False
 
     def finalize_scan(self):
         """Called by Core 0 to save the manifest"""
         from lib.sys_bus import bus
+        from lib.log_service import get_log
         if not bus.shared.get("fs_scan_done"): return
 
         new_manifest = bus.shared.get("fs_scan_result")
         if not new_manifest:
             bus.shared["fs_scan_done"] = False
             bus.shared["fs_scan_result"] = None
+            get_log().set_metric("fs_scan_done", 0)
             return
 
         self.manifest = new_manifest
@@ -415,7 +424,8 @@ class FileSystemManager:
 
         bus.shared["fs_scan_done"] = False
         bus.shared["fs_scan_result"] = None
-        print(f"💾 [FS] Manifest saved by Core 0 ({len(self.manifest)} entries).")
+        get_log().set_metric("fs_scan_done", 0)
+        get_log().info("FS Manifest saved by Core 0 ({} entries).".format(len(self.manifest)))
 
 # Singleton Instance
 fs = FileSystemManager()

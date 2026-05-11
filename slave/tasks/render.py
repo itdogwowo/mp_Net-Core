@@ -1,6 +1,7 @@
 import time
 from lib.task import Task
 from lib.sys_bus import bus
+from lib.log_service import get_log
 
 class RenderTask(Task):
     def __init__(self, name, ctx):
@@ -19,7 +20,7 @@ class RenderTask(Task):
         while self.hub is None:
             self.hub = bus.get_service("pixel_stream")
             if self.hub is None:
-                time.sleep_ms(100)
+                time.sleep_ms(5)
 
         bus.register_provider("render_fps", lambda: self._render_count)
 
@@ -28,13 +29,15 @@ class RenderTask(Task):
         self.interval_us = (1000 // self.fps) * 1000
         self.next_tick_us = time.ticks_us()
 
-        print(f"🔥 [RenderTask] Engine Online | {self.fps} FPS")
+        get_log().info("🔥 [RenderTask] Engine Online | {} FPS".format(self.fps))
 
     def loop(self):
         if not self.running: return
 
-        if not bus.shared.get("is_streaming"):
-            if bus.shared.get("is_ready") == False:
+        is_streaming = self.fcache_get("is_streaming")
+        if not is_streaming:
+            is_ready = self.fcache_get("is_ready")
+            if is_ready == False:
                 for i in range(len(self.st_LED.big_buffer)):
                     self.st_LED.big_buffer[i] = 0
                 self.st_LED.show_all()
@@ -46,7 +49,8 @@ class RenderTask(Task):
             self._render_count = 0
             return
 
-        if bus.shared.get("is_paused"):
+        is_paused = self.fcache_get("is_paused")
+        if is_paused:
             if time.ticks_diff(time.ticks_us(), self.next_tick_us) < 0:
                 return
             self.next_tick_us = time.ticks_add(time.ticks_us(), 50000)
@@ -68,4 +72,4 @@ class RenderTask(Task):
 
     def on_stop(self):
         super().on_stop()
-        print("RenderTask Stopped")
+        get_log().info("RenderTask Stopped")

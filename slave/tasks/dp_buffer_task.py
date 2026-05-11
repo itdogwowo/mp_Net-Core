@@ -2,10 +2,12 @@ import time
 
 from lib.task import Task
 from lib.sys_bus import bus
+from lib.log_service import get_log
 from lib.dp_buffer_service import HDR_OUT, ensure_dp_buffer_service, pack_out_header
 
 
 class DpBufferTask(Task):
+    log_schema = ["fps_window", "fps_total"]
     def on_start(self):
         super().on_start()
         self._svc = ensure_dp_buffer_service(bus)
@@ -17,8 +19,8 @@ class DpBufferTask(Task):
         self._fb_group = -1
 
     def _ensure_fb(self):
-        w = int(bus.shared.get("tft_width", 240) or 240)
-        h = int(bus.shared.get("tft_height", 320) or 320)
+        w = int(self.fcache_get("tft_width", 240, ttl_ms=3000) or 240)
+        h = int(self.fcache_get("tft_height", 320, ttl_ms=3000) or 320)
         bpp = int((self._svc.get("pixel_format") or "RGB565_BE").startswith("RGB888") and 3 or 2)
         needed = w * h * bpp
         if self._fb_buf is not None and len(self._fb_buf) >= needed:
@@ -50,12 +52,13 @@ class DpBufferTask(Task):
             return
 
         dt = time.ticks_diff(now, self._fps_window_t0)
-        interval = int(bus.shared.get("fps_stats_interval", 1000) or 1000)
+        interval = int(self.fcache_get("fps_stats_interval", 1000, ttl_ms=3000) or 1000)
         if dt < interval:
             return
 
         fps_window = self._fps_window_count
         self._svc["fps_window"] = fps_window
+        get_log().set_metric("fps_window", fps_window)
 
         if self._fps_start_ms > 0:
             total_elapsed = time.ticks_diff(now, self._fps_start_ms)
@@ -63,7 +66,11 @@ class DpBufferTask(Task):
                 fps_cumulative = total_frames * 1000 // total_elapsed
                 self._svc["fps_total"] = fps_cumulative
             else:
+                fps_cumulative = 0
                 self._svc["fps_total"] = 0
+            get_log().set_metric("fps_total", fps_cumulative)
+        else:
+            get_log().set_metric("fps_total", 0)
 
         self._fps_window_t0 = now
         self._fps_window_count = 0
@@ -101,7 +108,7 @@ class DpBufferTask(Task):
         w = int(pending.get("w", 0) or 0)
         h = int(pending.get("h", 0) or 0)
 
-        blend_mode = str(bus.shared.get("jpeg_blend_mode", "interleave") or "interleave")
+        blend_mode = str(self.fcache_get("jpeg_blend_mode", "interleave", ttl_ms=3000) or "interleave")
 
         if blend_mode == "blit":
             if not self._ensure_fb():
@@ -181,8 +188,8 @@ class DpBufferTask(Task):
     def _flush_blit(self, wv):
         if self._fb_buf is None or self._fb_group < 0:
             return
-        w = int(bus.shared.get("tft_width", 240) or 240)
-        h = int(bus.shared.get("tft_height", 320) or 320)
+        w = int(self.fcache_get("tft_width", 240, ttl_ms=3000) or 240)
+        h = int(self.fcache_get("tft_height", 320, ttl_ms=3000) or 320)
         bpp = int((self._svc.get("pixel_format") or "RGB565_BE").startswith("RGB888") and 3 or 2)
         frame_bytes = w * h * bpp
         payload = wv[HDR_OUT : HDR_OUT + frame_bytes]

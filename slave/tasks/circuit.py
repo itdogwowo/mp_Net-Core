@@ -2,6 +2,7 @@ from lib.task import Task
 from lib.sys_bus import bus
 from lib.circuit_bus import CircuitBus
 from lib.bus_sources import BusSources
+from lib.log_service import get_log
 
 
 class CircuitTask(Task):
@@ -65,7 +66,7 @@ class CircuitTask(Task):
                     timeout_char=0,
                 )
             except Exception as e:
-                print("❌ [CircuitTask] UART init failed (id={}): {}".format(uid, e))
+                get_log().error("❌ [CircuitTask] UART init failed (id={}): {}".format(uid, e))
                 continue
 
             label = "CIRCUIT-UART{}".format(uid)
@@ -94,7 +95,7 @@ class CircuitTask(Task):
             sources.add(cb)
 
         if buses:
-            print("🔌 [CircuitTask] {} circuit bus(es) online".format(len(buses)))
+            get_log().info("🔌 [CircuitTask] {} circuit bus(es) online".format(len(buses)))
 
     def _get_selected_sources(self):
         cfg = bus.shared.get("CircuitDecode", {}) or {}

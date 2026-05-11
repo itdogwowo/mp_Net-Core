@@ -8,6 +8,7 @@ from lib.network_manager import NetworkManager
 from action.stream_actions import handle_supply_chain
 from action.heartbeat_actions import send_heartbeat
 from action.status_actions import on_status_get
+from lib.log_service import get_log
 
 class NetworkTask(Task):
     def __init__(self, name, ctx):
@@ -18,7 +19,6 @@ class NetworkTask(Task):
         self.discovery_bus = None
         self.tried_config_connect = False
         
-        # Supply chain state
         self.last_report = time.ticks_ms()
         self.s = {"f_local": None, "last_hb": time.ticks_ms()}
         self.hub = None
@@ -28,7 +28,7 @@ class NetworkTask(Task):
         
         self.nm = bus.get_service("network_manager")
         if not self.nm:
-            print("⚠️ NetworkManager not found in bus, creating new instance...")
+            get_log().warn("⚠️ NetworkManager not found in bus, creating new instance...")
             self.nm = NetworkManager(bus)
             self.nm.init_from_config()
 
@@ -48,7 +48,7 @@ class NetworkTask(Task):
         
         self.hub = bus.get_service("pixel_stream")
         
-        print("🚀 [NetworkTask] Data Router Active")
+        get_log().info("🚀 [NetworkTask] Data Router Active")
 
     def _on_connect_wrapper(self, url):
         return on_connect_request(self.ctrl_bus, url)
@@ -56,25 +56,22 @@ class NetworkTask(Task):
     def loop(self):
         if not self.running: return
 
-        # 1. Network Guardian
-        # Sync ctrl_bus status to bus.shared for NetworkManager
         bus.shared["app_connected"] = self.ctrl_bus.connected or bus.shared.get("manual_keep_alive", False)
         
         network_ok = self.nm.check_network()
         if network_ok:
             bus_sys = bus.shared["System"]
-            # Auto-connect logic on startup
             if not self.tried_config_connect and not self.ctrl_bus.connected:
                 self.tried_config_connect = True
                 m_ip = bus_sys.get("master_IP", "")
                 m_port = bus_sys.get("master_port", 0)
                 if m_ip and m_port:
-                    print(f"🔄 Auto-Connecting to stored Master: {m_ip}:{m_port}")
-                    full_url = f"ws://{m_ip}:{m_port}/ws/{bus.slave_id}"
+                    get_log().info("🔄 Auto-Connecting to stored Master: {}:{}".format(m_ip, m_port))
+                    full_url = "ws://{}:{}/ws/{}".format(m_ip, m_port, bus.slave_id)
                     if self._on_connect_wrapper(full_url):
-                        print("✅ Auto-Connect Success!")
+                        get_log().info("✅ Auto-Connect Success!")
                     else:
-                        print("⚠️ Auto-Connect Failed, waiting for discovery...")
+                        get_log().warn("⚠️ Auto-Connect Failed, waiting for discovery...")
 
             try:
                 ctx_extra = {
@@ -86,33 +83,23 @@ class NetworkTask(Task):
                 if self.ctrl_bus.connected: 
                     self.ctrl_bus.poll()
             except Exception as e:
-                print(f"📡 Network Poll Error: {e}")
+                get_log().error("📡 Network Poll Error: {}".format(e))
         
-        # 2. Supply Chain Logic
         worker_ctx = {"app": self.app, "send": self.ctrl_bus.write}
         handle_supply_chain(self.hub, self.s, worker_ctx)
 
-        # 3. System Maintenance
-        bus_sys = bus.shared["System"] # Re-fetch in case it changed? Shared is dict ref.
+        bus_sys = bus.shared["System"]
         now = time.ticks_ms()
         if time.ticks_diff(now, self.s["last_hb"]) > bus_sys["heartbeat_interval"]:
-            if bus.shared.get("is_streaming") and self.ctrl_bus.connected:
+            is_streaming = self.fcache_get("is_streaming")
+            if is_streaming and self.ctrl_bus.connected:
                 send_heartbeat(worker_ctx)
                 on_status_get(worker_ctx, {"query_type": 1})
-            # gc.collect() is handled by TaskManager or Core loop
             self.s["last_hb"] = now
             self.last_report = now
-            
-        # Optional sleep is handled by TaskManager, but we can sleep small here if needed
-        # time.sleep_ms(bus_sys.get("refresh_rate_ms", 1)) 
-        # Actually TaskManager loop doesn't sleep much if tasks are active, so we should sleep here
-        # or rely on TaskManager.
-        # Core0_worker had: time.sleep_ms(bus_sys.get("refresh_rate_ms", 1))
-        # User requested no wait time in loop, so we remove sleep.
-        pass
 
     def on_stop(self):
         super().on_stop()
         if self.ctrl_bus:
             self.ctrl_bus.disconnect()
-        print("NetworkTask Stopped")
+        get_log().info("NetworkTask Stopped")

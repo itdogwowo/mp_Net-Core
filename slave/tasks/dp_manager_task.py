@@ -3,6 +3,7 @@ import time
 from lib.task import Task
 from lib.sys_bus import bus
 from lib.fs_manager import fs
+from lib.log_service import get_log
 from lib.dp_manager_service import (
     HDR_IN,
     ensure_dp_manager_service,
@@ -28,7 +29,7 @@ def _fmt_frame(fmt, frame_idx):
     try:
         return str(fmt).format(frame=int(frame_idx), i=int(frame_idx), index=int(frame_idx))
     except Exception:
-        return f"{int(frame_idx):03d}.jpeg"
+        return "{:03d}.jpeg".format(int(frame_idx))
 
 
 class DpManagerTask(Task):
@@ -112,7 +113,7 @@ class DpManagerTask(Task):
                     src["sch_i"] = 0
                     src["last_ms"] = time.ticks_ms()
                     self._last_group = -1
-                    print("⏹ [DP] Pack ended")
+                    get_log().info("⏹ [DP] Pack ended")
                     return filled
                 n = int(n or 0)
                 if n <= 0:
@@ -124,7 +125,7 @@ class DpManagerTask(Task):
                 filled += 1
                 next_i = i + 1
                 if next_i >= len(schedule):
-                    if not bus.shared.get("jpeg_loop", True):
+                    if not self.fcache_get("jpeg_loop", True):
                         src["enable"] = False
                         return filled
                     next_i = 0
@@ -156,7 +157,7 @@ class DpManagerTask(Task):
         if hub is None or not schedule:
             return
 
-        pace_ms = int(bus.shared.get("jpeg_pace_ms", 0) or 0)
+        pace_ms = int(self.fcache_get("jpeg_pace_ms", 0, ttl_ms=500) or 0)
         if pace_ms > 0:
             last_frame_ms = int(self._svc.get("last_frame_ms", 0) or 0)
             now = time.ticks_ms()
@@ -219,7 +220,7 @@ class DpManagerTask(Task):
             if time.ticks_diff(now, int(self._last_log_ms or 0)) > 1000:
                 self._last_log_ms = now
                 try:
-                    print(f"⚠️ [DP] load fail path={path} err={e}")
+                    get_log().warn("⚠️ [DP] load fail path={} err={}".format(path, e))
                 except Exception:
                     pass
             return
@@ -235,13 +236,13 @@ class DpManagerTask(Task):
 
         next_i = i + 1
         if next_i >= len(schedule):
-            if not bus.shared.get("jpeg_loop", True):
+            if not self.fcache_get("jpeg_loop", True):
                 src["enable"] = False
                 bus.shared["jpeg_player"] = {"playing": False, "paused": False}
                 src["sch_i"] = 0
                 src["last_ms"] = time.ticks_ms()
                 self._last_group = -1
-                print("⏹ [DP] Loop disabled, playback ended")
+                get_log().info("⏹ [DP] Loop disabled, playback ended")
                 return
             next_i = 0
             self._last_group = -1
