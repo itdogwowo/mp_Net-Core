@@ -76,7 +76,7 @@
                 "baudrate": 80000000,
                 "phase":0,
                 "polarity":0,
-                "GPIO": { "sck": 11, "mosi": 12, "miso": null }
+                "GPIO": { "sck": 21, "mosi": 14, "miso": null }
             }
         ]
     },

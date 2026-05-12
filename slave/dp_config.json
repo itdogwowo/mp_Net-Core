@@ -6,12 +6,12 @@
     "height": 320,
     "rotation": 0,
     "color_order": "RGB",
-    "invert": true,
+    "invert": 0,
     "spi": 1,
     "pins": {
-      "dc": 13,
-      "cs": 10,
-      "rst": 14
+      "dc": 12,
+      "cs": 11,
+      "rst": 13
     }
   },
   "jpeg": {
