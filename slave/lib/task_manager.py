@@ -1,7 +1,10 @@
 import gc
 import time
 from lib.sys_bus import bus
-from lib.log_service import get_log
+from lib.log_service import get_log, _viper_write_i32, _viper_read_i32
+
+_FIXED = 5
+_FIXED_BYTES = _FIXED * 4
 
 
 class TaskManager:
@@ -19,13 +22,8 @@ class TaskManager:
         self._run_once_flags = {}
         self._perf_snapshot_ms = {0: 0, 1: 0}
 
-        log = get_log()
-        log.register_metric("core0_idle_pct")
-        log.register_metric("core0_tick_us")
-        log.register_metric("core0_loops_per_sec")
-        log.register_metric("core1_idle_pct")
-        log.register_metric("core1_tick_us")
-        log.register_metric("core1_loops_per_sec")
+        self._core_buf = bytearray(24)
+        self._prealloc = {}
 
         bus.register_service("task_manager", self)
 
@@ -39,7 +37,7 @@ class TaskManager:
         if not self._boot_done:
             self._boot_done = True
             log = get_log()
-            log.info("⚙ [TM] Boot → running (forced)")
+            log.info("\u2699 [TM] Boot \u2192 running (forced)")
 
     def enable_layer(self, layer):
         self._layer_enabled[layer] = True
@@ -61,14 +59,41 @@ class TaskManager:
         log = get_log()
         log.info("Task [{}] L{} affinity {}".format(name, int(layer), default_affinity))
 
-        schema = getattr(task_cls, "log_schema", None)
-        if schema:
-            for m in schema:
-                log.register_metric(m)
+    def finalize(self):
+        log = get_log()
+        for core in (0, 1):
+            off = core * 12
+            log.register_slot("core{}_tick_us".format(core), self._core_buf, off)
+            log.register_slot("core{}_idle_pct".format(core), self._core_buf, off + 4)
+            log.register_slot("core{}_loops_per_sec".format(core), self._core_buf, off + 8)
 
-        log.register_metric("t_{}_avg_us".format(name))
-        log.register_metric("t_{}_max_us".format(name))
-        log.register_metric("t_{}_count".format(name))
+        self._task_schema_idx = {}
+        task_bufs = {}
+        for name, cls in self.task_classes.items():
+            lbuf = bytearray(_FIXED_BYTES)
+            task_bufs[name] = lbuf
+
+            schema = getattr(cls, "log_schema", None)
+            if schema:
+                n = len(schema)
+                lbuf_ex = bytearray(n * 4)
+                idx_map = {}
+                for i, m in enumerate(schema):
+                    log.register_slot(m, lbuf_ex, i * 4)
+                    idx_map[m] = i
+                self._task_schema_idx[name] = idx_map
+            else:
+                lbuf_ex = None
+
+            self._prealloc[name] = (lbuf, lbuf_ex)
+
+        from lib.sys_bus import bus
+        bus.shared["_task_bufs"] = task_bufs
+
+    def _alloc_task_bufs(self, name, task):
+        pre = self._prealloc.get(name)
+        if pre is not None:
+            task._lbuf, task._lbuf_ex = pre
 
     def set_affinity(self, name, affinity):
         log = get_log()
@@ -76,7 +101,7 @@ class TaskManager:
             log.error("Task [{}] cannot run on both cores simultaneously.".format(name))
             return False
         self.config[name] = affinity
-        log.info("Task [{}] affinity → {}".format(name, affinity))
+        log.info("Task [{}] affinity \u2192 {}".format(name, affinity))
         return True
 
     def get_status(self):
@@ -132,12 +157,13 @@ class TaskManager:
                             new_task = self.task_classes[name](name, self.ctx)
                             run_once = self._run_once_flags.get(name, False)
                             new_task.run_once = run_once
+                            self._alloc_task_bufs(name, new_task)
                             self.tasks[name] = new_task
                         except Exception as e:
-                            log.error("❌ [Core {}] Failed to instantiate {}: {}".format(core_id, name, e))
+                            log.error("\u274c [Core {}] Failed to instantiate {}: {}".format(core_id, name, e))
                             continue
                     else:
-                        log.warn("⚠️ [Core {}] Task class for {} not found!".format(core_id, name))
+                        log.warn("\u26a0\ufe0f [Core {}] Task class for {} not found!".format(core_id, name))
                         continue
 
                 task = self.tasks[name]
@@ -146,7 +172,7 @@ class TaskManager:
                     task.on_start()
                     self.active_tasks[core_id][name] = task
                 except Exception as e:
-                    log.error("❌ [Core {}] Failed to start {}: {}".format(core_id, name, e))
+                    log.error("\u274c [Core {}] Failed to start {}: {}".format(core_id, name, e))
 
             elif not should_run and is_running:
                 task = self.active_tasks[core_id][name]
@@ -154,7 +180,7 @@ class TaskManager:
                 try:
                     task.on_stop()
                 except Exception as e:
-                    log.error("❌ [Core {}] Error stopping {}: {}".format(core_id, name, e))
+                    log.error("\u274c [Core {}] Error stopping {}: {}".format(core_id, name, e))
                 del self.active_tasks[core_id][name]
 
         if not self._boot_done:
@@ -185,27 +211,32 @@ class TaskManager:
         if layer >= self._max_layer or self._max_layer < 0:
             if not self._boot_done:
                 self._boot_done = True
-                log.info("⚙ [TM] Boot complete → running")
+                log.info("\u2699 [TM] Boot complete \u2192 running")
         else:
             self._boot_layer += 1
-            log.info("⚙ [TM] Boot layer {}".format(self._boot_layer))
+            log.info("\u2699 [TM] Boot layer {}".format(self._boot_layer))
 
-    def _snapshot_task_perf(self, core_id, now_ms):
-        if time.ticks_diff(now_ms, self._perf_snapshot_ms[core_id]) < 2000:
-            return
-        self._perf_snapshot_ms[core_id] = now_ms
-
-        log = get_log()
+    def _snapshot_task_perf(self, core_id, perf_enabled=True):
         for name, task in self.active_tasks[core_id].items():
-            snap = task.perf_snapshot()
-            task.perf_reset()
-            log.set_metric("t_{}_avg_us".format(name), snap.get("loop_avg_us", 0))
-            log.set_metric("t_{}_max_us".format(name), snap.get("loop_max_us", 0))
-            log.set_metric("t_{}_count".format(name), snap.get("loop_count", 0))
+            b = task._lbuf
+            if b is None:
+                continue
+            p = task.perf
+            if perf_enabled:
+                _viper_write_i32(b, 0, p["loop_total_us"] // max(p["loop_count"], 1))
+                _viper_write_i32(b, 4, p["loop_max_us"])
+                _viper_write_i32(b, 8, p["loop_count"])
+            _viper_write_i32(b, 12, task.touch)
+            _viper_write_i32(b, 16, task.success)
+            p["loop_count"] = 0
+            p["loop_total_us"] = 0
+            p["loop_max_us"] = 0
+            task.touch = 0
+            task.success = 0
 
     def runner_loop(self, core_id):
         log = get_log()
-        log.info("🚀 [Core {}] Task Runner Started".format(core_id))
+        log.info("\U0001f680 [Core {}] Task Runner Started".format(core_id))
 
         time.sleep_ms(100 if core_id == 0 else 500)
 
@@ -259,6 +290,7 @@ class TaskManager:
                         task.perf["loop_total_us"] += elapsed
                         if elapsed > task.perf["loop_max_us"]:
                             task.perf["loop_max_us"] = elapsed
+                    task.touch += 1
 
                     if getattr(task, 'run_once', False):
                         log.info("[Core {}] One-shot task {} finished. Stopping.".format(core_id, name))
@@ -270,7 +302,7 @@ class TaskManager:
                         self.config[name] = (0, 0)
 
                 except Exception as e:
-                    log.error("❌ [Core {}] Task {} Loop Error: {}".format(core_id, task.name, e))
+                    log.error("\u274c [Core {}] Task {} Loop Error: {}".format(core_id, task.name, e))
                     time.sleep_ms(1000)
 
             time.sleep_ms(0)
@@ -286,14 +318,17 @@ class TaskManager:
                     idle_pct = max(0, 100 - (busy_total_us * 100 // elapsed_total_us))
                     hz = (loop_count * 1000) // duration
 
-                    log.set_metric("core{}_tick_us".format(core_id), avg_tick_us)
-                    log.set_metric("core{}_idle_pct".format(core_id), idle_pct)
-                    log.set_metric("core{}_loops_per_sec".format(core_id), hz)
-
-                    self._snapshot_task_perf(core_id, now_ms)
+                    off = core_id * 12
+                    _viper_write_i32(self._core_buf, off, avg_tick_us)
+                    _viper_write_i32(self._core_buf, off + 4, idle_pct)
+                    _viper_write_i32(self._core_buf, off + 8, hz)
 
                     loop_count = 0
                     start_time = now_ms
                     busy_total_us = 0
 
-        log.info("🛑 [Core {}] Runner Stopped".format(core_id))
+            if time.ticks_diff(now_ms, self._perf_snapshot_ms[core_id]) >= 2000:
+                self._perf_snapshot_ms[core_id] = now_ms
+                self._snapshot_task_perf(core_id, _perf_enabled)
+
+        log.info("\U0001f6d1 [Core {}] Runner Stopped".format(core_id))

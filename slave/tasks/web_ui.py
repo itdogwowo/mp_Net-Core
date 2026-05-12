@@ -61,6 +61,7 @@ class WebUITask(Task):
                 request = cl.recv(2048) # Increased buffer
                 if request:
                     self._handle_request(cl, request)
+                    self.success += 1
                     if cl in self.clients: self.clients.remove(cl)
                     cl.close()
                 else:

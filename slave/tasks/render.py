@@ -65,6 +65,7 @@ class RenderTask(Task):
             if self.hub.read_into(self.st_LED.big_buffer):
                 self.st_LED.show_all()
                 self._render_count += 1
+                self.success += 1
 
             self.next_tick_us += self.interval_us
         else:

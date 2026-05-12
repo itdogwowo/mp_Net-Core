@@ -26,9 +26,7 @@ CUR_VER = 4
 ADDR_BROADCAST = 0xFFFF
 MAX_LEN_DEFAULT = 8192
 
-HDR_FMT = "<2sBHHH"
 HDR_LEN = 9
-CRC_FMT = "<I"
 CRC_LEN = 4
 
 
@@ -59,10 +57,10 @@ class Proto:
     def pack(cmd: int, payload: bytes = b"", addr: int = ADDR_BROADCAST) -> bytes:
         if payload is None: payload = b""
         ln = len(payload)
-        header = struct.pack(HDR_FMT, SOF, CUR_VER, addr, cmd, ln)
+        header = struct.pack("<2sBHHH", SOF, CUR_VER, addr, cmd, ln)
         crc_val = Proto.crc32_update(header[2:], 0)
         crc_val = Proto.crc32_update(payload, crc_val)
-        return header + payload + struct.pack(CRC_FMT, crc_val)
+        return header + payload + struct.pack("<I", crc_val)
 
 
 class StreamParser:
@@ -112,7 +110,11 @@ class StreamParser:
                 if (self._end - self._start) < HDR_LEN:
                     return
 
-            sof, ver, addr, cmd, ln = struct.unpack_from(HDR_FMT, self._buf, self._start)
+            s = self._start
+            ver = self._buf[s + 2]
+            addr = self._buf[s + 3] | (self._buf[s + 4] << 8)
+            cmd = self._buf[s + 5] | (self._buf[s + 6] << 8)
+            ln = self._buf[s + 7] | (self._buf[s + 8] << 8)
 
             if ver != CUR_VER or ln > self.max_len:
                 self._start += 1
@@ -124,7 +126,7 @@ class StreamParser:
 
             payload_start = self._start + HDR_LEN
             payload_end = payload_start + ln
-            crc_received = struct.unpack_from(CRC_FMT, self._buf, payload_end)[0]
+            crc_received = self._buf[payload_end] | (self._buf[payload_end + 1] << 8) | (self._buf[payload_end + 2] << 16) | (self._buf[payload_end + 3] << 24)
 
             crc_start = self._start + 2
             crc_len = payload_end - crc_start

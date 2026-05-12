@@ -18,6 +18,31 @@ def _unpack_from(buf, offset=0):
     return _struct.unpack_from(OUT_FMT, buf, offset)
 
 
+def _u32(buf, off):
+    return buf[off] | (buf[off + 1] << 8) | (buf[off + 2] << 16) | (buf[off + 3] << 24)
+
+
+def _u16(buf, off):
+    return buf[off] | (buf[off + 1] << 8)
+
+
+def _i16(buf, off):
+    v = buf[off] | (buf[off + 1] << 8)
+    return v - 0x10000 if v >= 0x8000 else v
+
+
+def unpack_out_header_into(buf, out):
+    out[0] = _u32(buf, 0)
+    out[1] = _u16(buf, 4)
+    out[2] = _u16(buf, 6)
+    out[3] = _i16(buf, 8)
+    out[4] = _i16(buf, 10)
+    out[5] = _u16(buf, 12)
+    out[6] = _u16(buf, 14)
+    out[7] = _u16(buf, 16)
+    out[8] = _u16(buf, 18)
+
+
 def ensure_dp_buffer_service(bus, name="dp_buffer"):
     svc = bus.get_service(name)
     if svc is not None:

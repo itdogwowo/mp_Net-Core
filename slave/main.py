@@ -50,7 +50,31 @@ def launcher():
     bus.shared["log_print_levels"] = log_cfg.get("print_levels", ["info", "warn", "error", "immediate"])
     bus.shared["log_print_params"] = log_cfg.get("print_params", True)
     bus.shared["log_record"] = log_cfg.get("record_states", True)
-    
+
+    bus.shared["log_subscribe"] = log_cfg.get("subscribe", [])
+
+    # ══════════════════════════════════════════════════════
+    # Debug：如何使用
+    #   1. bus.shared["log_subscribe"] = "__list__"  → 列出所有可訂閱名稱
+    #   2. bus.shared["log_subscribe"] = [...]       → 選擇性訂閱
+    # ══════════════════════════════════════════════════════
+    bus.shared["log_subscribe"] = "__list__"
+    bus.shared["log_subscribe"] = [
+        "fps_window", "fps_total",
+        "core0_idle_pct", "core0_tick_us", "core0_loops_per_sec",
+        "core1_idle_pct", "core1_tick_us", "core1_loops_per_sec",
+        "task_render_avg_us", "task_render_touch", "task_render_success",
+        "task_display_avg_us", "task_display_touch", "task_display_success",
+        "task_jpeg_decode_avg_us", "task_jpeg_decode_touch", "task_jpeg_decode_success",
+        "task_dp_buffer_avg_us", "task_dp_buffer_touch", "task_dp_buffer_success",
+        "task_dp_manager_avg_us", "task_dp_manager_touch", "task_dp_manager_success",
+        "task_network_avg_us", "task_network_touch", "task_network_success",
+        "task_bus_decode_avg_us", "task_bus_decode_touch", "task_bus_decode_success",
+        "task_circuit_avg_us", "task_circuit_touch", "task_circuit_success",
+        "task_web_ui_avg_us", "task_web_ui_touch", "task_web_ui_success",
+        "fs_scan_total", "fs_scan_progress",
+    ]
+
     # ── Layer 0: 網路 + 通訊 + FS 掃描，最先啟動 ──
     tm.register_task("log", LogTask, default_affinity=(1, 0), layer=0)
     tm.register_task("network", NetworkTask, default_affinity=(1, 0), layer=0)
@@ -69,7 +93,7 @@ def launcher():
     
     bus.shared["perf_enabled"] = False
 
-    log.allocate()
+    tm.finalize()
 
     try:
         log.info("✨ Starting Core 1 Runner...")
@@ -80,16 +104,16 @@ def launcher():
         tm.runner_loop(0)
 
     except KeyboardInterrupt:
-        log.warn("👋 User stop requested.")
+        print("[MAIN]👋 User stop requested.")
     except Exception as e:
-        log.error("❌ System Error: {}".format(e))
+        print(f"[MAIN]❌ System Error: {e}")
     finally:
         bus.shared["engine_run"] = False
-        log.info("🛑 All cores stopping...")
+        print("[MAIN]🛑 All cores stopping...")
         time.sleep_ms(500)
         st_LED.big_buffer = bytearray(st_LED.total_bytes) 
         st_LED.show_all()
-        log.info("🏁 Clean Exit.")
+        print("[MAIN]🏁 Clean Exit.")
 
 if __name__ == "__main__":
     launcher()

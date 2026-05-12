@@ -2,7 +2,7 @@ import time
 
 from lib.task import Task
 from lib.sys_bus import bus
-from lib.dp_buffer_service import HDR_OUT, ensure_dp_buffer_service, unpack_out_header
+from lib.dp_buffer_service import HDR_OUT, ensure_dp_buffer_service, unpack_out_header_into
 
 
 class DisplayTask(Task):
@@ -11,6 +11,7 @@ class DisplayTask(Task):
         self._buf = ensure_dp_buffer_service(bus)
         self._lcd = None
         self._read_buf = None
+        self._out_hdr = [0] * 9
 
     def _resolve_lcd(self):
         if self._lcd is not None:
@@ -45,10 +46,18 @@ class DisplayTask(Task):
             return
 
         try:
-            payload_len, seq, label_id, x, y, w, h, flags, fmt = unpack_out_header(self._read_buf)
-            payload_len = int(payload_len)
+            unpack_out_header_into(self._read_buf, self._out_hdr)
+            payload_len = int(self._out_hdr[0])
             if payload_len <= 0:
                 return
+            seq = self._out_hdr[1]
+            label_id = self._out_hdr[2]
+            x = self._out_hdr[3]
+            y = self._out_hdr[4]
+            w = self._out_hdr[5]
+            h = self._out_hdr[6]
+            flags = self._out_hdr[7]
+            fmt = self._out_hdr[8]
             payload = self._read_buf[HDR_OUT : HDR_OUT + payload_len]
             try:
                 lcd.set_window(int(x), int(y), int(x) + int(w) - 1, int(y) + int(h) - 1)
@@ -62,6 +71,7 @@ class DisplayTask(Task):
 
             self._buf["last_ms"] = time.ticks_ms()
             self._buf["last_err"] = ""
+            self.success += 1
         except Exception as e:
             try:
                 self._buf["last_err"] = str(e)

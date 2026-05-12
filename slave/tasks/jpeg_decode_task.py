@@ -2,7 +2,7 @@ import time
 
 from lib.task import Task
 from lib.sys_bus import bus
-from lib.dp_manager_service import HDR_IN, unpack_in_header
+from lib.dp_manager_service import HDR_IN, unpack_in_header_into
 from lib.dp_buffer_service import HDR_OUT, ensure_dp_buffer_service, configure_for_layout
 
 
@@ -15,6 +15,7 @@ class JpegDecodeTask(Task):
         self._job = None
         self._last_idle_log_ms = 0
         self._seen_epoch = None
+        self._in_hdr = [0] * 10
 
     def _resolve_dp(self):
         if self._dp is not None:
@@ -65,26 +66,35 @@ class JpegDecodeTask(Task):
         if rv is None:
             return None
         try:
-            payload_len, seq, label_id, x, y, w, h, bpp, flags, path_hash = unpack_in_header(rv)
-            payload_len = int(payload_len)
+            unpack_in_header_into(rv, self._in_hdr)
+            payload_len = int(self._in_hdr[0])
             if payload_len <= 0:
                 hub.release_read()
                 return None
+            seq = int(self._in_hdr[1])
+            label_id = int(self._in_hdr[2])
+            x = int(self._in_hdr[3])
+            y = int(self._in_hdr[4])
+            w = int(self._in_hdr[5])
+            h = int(self._in_hdr[6])
+            bpp = int(self._in_hdr[7])
+            flags = int(self._in_hdr[8])
+            path_hash = int(self._in_hdr[9])
             jpeg_data = rv[HDR_IN : HDR_IN + payload_len]
             self._job = {
                 "hub": hub,
                 "rv": rv,
                 "jpeg_data": jpeg_data,
                 "payload_len": payload_len,
-                "seq": int(seq),
-                "label_id": int(label_id),
-                "x": int(x),
-                "y": int(y),
-                "w": int(w),
-                "h": int(h),
-                "bpp": int(bpp),
-                "flags": int(flags),
-                "path_hash": int(path_hash),
+                "seq": seq,
+                "label_id": label_id,
+                "x": x,
+                "y": y,
+                "w": w,
+                "h": h,
+                "bpp": bpp,
+                "flags": flags,
+                "path_hash": path_hash,
                 "fmt_code": 0,
             }
             return self._job
@@ -177,4 +187,5 @@ class JpegDecodeTask(Task):
         except Exception:
             pass
         self._job = None
+        self.success += 1
 

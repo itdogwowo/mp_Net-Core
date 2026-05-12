@@ -1,4 +1,4 @@
-import struct
+import time
 from lib.task import Task
 from lib.sys_bus import bus
 
@@ -64,7 +64,7 @@ class BusDecodeTask(Task):
                     return
                 if not hub.read_into(self._read_buf):
                     break
-                ln = struct.unpack_from("<H", self._read_buf, 0)[0]
+                ln = self._read_buf[0] | (self._read_buf[1] << 8)
                 if ln <= 0:
                     continue
                 data = self._read_buf[2:2 + ln]
@@ -75,6 +75,7 @@ class BusDecodeTask(Task):
                     send_func=b.write,
                     **ctx_extra
                 )
+                self.success += 1
                 used += 1
 
     def on_stop(self):

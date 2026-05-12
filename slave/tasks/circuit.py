@@ -166,6 +166,7 @@ class CircuitTask(Task):
             if ctx_extra is not None:
                 b._decode_ctx = ctx_extra
             b.poll()
+            self.success += 1
 
     def on_stop(self):
         super().on_stop()

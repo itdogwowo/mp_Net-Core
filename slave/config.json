@@ -57,12 +57,6 @@
             }
         ]
     },
-    "CircuitDecode": {
-        "enable": 0,
-        "list": [
-            { "GPIO": { "uart": 0 } }
-        ]
-    },
     "I2C": {
         "enable": 0,
         "list": [
@@ -95,6 +89,21 @@
             }
         ]
     },
+    "CircuitDecode": {
+        "enable": 0,
+        "list": [
+            { "GPIO": { "uart": 0 } }
+        ]
+    },
+    "Log": {
+        "print_interval_ms": 1000,
+        "print_levels": [
+          "info","warn","error","immediate"
+        ],
+        "record_states": true,
+        "print_params": true,
+        "subscribe": []
+      },
     "PCA9685": {
         "enable": 0,
         "list": [

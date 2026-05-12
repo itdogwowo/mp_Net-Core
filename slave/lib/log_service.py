@@ -1,7 +1,24 @@
 import time
+import micropython
 
 _MAX_ENTRIES = 128
-_SLOT_BYTES = 4
+
+
+@micropython.viper
+def _viper_write_i32(buf, offset: int, val: int):
+    p = ptr8(buf)
+    o = int(offset)
+    p[o] = val & 0xFF
+    p[o + 1] = (val >> 8) & 0xFF
+    p[o + 2] = (val >> 16) & 0xFF
+    p[o + 3] = (val >> 24) & 0xFF
+
+
+@micropython.viper
+def _viper_read_i32(buf, offset: int) -> int:
+    p = ptr8(buf)
+    o = int(offset)
+    return p[o] | (p[o + 1] << 8) | (p[o + 2] << 16) | (p[o + 3] << 24)
 
 
 class LogService:
@@ -10,11 +27,7 @@ class LogService:
         self._states = {}
         self._pending = []
         self._last_flush_ms = 0
-
-        self._metric_names = []
-        self._metric_index = {}
-        self._buf = None
-        self._allocated = False
+        self._slots = {}
 
     def immediate(self, msg):
         from lib.sys_bus import bus
@@ -59,27 +72,20 @@ class LogService:
     def flush(self):
         if not self._pending:
             return
-
         log_enabled, interval, levels, show_params = self._resolve_settings()
-
         now = time.ticks_ms()
         if interval > 0:
             if time.ticks_diff(now, self._last_flush_ms) < interval:
                 return
         self._last_flush_ms = now
-
         batch = list(self._pending)
         self._pending.clear()
-
         for entry in batch:
             self._entries.append(entry)
-
         if len(self._entries) > _MAX_ENTRIES:
             self._entries = self._entries[-_MAX_ENTRIES:]
-
         if not log_enabled:
             return
-
         for entry in batch:
             try:
                 level, msg = entry[1], entry[2]
@@ -105,54 +111,24 @@ class LogService:
             "states": self.get_states(),
         }
 
-    def register_metric(self, name):
-        if self._allocated:
-            return -1
-        if name in self._metric_index:
-            return self._metric_index[name]
-        idx = len(self._metric_names)
-        self._metric_names.append(name)
-        self._metric_index[name] = idx
-        return idx
-
-    def allocate(self, slot_bytes=_SLOT_BYTES):
-        if self._allocated:
-            return
-        n = len(self._metric_names)
-        if n > 0:
-            self._buf = bytearray(n * slot_bytes)
-            for i in range(n * slot_bytes):
-                self._buf[i] = 0
-        self._slot_bytes = slot_bytes
-        self._allocated = True
+    def register_slot(self, name, buf, offset):
+        self._slots[name] = (buf, offset)
 
     def set_metric(self, name, value):
-        if not self._allocated or self._buf is None:
-            return
-        idx = self._metric_index.get(name)
-        if idx is None:
-            return
-        offset = idx * self._slot_bytes
-        v = int(value) & 0xFFFFFFFF
-        self._buf[offset] = v & 0xFF
-        self._buf[offset + 1] = (v >> 8) & 0xFF
-        self._buf[offset + 2] = (v >> 16) & 0xFF
-        self._buf[offset + 3] = (v >> 24) & 0xFF
+        slot = self._slots.get(name)
+        if slot:
+            _viper_write_i32(slot[0], slot[1], value)
 
-    def get_metric(self, name, default=0):
-        if not self._allocated or self._buf is None:
-            return default
-        idx = self._metric_index.get(name)
-        if idx is None:
-            return default
-        offset = idx * self._slot_bytes
-        return (self._buf[offset] |
-                (self._buf[offset + 1] << 8) |
-                (self._buf[offset + 2] << 16) |
-                (self._buf[offset + 3] << 24))
+    def subscribe(self, names):
+        result = []
+        for name in names:
+            slot = self._slots.get(name)
+            if slot:
+                result.append((name, slot[0], slot[1]))
+        return result
 
     def get_metric_names(self):
-        return list(self._metric_names)
+        return list(self._slots.keys())
 
 
 _log_instance = None

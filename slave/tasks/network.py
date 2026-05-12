@@ -60,6 +60,7 @@ class NetworkTask(Task):
         
         network_ok = self.nm.check_network()
         if network_ok:
+            self.success += 1
             bus_sys = bus.shared["System"]
             if not self.tried_config_connect and not self.ctrl_bus.connected:
                 self.tried_config_connect = True

@@ -58,7 +58,7 @@ class DpBufferTask(Task):
 
         fps_window = self._fps_window_count
         self._svc["fps_window"] = fps_window
-        get_log().set_metric("fps_window", fps_window)
+        self._lw_ex(0, fps_window)
 
         if self._fps_start_ms > 0:
             total_elapsed = time.ticks_diff(now, self._fps_start_ms)
@@ -68,9 +68,9 @@ class DpBufferTask(Task):
             else:
                 fps_cumulative = 0
                 self._svc["fps_total"] = 0
-            get_log().set_metric("fps_total", fps_cumulative)
+            self._lw_ex(1, fps_cumulative)
         else:
-            get_log().set_metric("fps_total", 0)
+            self._lw_ex(1, 0)
 
         self._fps_window_t0 = now
         self._fps_window_count = 0
@@ -183,6 +183,7 @@ class DpBufferTask(Task):
         self._svc["last_err"] = ""
         self._svc["last_ms"] = time.ticks_ms()
 
+        self.success += 1
         self._tick_fps()
 
     def _flush_blit(self, wv):
@@ -201,6 +202,7 @@ class DpBufferTask(Task):
         self._svc["frames"] = int(self._svc.get("frames", 0) or 0) + 1
         self._svc["last_done"] = {"ms": time.ticks_ms()}
         self._svc["last_ms"] = time.ticks_ms()
+        self.success += 1
 
     def on_stop(self):
         super().on_stop()

@@ -121,6 +121,7 @@ class DpManagerTask(Task):
                 seq = int(src.get("seq", 1) or 1)
                 pack_in_header(wv, n, seq=seq, label_id=label_id, x=x, y=y, w=w, h=h, bpp=bpp, flags=group, path_hash=int(_idx or 0))
                 hub.commit()
+                self.success += 1
                 src["seq"] = (seq + 1) & 0xFFFF
                 filled += 1
                 next_i = i + 1
@@ -232,6 +233,7 @@ class DpManagerTask(Task):
         seq = int(src.get("seq", 1) or 1)
         pack_in_header(wv, n, seq=seq, label_id=label_id, x=x, y=y, w=w, h=h, bpp=bpp, flags=group, path_hash=0)
         hub.commit()
+        self.success += 1
         src["seq"] = (seq + 1) & 0xFFFF
 
         next_i = i + 1

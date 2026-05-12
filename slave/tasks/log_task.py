@@ -1,6 +1,6 @@
 import time
 from lib.task import Task
-from lib.log_service import get_log
+from lib.log_service import get_log, _viper_read_i32
 
 
 class LogTask(Task):
@@ -8,110 +8,79 @@ class LogTask(Task):
         super().on_start()
         from lib.sys_bus import bus
         bus.shared["log_task_ready"] = True
-        self._last_scan_ms = 0
-        self._last_perf_ms = 0
-        self._last_fps_ms = 0
-        self._last_task_perf_ms = 0
-        self._last_scan_progress = -1
-        self._last_scan_current = ""
-        self._task_names_cache_ms = 0
-        self._task_names = []
+
+        names = bus.shared.get("log_subscribe", [])
+        log = get_log()
+
+        if names == "__list__":
+            all_names = log.get_metric_names()
+            task_bufs = bus.shared.get("_task_bufs", {})
+            custom = sorted(all_names)
+            tnames = sorted(task_bufs)
+            print("[LOG] -- copy-paste subscribe list ----------------------------------")
+            print("subscribe = [")
+            for n in custom:
+                print('    "{}",'.format(n))
+            for tn in tnames:
+                print('    "{}",'.format(tn))
+            print("]")
+            print("[LOG] {} custom + {} task slots total".format(len(custom), len(tnames)))
+            self._rows = ()
+            self._others = ()
+            return
+
+        task_bufs = bus.shared.get("_task_bufs", {})
+        sub_tasks = set()
+        sub_names = []
+        for n in names:
+            if n in task_bufs:
+                sub_tasks.add(n)
+            else:
+                sub_names.append(n)
+
+        if sub_tasks:
+            self._rows = tuple((tn, b) for tn, b in sorted(task_bufs.items()) if tn in sub_tasks)
+        elif sub_names:
+            self._rows = ()
+        else:
+            self._rows = tuple((tn, b) for tn, b in sorted(task_bufs.items()))
+
+        if not sub_names:
+            self._others = ()
+        else:
+            slots = log.subscribe(sub_names)
+            self._others = tuple((n, b, o) for n, b, o in slots)
+
+        self._last_print_ms = 0
 
     def loop(self):
         if not self.running:
             return
         log = get_log()
         log.flush()
-        self._report_scan_progress(log)
-        self._report_fps(log)
-        self._report_perf(log)
-        self._report_task_perf(log)
 
-    def _report_scan_progress(self, log):
-        total = log.get_metric("fs_scan_total")
-        if total <= 0:
-            return
-        progress = log.get_metric("fs_scan_progress")
-        from lib.sys_bus import bus
-        current = bus.shared.get("fs_scan_current", "")
-
-        if progress == self._last_scan_progress and current == self._last_scan_current:
-            return
-        self._last_scan_progress = progress
-        self._last_scan_current = current
-
-        now = time.ticks_ms()
-        if time.ticks_diff(now, self._last_scan_ms) < 1000:
-            return
-        self._last_scan_ms = now
-
-        pct = progress * 100 // total if total else 0
-        if current:
-            fname = current.rsplit("/", 1)[-1]
-            log.info("FS Scan: {}/{} ({}%) | {}".format(progress, total, pct, fname))
-        else:
-            log.info("FS Scan: {}/{} files ({}%)".format(progress, total, pct))
-
-    def _report_fps(self, log):
-        if not self.fcache_get("fps_stats_enabled", True, ttl_ms=5000):
-            return
-        fps_window = log.get_metric("fps_window", -1)
-        fps_total = log.get_metric("fps_total", -1)
-        if fps_window < 0 and fps_total < 0:
+        rows = self._rows
+        others = self._others
+        if not rows and not others:
             return
 
         now = time.ticks_ms()
-        if time.ticks_diff(now, self._last_fps_ms) < 1000:
+        if time.ticks_diff(now, self._last_print_ms) < 1000:
             return
-        self._last_fps_ms = now
+        self._last_print_ms = now
 
-        if fps_window >= 0:
-            log.state("fps_window", fps_window)
-        if fps_total >= 0:
-            log.state("fps_total", fps_total)
-        if fps_window >= 0:
-            log.immediate("FPS: {} / avg: {}".format(fps_window, fps_total if fps_total >= 0 else "-"))
-
-    def _report_perf(self, log):
-        if not self.fcache_get("perf_enabled", True, ttl_ms=5000):
-            return
-        now = time.ticks_ms()
-        if time.ticks_diff(now, self._last_perf_ms) < 2000:
-            return
-        self._last_perf_ms = now
-
-        for core in (0, 1):
-            idle = log.get_metric("core{}_idle_pct".format(core), -1)
-            if idle < 0:
+        for (task_name, buf) in rows:
+            avg = _viper_read_i32(buf, 0)
+            max_us = _viper_read_i32(buf, 4)
+            count = _viper_read_i32(buf, 8)
+            touch_v = _viper_read_i32(buf, 12)
+            succ_v = _viper_read_i32(buf, 16)
+            if avg <= 0 and touch_v <= 0 and succ_v <= 0:
                 continue
-            tick = log.get_metric("core{}_tick_us".format(core))
-            hz = log.get_metric("core{}_loops_per_sec".format(core))
-            log.state("core{}_idle_pct".format(core), idle)
-            log.state("core{}_tick_us".format(core), tick)
-            log.immediate("C{} idle={}% tick={}us ({}/s)".format(core, idle, tick, hz))
+            log.immediate("Task[{}] avg={}us max={}us n={} t={} s={}".format(
+                task_name, avg, max_us, count, touch_v, succ_v))
 
-    def _report_task_perf(self, log):
-        if not self.fcache_get("perf_enabled", True, ttl_ms=5000):
-            return
-        now = time.ticks_ms()
-        if time.ticks_diff(now, self._last_task_perf_ms) < 2000:
-            return
-        self._last_task_perf_ms = now
-
-        if time.ticks_diff(now, self._task_names_cache_ms) > 5000:
-            from lib.sys_bus import bus
-            tm = bus.get_service("task_manager")
-            if tm:
-                self._task_names = tm.get_registered_task_names()
-            self._task_names_cache_ms = now
-
-        for name in self._task_names:
-            avg = log.get_metric("t_{}_avg_us".format(name), -1)
-            if avg < 0:
-                continue
-            max_us = log.get_metric("t_{}_max_us".format(name))
-            count = log.get_metric("t_{}_count".format(name))
-            log.state("t_{}_avg_us".format(name), avg)
-            log.state("t_{}_max_us".format(name), max_us)
-            log.state("t_{}_count".format(name), count)
-            log.immediate("Task[{}] avg={}us max={}us n={}".format(name, avg, max_us, count))
+        for name, buf, off in others:
+            v = _viper_read_i32(buf, off)
+            if v > 0:
+                log.immediate("{}={}".format(name, v))

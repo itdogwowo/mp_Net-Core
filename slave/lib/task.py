@@ -1,4 +1,5 @@
 import time
+from lib.log_service import _viper_write_i32
 
 class Task:
     log_schema = []
@@ -17,8 +18,14 @@ class Task:
             "loop_total_us": 0,
         }
 
+        self.touch = 0
+        self.success = 0
+
         self._fcache = {}
         self._fcache_ts = 0
+
+        self._lbuf = bytearray(20)
+        self._lbuf_ex = None
 
     def on_start(self):
         self.running = True
@@ -28,16 +35,6 @@ class Task:
 
     def on_stop(self):
         self.running = False
-
-    def perf_snapshot(self):
-        d = dict(self.perf)
-        d["loop_avg_us"] = self.perf["loop_total_us"] // max(self.perf["loop_count"], 1)
-        return d
-
-    def perf_reset(self):
-        self.perf["loop_count"] = 0
-        self.perf["loop_total_us"] = 0
-        self.perf["loop_max_us"] = 0
 
     def fcache_get(self, key, default=None, ttl_ms=500):
         from lib.sys_bus import bus
@@ -55,3 +52,16 @@ class Task:
     def fcache_flush(self):
         self._fcache.clear()
         self._fcache_ts = 0
+
+    def _lwrite(self, v0, v1, v2, v3, v4):
+        b = self._lbuf
+        _viper_write_i32(b, 0, v0)
+        _viper_write_i32(b, 4, v1)
+        _viper_write_i32(b, 8, v2)
+        _viper_write_i32(b, 12, v3)
+        _viper_write_i32(b, 16, v4)
+
+    def _lw_ex(self, idx, val):
+        b = self._lbuf_ex
+        if b:
+            _viper_write_i32(b, idx * 4, val)
