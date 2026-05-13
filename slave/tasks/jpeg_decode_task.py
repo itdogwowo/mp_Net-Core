@@ -3,7 +3,7 @@ import time
 from lib.task import Task
 from lib.sys_bus import bus
 from lib.dp_manager_service import HDR_IN, unpack_in_header_into
-from lib.dp_buffer_service import HDR_OUT, ensure_dp_buffer_service, configure_for_layout
+from lib.dp_buffer_service import HDR_OUT, ensure_dp_buffer_service, configure_for_layout, pack_out_header
 
 
 class JpegDecodeTask(Task):
@@ -45,11 +45,18 @@ class JpegDecodeTask(Task):
 
     def _ensure_buf_config(self, dp):
         epoch = int(dp.get("cfg_epoch", 0) or 0)
-        if self._seen_epoch == epoch and self._buf.get("out_hub") is not None:
+        if self._seen_epoch == epoch and self._buf.get("jpeg_out") is not None:
             return True
         self._seen_epoch = epoch
         try:
             frame_bufs = int(bus.shared.get("pipeline_frame_buffers", 3) or 3)
+            try:
+                tm = bus.shared.get("test_mode") or {}
+                if tm.get("enabled") and tm.get("active") == "jpeg_decode":
+                    sub = tm.get("jpeg_decode") or {}
+                    frame_bufs = int(sub.get("frame_buffers") or frame_bufs)
+            except Exception:
+                pass
             configure_for_layout(bus, dp.get("layout") or [], pixel_format=(dp.get("jpeg") or {}).get("pixel_format") or "RGB565_BE", num_buffers=frame_bufs)
             self._buf = bus.get_service("dp_buffer") or self._buf
             return True
@@ -116,14 +123,11 @@ class JpegDecodeTask(Task):
         if not self._ensure_buf_config(dp):
             return
 
-        out_hub = self._buf.get("out_hub")
-        if out_hub is None:
+        jpeg_out = self._buf.get("jpeg_out")
+        if jpeg_out is None:
             return
 
         if not self._ensure_decoder():
-            return
-
-        if self._buf.get("pending") is not None:
             return
 
         if self._job is None:
@@ -137,12 +141,24 @@ class JpegDecodeTask(Task):
         bpp = int(job["bpp"])
         frame_bytes = w * h * bpp
 
-        wv = out_hub.get_write_view()
+        wv = jpeg_out.get_write_view()
         if wv is None:
+            try:
+                if job["hub"] is not None:
+                    job["hub"].release_read()
+            except Exception:
+                pass
+            self._job = None
             return
         if int(len(wv)) < HDR_OUT + frame_bytes:
-            self._buf["last_err"] = "out buffer too small"
+            self._buf["last_err"] = "jpeg_out buffer too small"
             self._buf["last_ms"] = time.ticks_ms()
+            try:
+                if job["hub"] is not None:
+                    job["hub"].release_read()
+            except Exception:
+                pass
+            self._job = None
             return
 
         fb = wv[HDR_OUT : HDR_OUT + frame_bytes]
@@ -166,18 +182,20 @@ class JpegDecodeTask(Task):
         if not done:
             return
 
-        self._buf["pending"] = {
-            "seq": int(job["seq"]),
-            "label_id": int(job["label_id"]),
-            "x": int(job["x"]),
-            "y": int(job["y"]),
-            "w": int(job["w"]),
-            "h": int(job["h"]),
-            "bpp": int(job["bpp"]),
-            "payload_len": int(frame_bytes),
-            "frame_group": int(job.get("flags", 0) or 0),
-            "fmt_code": int(job.get("fmt_code", 0) or 0),
-        }
+        pack_out_header(
+            wv,
+            frame_bytes,
+            seq=int(job["seq"]),
+            label_id=int(job["label_id"]),
+            x=int(job["x"]),
+            y=int(job["y"]),
+            w=int(job["w"]),
+            h=int(job["h"]),
+            flags=int(job.get("flags", 0) or 0),
+            fmt_code=int(job.get("fmt_code", 0) or 0),
+        )
+        jpeg_out.commit()
+
         self._buf["last_ms"] = time.ticks_ms()
         self._buf["last_err"] = ""
 
@@ -188,4 +206,3 @@ class JpegDecodeTask(Task):
             pass
         self._job = None
         self.success += 1
-

@@ -168,12 +168,12 @@ def configure_from_dp_config(bus, dp, *, dp_config_path=None, service_name="dp_m
     frame_bufs = int(pipeline_cfg.get("frame_buffers", 3) or 3)
     if io_bufs < 1:
         io_bufs = 3
-    if io_bufs > 6:
-        io_bufs = 6
+    if io_bufs > 16:
+        io_bufs = 16
     if frame_bufs < 1:
         frame_bufs = 3
-    if frame_bufs > 4:
-        frame_bufs = 4
+    if frame_bufs > 16:
+        frame_bufs = 16
     bus.shared["pipeline_io_buffers"] = io_bufs
     bus.shared["pipeline_frame_buffers"] = frame_bufs
 

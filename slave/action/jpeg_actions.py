@@ -36,6 +36,9 @@ def _flush_pipeline(svc):
     buf = _get_buf()
     if buf:
         buf["pending"] = None
+        jpeg_out = buf.get("jpeg_out")
+        if jpeg_out:
+            jpeg_out.flush()
         out_hub = buf.get("out_hub")
         if out_hub:
             out_hub.flush()

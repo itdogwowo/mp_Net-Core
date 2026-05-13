@@ -102,5 +102,11 @@ class AtomicStreamHub:
             return self._views[ptr]
         return None
 
+    @micropython.native
+    def release_read(self):
+        if self._last_read_idx != -1:
+            self._status[self._last_read_idx] = _IDLE
+            self._last_read_idx = -1
+
     def force_get_view(self):
         return self._views[self._r_ptr]
