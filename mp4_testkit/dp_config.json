@@ -1,5 +1,4 @@
 {
-  "assets_pack": "/sd/output.jpk",
   "assets_root": "/sd",
   "tft": {
     "driver": "ST7789",
@@ -35,7 +34,8 @@
       "width": 320,
       "x": 0,
       "y": 0,
-      "depth": -1
+      "depth": -1,
+      "assets_pack": 1
     }
   ],
   "player": {

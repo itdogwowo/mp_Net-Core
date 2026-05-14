@@ -25,6 +25,25 @@ def _parse_pixel_format(raw):
     return s, tft_order
 
 
+def _pack_candidates(assets_root, folder, raw):
+    if raw is None:
+        return []
+    if isinstance(raw, bool):
+        raw = 1 if raw else 0
+    if isinstance(raw, int):
+        if int(raw) == 1:
+            return [assets_root + "/" + folder + ".jpk"]
+        return []
+    if isinstance(raw, str):
+        s = raw.strip()
+        if not s:
+            return []
+        if not s.startswith("/"):
+            s = assets_root + "/" + s
+        return [s]
+    return []
+
+
 def build_bus():
     cfg = load_config()
     player_cfg = cfg.get("player", {}) or {}
@@ -48,7 +67,9 @@ def build_bus():
     tft_cfg = cfg.get("tft", {}) or {}
     jpeg_cfg = cfg.get("jpeg", {}) or {}
     layout = (cfg.get("display_Layout") or [{}])[0] or {}
-    assets_pack = cfg.get("assets_pack", None)
+    assets_pack = layout.get("assets_pack", None)
+    if assets_pack is None:
+        assets_pack = cfg.get("assets_pack", None)
 
     width = int(tft_cfg.get("width", layout.get("width", 240)))
     height = int(tft_cfg.get("height", layout.get("height", 240)))
@@ -102,9 +123,7 @@ def build_bus():
 
     cache = None
     pack = None
-    pack_candidates = []
-    if isinstance(assets_pack, str) and assets_pack:
-        pack_candidates.append(assets_pack)
+    pack_candidates = _pack_candidates(assets_root, folder, assets_pack)
 
     for cand in pack_candidates:
         try:

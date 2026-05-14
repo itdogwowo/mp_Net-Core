@@ -203,10 +203,27 @@ def configure_from_dp_config(bus, dp, *, dp_config_path=None, service_name="dp_m
             "key": int(it.get("blit_key", -1) or -1),
         }
 
-        use_pack = bool(it.get("assets_pack", 0))
+        ap = it.get("assets_pack", 0)
+        use_pack = False
+        pack_path = ""
+        if isinstance(ap, str):
+            s = ap.strip()
+            if s:
+                use_pack = True
+                if s.startswith("/") or not assets_root:
+                    pack_path = s
+                else:
+                    pack_path = assets_root + "/" + s
+        else:
+            try:
+                use_pack = int(ap) == 1
+            except Exception:
+                use_pack = bool(ap)
+            if use_pack:
+                pack_path = (assets_root + "/" if assets_root else "") + label + ".jpk"
+
         item["assets_pack"] = 1 if use_pack else 0
-        if use_pack:
-            pack_path = assets_root + "/" + label + ".jpk"
+        if use_pack and pack_path:
             try:
                 import os as _os
                 from lib.pack_source import PackSource
