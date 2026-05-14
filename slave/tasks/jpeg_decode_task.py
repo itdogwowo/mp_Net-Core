@@ -14,7 +14,8 @@ class JpegDecodeTask(Task):
         self._dp = None
         self._buf = ensure_dp_buffer_service(bus)
         self._decoder = None
-        self._job = None
+        self._job = {}
+        self._job_active = False
         self._last_idle_log_ms = 0
         self._seen_epoch = None
         self._in_hdr = [0] * 10
@@ -89,24 +90,23 @@ class JpegDecodeTask(Task):
             bpp = int(self._in_hdr[7])
             flags = int(self._in_hdr[8])
             path_hash = int(self._in_hdr[9])
-            jpeg_data = rv[HDR_IN : HDR_IN + payload_len]
-            self._job = {
-                "hub": hub,
-                "rv": rv,
-                "jpeg_data": jpeg_data,
-                "payload_len": payload_len,
-                "seq": seq,
-                "label_id": label_id,
-                "x": x,
-                "y": y,
-                "w": w,
-                "h": h,
-                "bpp": bpp,
-                "flags": flags,
-                "path_hash": path_hash,
-                "fmt_code": 0,
-            }
-            return self._job
+            job = self._job
+            job["hub"] = hub
+            job["rv"] = rv
+            job["payload_len"] = payload_len
+            job["seq"] = seq
+            job["label_id"] = label_id
+            job["x"] = x
+            job["y"] = y
+            job["w"] = w
+            job["h"] = h
+            job["bpp"] = bpp
+            job["flags"] = flags
+            job["path_hash"] = path_hash
+            job["fmt_code"] = 0
+            job["jpeg_data"] = rv[HDR_IN : HDR_IN + payload_len]
+            self._job_active = True
+            return job
         except Exception:
             try:
                 hub.release_read()
@@ -142,9 +142,9 @@ class JpegDecodeTask(Task):
         if not self._ensure_decoder():
             return
 
-        if self._job is None:
+        if not self._job_active:
             self._pick_job(dp)
-            if self._job is None:
+            if not self._job_active:
                 return
 
         job = self._job
@@ -155,12 +155,6 @@ class JpegDecodeTask(Task):
 
         wv = jpeg_out.get_write_view()
         if wv is None:
-            try:
-                if job["hub"] is not None:
-                    job["hub"].release_read()
-            except Exception:
-                pass
-            self._job = None
             return
         if int(len(wv)) < HDR_OUT + frame_bytes:
             self._buf["last_err"] = "jpeg_out buffer too small"
@@ -170,7 +164,7 @@ class JpegDecodeTask(Task):
                     job["hub"].release_read()
             except Exception:
                 pass
-            self._job = None
+            self._job_active = False
             return
 
         fb = wv[HDR_OUT : HDR_OUT + frame_bytes]
@@ -182,7 +176,7 @@ class JpegDecodeTask(Task):
             step_blocks = 0
 
         try:
-            done = bool(self._decoder.decode_into(job["jpeg_data"], fb, blocks=step_blocks))
+            done = bool(self._decoder.decode_into(job.get("jpeg_data"), fb, blocks=step_blocks))
         except Exception as e:
             self._buf["last_err"] = str(e)
             self._buf["last_ms"] = time.ticks_ms()
@@ -191,7 +185,7 @@ class JpegDecodeTask(Task):
                     job["hub"].release_read()
             except Exception:
                 pass
-            self._job = None
+            self._job_active = False
             return
 
         if not done:
@@ -219,5 +213,5 @@ class JpegDecodeTask(Task):
                 job["hub"].release_read()
         except Exception:
             pass
-        self._job = None
+        self._job_active = False
         self.success += 1

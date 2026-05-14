@@ -17,6 +17,7 @@ class DisplayTask(Task):
         self._last_y = -1
         self._last_w = -1
         self._last_h = -1
+        self._last_write_ms = 0
 
         self._fps_window_t0 = 0
         self._fps_window_count = 0
@@ -69,6 +70,18 @@ class DisplayTask(Task):
         if not self.running:
             return
 
+        pace_ms = 0
+        try:
+            sys_cfg = bus.shared.get("System") if hasattr(bus, "shared") else None
+            if isinstance(sys_cfg, dict):
+                pace_ms = int(sys_cfg.get("pace_ms", 0) or 0)
+        except Exception:
+            pace_ms = 0
+        if pace_ms > 0 and self._last_write_ms:
+            now = time.ticks_ms()
+            if time.ticks_diff(now, self._last_write_ms) < pace_ms:
+                return
+
         lcd = self._resolve_lcd()
         if lcd is None:
             return
@@ -114,6 +127,7 @@ class DisplayTask(Task):
                 self._last_h = h
 
             lcd.write_data(payload)
+            self._last_write_ms = time.ticks_ms()
 
             self._buf["last_ms"] = time.ticks_ms()
             self._buf["last_err"] = ""

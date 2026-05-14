@@ -264,9 +264,6 @@ def configure_from_dp_config(bus, dp, *, dp_config_path=None, service_name="dp_m
     svc["last_err"] = ""
     svc["cfg_epoch"] = (int(svc.get("cfg_epoch", 0) or 0) + 1) & 0xFFFF
 
-    pace = int(player_cfg.get("pace_ms", 0) or 0)
-    if pace > 0:
-        bus.shared["jpeg_pace_ms"] = pace
     bus.shared["jpeg_loop"] = loop_play
     bus.shared["jpeg_blend_mode"] = blend_mode
 
@@ -280,8 +277,8 @@ def configure_from_dp_config(bus, dp, *, dp_config_path=None, service_name="dp_m
     bus.shared["fps_stats_enabled"] = fps_enable
     bus.shared["fps_stats_interval"] = fps_interval
 
-    print("[DP] blend={} pace_ms={} loop={} fps_stats={} interval={}".format(
-        blend_mode, pace, loop_play, fps_enable, fps_interval))
+    print("[DP] blend={} loop={} fps_stats={} interval={}".format(
+        blend_mode, loop_play, fps_enable, fps_interval))
     return svc
 
 

@@ -32,6 +32,31 @@ def _fmt_frame(fmt, frame_idx):
         return "{:03d}.jpeg".format(int(frame_idx))
 
 
+def _yield():
+    try:
+        time.sleep_ms(0)
+    except Exception:
+        return
+
+
+def _read_file_into(path, dst, max_len, chunk):
+    if chunk <= 0:
+        with open(path, "rb") as f:
+            n = f.readinto(dst[:max_len])
+        return 0 if n is None else int(n)
+
+    mv = dst[:max_len]
+    off = 0
+    with open(path, "rb") as f:
+        while off < max_len:
+            n = f.readinto(mv[off: off + chunk])
+            if not n:
+                break
+            off += int(n)
+            _yield()
+    return int(off)
+
+
 class DpManagerTask(Task):
     log_schema = ["jpeg_in_fill"]
 
@@ -81,8 +106,25 @@ class DpManagerTask(Task):
         if hub is None or not schedule:
             return 0
 
+        io_bufs = int(bus.shared.get("pipeline_io_buffers", 3) or 3)
+        io_prefetch = io_bufs - 2
+        if io_prefetch < 1:
+            io_prefetch = 1
+        if io_prefetch > io_bufs:
+            io_prefetch = io_bufs
+        try:
+            if int(hub.get_fill_level() or 0) >= io_prefetch:
+                return 0
+        except Exception:
+            pass
+
         filled = 0
         while filled < 3:
+            try:
+                if int(hub.get_fill_level() or 0) >= io_prefetch:
+                    break
+            except Exception:
+                pass
             wv = hub.get_write_view()
             if wv is None:
                 break
@@ -134,8 +176,6 @@ class DpManagerTask(Task):
                     next_i = 0
                     self._last_group = -1
                 src["sch_i"] = next_i
-                if group != self._last_group:
-                    src["last_frame_ms"] = time.ticks_ms()
                 self._last_group = group
                 continue
             break
@@ -164,13 +204,6 @@ class DpManagerTask(Task):
         except Exception:
             pass
 
-        pace_ms = int(self.fcache_get("jpeg_pace_ms", 0, ttl_ms=500) or 0)
-        if pace_ms > 0:
-            last_frame_ms = int(self._svc.get("last_frame_ms", 0) or 0)
-            now = time.ticks_ms()
-            if time.ticks_diff(now, last_frame_ms) < pace_ms:
-                return
-
         if self._fill_hub() > 0:
             return
 
@@ -186,13 +219,54 @@ class DpManagerTask(Task):
         if i < 0 or i >= len(schedule):
             i = 0
         job = schedule[i]
+        pack = job.get("pack_source")
         group = int(job.get("frame_group", 0) or 0)
 
-        if pace_ms > 0 and group != self._last_group and self._last_group >= 0:
-            last_frame_ms = int(src.get("last_frame_ms", 0) or 0)
-            now = time.ticks_ms()
-            if time.ticks_diff(now, last_frame_ms) < pace_ms:
+        if pack is not None:
+            label_id = int(job.get("label_id", 0) or 0)
+            x = int(job.get("x", 0) or 0)
+            y = int(job.get("y", 0) or 0)
+            w = int(job.get("w", 0) or 0)
+            h = int(job.get("h", 0) or 0)
+            bpp = int(job.get("bpp", 2) or 2)
+            try:
+                _idx, n, _dt = pack.read_next_into(wv[HDR_IN:], cap)
+            except Exception:
+                _idx, n, _dt = None, 0, 0
+            if _idx is None:
+                src["enable"] = False
+                bus.shared["jpeg_player"] = {"playing": False, "paused": False}
+                src["sch_i"] = 0
+                src["last_ms"] = time.ticks_ms()
+                self._last_group = -1
+                get_log().info("⏹ [DP] Pack ended")
                 return
+            n = int(n or 0)
+            if n <= 0:
+                return
+            seq = int(src.get("seq", 1) or 1)
+            pack_in_header(wv, n, seq=seq, label_id=label_id, x=x, y=y, w=w, h=h, bpp=bpp, flags=group, path_hash=int(_idx or 0))
+            hub.commit()
+            self.success += 1
+            src["seq"] = (seq + 1) & 0xFFFF
+
+            next_i = i + 1
+            if next_i >= len(schedule):
+                if not self.fcache_get("jpeg_loop", True):
+                    src["enable"] = False
+                    bus.shared["jpeg_player"] = {"playing": False, "paused": False}
+                    src["sch_i"] = 0
+                    src["last_ms"] = time.ticks_ms()
+                    self._last_group = -1
+                    get_log().info("⏹ [DP] Loop disabled, playback ended")
+                    return
+                next_i = 0
+                self._last_group = -1
+            src["sch_i"] = next_i
+            src["last_ms"] = time.ticks_ms()
+            self._last_group = group
+            src["last_err"] = ""
+            return
 
         assets_root = str(src.get("assets_root") or "")
         label = str(job.get("label") or "")
@@ -210,16 +284,10 @@ class DpManagerTask(Task):
 
         n = 0
         try:
-            with open(path, "rb") as f:
-                n = f.readinto(wv[HDR_IN : HDR_IN + cap])
-                if n is None:
-                    n = 0
-                try:
-                    extra = f.read(1)
-                    if extra:
-                        raise ValueError("jpeg too large")
-                except Exception:
-                    pass
+            chunk = int(bus.shared.get("dp_io_read_chunk", 2048) or 2048)
+            if chunk < 0:
+                chunk = 0
+            n = _read_file_into(path, wv[HDR_IN:], cap, chunk)
         except Exception as e:
             now = time.ticks_ms()
             src["last_err"] = str(e)
@@ -256,7 +324,5 @@ class DpManagerTask(Task):
             self._last_group = -1
         src["sch_i"] = next_i
         src["last_ms"] = time.ticks_ms()
-        if pace_ms > 0 and group != self._last_group:
-            src["last_frame_ms"] = time.ticks_ms()
         self._last_group = group
         src["last_err"] = ""

@@ -101,13 +101,8 @@ def on_jpeg_config_load(ctx, args):
 
 def on_jpeg_player_params(ctx, args):
     svc = ensure_dp_manager_service(bus)
-    pace_ms = int(args.get("pace_ms", 0) or 0)
     loop = int(args.get("loop", 255) or 255)
     blend_mode = int(args.get("blend_mode", 255) or 255)
-
-    if pace_ms > 0:
-        bus.shared["jpeg_pace_ms"] = pace_ms
-        print(f"⚙ [JPEG] pace_ms={pace_ms}")
 
     if loop != 255:
         loop_flag = bool(loop)
