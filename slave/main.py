@@ -44,14 +44,17 @@ def launcher():
 
     bus.register_service("log", get_log())
     
-    log_cfg = bus.shared.get("Log", {})
-    bus.shared["log_print"] = log_cfg.get("log_print", True)
-    bus.shared["log_print_interval_ms"] = log_cfg.get("print_interval_ms", 1000)
-    bus.shared["log_print_levels"] = log_cfg.get("print_levels", ["info", "warn", "error", "immediate"])
-    bus.shared["log_print_params"] = log_cfg.get("print_params", True)
-    bus.shared["log_record"] = log_cfg.get("record_states", True)
-
-    bus.shared["log_subscribe"] = log_cfg.get("subscribe", [])
+    sys_cfg = bus.shared.get("System", {})
+    interval = sys_cfg.get("log_interval_ms")
+    if interval is None:
+        log_cfg = sys_cfg.get("Log")
+        if log_cfg is None:
+            log_cfg = bus.shared.get("Log", {})
+        interval = log_cfg.get("print_interval_ms", 1000)
+    bus.shared["log_print"] = True
+    bus.shared["log_print_interval_ms"] = int(interval or 1000)
+    bus.shared["log_print_levels"] = ["info", "warn", "error", "immediate"]
+    bus.shared["log_subscribe"] = []
 
     # ══════════════════════════════════════════════════════
     # Debug：如何使用
@@ -60,20 +63,28 @@ def launcher():
     # ══════════════════════════════════════════════════════
     bus.shared["log_subscribe"] = "__list__"
     bus.shared["log_subscribe"] = [
-        "fps_window", "fps_total",
-        "core0_idle_pct", "core0_tick_us", "core0_loops_per_sec",
-        "core1_idle_pct", "core1_tick_us", "core1_loops_per_sec",
-        "task_render_avg_us", "task_render_touch", "task_render_success",
-        "task_display_avg_us", "task_display_touch", "task_display_success",
-        "task_jpeg_decode_avg_us", "task_jpeg_decode_touch", "task_jpeg_decode_success",
-        "task_dp_buffer_avg_us", "task_dp_buffer_touch", "task_dp_buffer_success",
-        "task_dp_manager_avg_us", "task_dp_manager_touch", "task_dp_manager_success",
-        "task_network_avg_us", "task_network_touch", "task_network_success",
-        "task_bus_decode_avg_us", "task_bus_decode_touch", "task_bus_decode_success",
-        "task_circuit_avg_us", "task_circuit_touch", "task_circuit_success",
-        "task_web_ui_avg_us", "task_web_ui_touch", "task_web_ui_success",
-        "fs_scan_total", "fs_scan_progress",
-    ]
+#                 "cpu0",
+#                 "cpu1",
+                "disp_src_fill",
+#                 "fps_total",
+#                 "fps_window",
+#                 "fs_scan_done",
+#                 "fs_scan_progress",
+#                 "fs_scan_total",
+                "jpeg_in_fill",
+                "jpeg_out_fill",
+                "bus_decode",
+                "circuit",
+                "display",
+                "dp_buffer",
+                "dp_manager",
+#                 "fs_scan",
+                "jpeg_decode",
+#                 "log",
+#                 "network",
+#                 "render",
+#                 "web_ui",
+            ]
 
     # ── Layer 0: 網路 + 通訊 + FS 掃描，最先啟動 ──
     tm.register_task("log", LogTask, default_affinity=(1, 0), layer=0)
@@ -91,8 +102,6 @@ def launcher():
     tm.register_task("dp_buffer", DpBufferTask, default_affinity=(0, 1), layer=1)
     tm.register_task("display", DisplayTask, default_affinity=(0, 1), layer=1)
     
-    bus.shared["perf_enabled"] = False
-
     tm.finalize()
 
     try:

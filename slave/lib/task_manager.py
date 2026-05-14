@@ -61,11 +61,8 @@ class TaskManager:
 
     def finalize(self):
         log = get_log()
-        for core in (0, 1):
-            off = core * 12
-            log.register_slot("core{}_tick_us".format(core), self._core_buf, off)
-            log.register_slot("core{}_idle_pct".format(core), self._core_buf, off + 4)
-            log.register_slot("core{}_loops_per_sec".format(core), self._core_buf, off + 8)
+        from lib.sys_bus import bus
+        bus.shared["_core_buf"] = self._core_buf
 
         self._task_schema_idx = {}
         task_bufs = {}
@@ -87,7 +84,6 @@ class TaskManager:
 
             self._prealloc[name] = (lbuf, lbuf_ex)
 
-        from lib.sys_bus import bus
         bus.shared["_task_bufs"] = task_bufs
 
     def _alloc_task_bufs(self, name, task):
@@ -242,10 +238,11 @@ class TaskManager:
 
         loop_count = 0
         start_time = time.ticks_ms()
-        busy_total_us = 0
 
-        _perf_enabled = True
-        _perf_refresh_ms = 0
+        _need_task_perf = False
+        _need_core_metrics = False
+        _log_cfg_refresh_ms = 0
+        _perf_interval_ms = 1000
         _engine_run = True
         _engine_refresh_ms = 0
 
@@ -259,12 +256,33 @@ class TaskManager:
             if not _engine_run:
                 break
 
-            if time.ticks_diff(now_ms, _perf_refresh_ms) > 2000:
-                _perf_enabled = bus.shared.get("perf_enabled", True)
-                _perf_refresh_ms = now_ms
-
-            if _perf_enabled:
-                t0 = time.ticks_us()
+            if time.ticks_diff(now_ms, _log_cfg_refresh_ms) > 500:
+                names = bus.shared.get("log_subscribe", [])
+                if names == "__list__" or names is None:
+                    names = []
+                if not isinstance(names, (list, tuple)):
+                    names = []
+                interval = bus.shared.get("log_print_interval_ms", 1000)
+                try:
+                    interval = int(interval or 1000)
+                except Exception:
+                    interval = 1000
+                if interval <= 0:
+                    interval = 1000
+                _perf_interval_ms = interval
+                cfg = self.config
+                need_task_perf = False
+                need_core_metrics = False
+                for n in names:
+                    if n in cfg:
+                        need_task_perf = True
+                    if n == "cpu0" or n == "cpu1":
+                        need_core_metrics = True
+                    if isinstance(n, str) and (n.startswith("core0_") or n.startswith("core1_")):
+                        need_core_metrics = True
+                _need_task_perf = need_task_perf
+                _need_core_metrics = need_core_metrics
+                _log_cfg_refresh_ms = now_ms
 
             self._update_tasks(core_id)
 
@@ -272,17 +290,16 @@ class TaskManager:
                 time.sleep_ms(100)
                 loop_count = 0
                 start_time = time.ticks_ms()
-                busy_total_us = 0
                 continue
 
             current_tasks = list(self.active_tasks[core_id].items())
 
             for name, task in current_tasks:
                 try:
-                    if _perf_enabled:
+                    if _need_task_perf:
                         t_task0 = time.ticks_us()
                     task.loop()
-                    if _perf_enabled:
+                    if _need_task_perf:
                         t_task1 = time.ticks_us()
                         elapsed = time.ticks_diff(t_task1, t_task0)
                         task.perf["loop_us"] = elapsed
@@ -306,29 +323,19 @@ class TaskManager:
                     time.sleep_ms(1000)
 
             time.sleep_ms(0)
-            if _perf_enabled:
-                t1 = time.ticks_us()
-                busy_total_us += time.ticks_diff(t1, t0)
+            if _need_core_metrics:
                 loop_count += 1
                 duration = time.ticks_diff(now_ms, start_time)
 
-                if duration >= 2000 and loop_count > 0:
-                    avg_tick_us = busy_total_us // loop_count
-                    elapsed_total_us = duration * 1000
-                    idle_pct = max(0, 100 - (busy_total_us * 100 // elapsed_total_us))
-                    hz = (loop_count * 1000) // duration
-
+                if duration >= _perf_interval_ms and loop_count > 0:
                     off = core_id * 12
-                    _viper_write_i32(self._core_buf, off, avg_tick_us)
-                    _viper_write_i32(self._core_buf, off + 4, idle_pct)
-                    _viper_write_i32(self._core_buf, off + 8, hz)
+                    _viper_write_i32(self._core_buf, off, loop_count)
 
                     loop_count = 0
                     start_time = now_ms
-                    busy_total_us = 0
 
-            if time.ticks_diff(now_ms, self._perf_snapshot_ms[core_id]) >= 2000:
+            if time.ticks_diff(now_ms, self._perf_snapshot_ms[core_id]) >= _perf_interval_ms:
                 self._perf_snapshot_ms[core_id] = now_ms
-                self._snapshot_task_perf(core_id, _perf_enabled)
+                self._snapshot_task_perf(core_id, _need_task_perf)
 
         log.info("\U0001f6d1 [Core {}] Runner Stopped".format(core_id))

@@ -8,31 +8,50 @@ class LogTask(Task):
         super().on_start()
         from lib.sys_bus import bus
         bus.shared["log_task_ready"] = True
+        self._cpu0 = False
+        self._cpu1 = False
+        self._core_buf = None
+        self._rows = ()
+        self._others = ()
+        self._last_print_ms = 0
 
         names = bus.shared.get("log_subscribe", [])
+        if not isinstance(names, (list, tuple)) and names != "__list__":
+            names = []
         log = get_log()
 
         if names == "__list__":
             all_names = log.get_metric_names()
             task_bufs = bus.shared.get("_task_bufs", {})
-            custom = sorted(all_names)
+            custom = sorted(n for n in all_names if not (str(n).startswith("core0_") or str(n).startswith("core1_")))
             tnames = sorted(task_bufs)
             print("[LOG] -- copy-paste subscribe list ----------------------------------")
             print("subscribe = [")
+            print('    "cpu0",')
+            print('    "cpu1",')
             for n in custom:
                 print('    "{}",'.format(n))
             for tn in tnames:
                 print('    "{}",'.format(tn))
             print("]")
             print("[LOG] {} custom + {} task slots total".format(len(custom), len(tnames)))
-            self._rows = ()
-            self._others = ()
             return
 
         task_bufs = bus.shared.get("_task_bufs", {})
+        core_buf = bus.shared.get("_core_buf")
+        if isinstance(names, (list, tuple)):
+            for n in names:
+                if n == "cpu0":
+                    self._cpu0 = True
+                elif n == "cpu1":
+                    self._cpu1 = True
+        self._core_buf = core_buf
+
         sub_tasks = set()
         sub_names = []
         for n in names:
+            if n == "cpu0" or n == "cpu1":
+                continue
             if n in task_bufs:
                 sub_tasks.add(n)
             else:
@@ -43,7 +62,7 @@ class LogTask(Task):
         elif sub_names:
             self._rows = ()
         else:
-            self._rows = tuple((tn, b) for tn, b in sorted(task_bufs.items()))
+            self._rows = ()
 
         if not sub_names:
             self._others = ()
@@ -61,11 +80,15 @@ class LogTask(Task):
 
         rows = self._rows
         others = self._others
-        if not rows and not others:
+        if not rows and not others and not self._cpu0 and not self._cpu1:
             return
 
         now = time.ticks_ms()
-        if time.ticks_diff(now, self._last_print_ms) < 1000:
+        from lib.sys_bus import bus
+        interval = int(bus.shared.get("log_print_interval_ms", 1000) or 1000)
+        if interval <= 0:
+            interval = 1000
+        if time.ticks_diff(now, self._last_print_ms) < interval:
             return
         self._last_print_ms = now
 
@@ -79,6 +102,17 @@ class LogTask(Task):
                 continue
             log.immediate("Task[{}] avg={}us max={}us n={} t={} s={}".format(
                 task_name, avg, max_us, count, touch_v, succ_v))
+
+        core_buf = self._core_buf
+        if core_buf:
+            if self._cpu0:
+                loops = _viper_read_i32(core_buf, 0)
+                if loops > 0:
+                    log.immediate("CPU0 loops={}".format(loops))
+            if self._cpu1:
+                loops = _viper_read_i32(core_buf, 12)
+                if loops > 0:
+                    log.immediate("CPU1 loops={}".format(loops))
 
         for name, buf, off in others:
             v = _viper_read_i32(buf, off)

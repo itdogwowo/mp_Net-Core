@@ -12,7 +12,8 @@
     "heartbeat_interval": 10000,
     "local_fps": 40,
     "num_leds": 336,
-    "buffer_frames": 1
+    "buffer_frames": 1,
+    "log_interval_ms": 1000
   },
   "Buffer": {
     "size": 1024,
@@ -188,16 +189,5 @@
         "order": "BGRW"
       }
     ]
-  },
-  "Log": {
-    "print_interval_ms": 1000,
-    "print_levels": [
-      "info",
-      "warn",
-      "error",
-      "immediate"
-    ],
-    "record_states": true,
-    "print_params": true
   }
 }

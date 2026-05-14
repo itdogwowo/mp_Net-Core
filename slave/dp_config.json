@@ -42,8 +42,8 @@
     "loop": true,
     "blend_mode": "interleave",
     "pipeline": {
-      "io_buffers": 10,
-      "frame_buffers": 10
+      "io_buffers": 20,
+      "frame_buffers": 15
     },
     "stats": {
       "enabled": true,

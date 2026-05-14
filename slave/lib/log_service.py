@@ -49,9 +49,6 @@ class LogService:
         self._push("error", msg)
 
     def state(self, key, value):
-        from lib.sys_bus import bus
-        if not bus.shared.get("log_record", True):
-            return
         self._states[key] = value
 
     def _push(self, level, msg):
@@ -66,7 +63,7 @@ class LogService:
         log_enabled = bus.shared.get("log_print", True)
         interval = bus.shared.get("log_print_interval_ms", 0)
         levels = bus.shared.get("log_print_levels", ["info", "warn", "error", "immediate"])
-        show_params = bus.shared.get("log_print_params", True)
+        show_params = True
         return log_enabled, interval, levels, show_params
 
     def flush(self):
