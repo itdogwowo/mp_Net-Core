@@ -65,19 +65,19 @@ def launcher():
     bus.shared["log_subscribe"] = [
 #                 "cpu0",
 #                 "cpu1",
-                "disp_src_fill",
+#                 "disp_src_fill",
 #                 "fps_total",
 #                 "fps_window",
 #                 "fs_scan_done",
 #                 "fs_scan_progress",
 #                 "fs_scan_total",
-                "jpeg_in_fill",
-                "jpeg_out_fill",
-                "bus_decode",
-                "circuit",
-                "display",
-                "dp_buffer",
-                "dp_manager",
+#                 "jpeg_in_fill",
+#                 "jpeg_out_fill",
+#                 "bus_decode",
+#                 "circuit",
+#                 "display",
+#                 "dp_buffer",
+#                 "dp_manager",
 #                 "fs_scan",
                 "jpeg_decode",
 #                 "log",
@@ -100,7 +100,7 @@ def launcher():
     tm.register_task("dp_manager", DpManagerTask, default_affinity=(1, 0), layer=1)
     tm.register_task("jpeg_decode", JpegDecodeTask, default_affinity=(0, 1), layer=1)
     tm.register_task("dp_buffer", DpBufferTask, default_affinity=(0, 1), layer=1)
-    tm.register_task("display", DisplayTask, default_affinity=(0, 1), layer=1)
+    tm.register_task("display", DisplayTask, default_affinity=(1, 0), layer=1)
     
     tm.finalize()
 

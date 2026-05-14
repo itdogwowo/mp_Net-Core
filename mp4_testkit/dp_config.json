@@ -1,5 +1,5 @@
 {
-  "assets_pack": "",
+  "assets_pack": "/sd/output.jpk",
   "assets_root": "/sd",
   "tft": {
     "driver": "ST7789",
@@ -11,13 +11,13 @@
     "spi": {
       "id": 1,
       "baudrate": 80000000,
-      "sck": 12,
-      "mosi": 11
+      "sck": 21,
+      "mosi": 14
     },
     "pins": {
-      "dc": 13,
-      "cs": 10,
-      "rst": 14
+      "dc": 12,
+      "cs": 11,
+      "rst": 13
     }
   },
   "jpeg": {
@@ -30,7 +30,7 @@
   },
   "display_Layout": [
     {
-      "type": "background",
+      "type": "output",
       "height": 240,
       "width": 320,
       "x": 0,
@@ -49,7 +49,7 @@
       "preload": 16
     },
     "stats": {
-      "enabled": true,
+      "enabled": 0,
       "interval_ms": 1000,
       "frames_n": 60
     }
