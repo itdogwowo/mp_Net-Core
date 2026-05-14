@@ -1,0 +1,43 @@
+{
+  "group": "ram_bench",
+  "cmds": [
+    {
+      "cmd": "0x1811",
+      "name": "RAM_BENCH_START",
+      "payload": [
+        {"name": "run_id", "type": "u16"},
+        {"name": "total_size", "type": "u32"},
+        {"name": "chunk_size", "type": "u16"},
+        {"name": "mode", "type": "u8"},
+        {"name": "ring_kb", "type": "u16"}
+      ]
+    },
+    {
+      "cmd": "0x1812",
+      "name": "RAM_BENCH_CHUNK",
+      "payload": [
+        {"name": "run_id", "type": "u16"},
+        {"name": "seq", "type": "u32"},
+        {"name": "data", "type": "bytes_rest"}
+      ]
+    },
+    {
+      "cmd": "0x1813",
+      "name": "RAM_BENCH_STOP",
+      "payload": [
+        {"name": "run_id", "type": "u16"}
+      ]
+    },
+    {
+      "cmd": "0x1814",
+      "name": "RAM_BENCH_REPORT",
+      "payload": [
+        {"name": "run_id", "type": "u16"},
+        {"name": "bytes", "type": "u32"},
+        {"name": "chunks", "type": "u32"},
+        {"name": "elapsed_ms", "type": "u32"},
+        {"name": "mb_s_x1000", "type": "u32"}
+      ]
+    }
+  ]
+}

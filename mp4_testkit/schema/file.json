@@ -1,0 +1,140 @@
+{
+  "group": "file",
+  "cmds": [
+    {
+      "cmd": "0x2001",
+      "name": "FILE_BEGIN",
+      "payload": [
+        {
+          "name": "file_id",
+          "type": "u16"
+        },
+        {
+          "name": "total_size",
+          "type": "u32"
+        },
+        {
+          "name": "chunk_size",
+          "type": "u16"
+        },
+        {
+          "name": "sha256",
+          "type": "bytes_fixed",
+          "len": 32
+        },
+        {
+          "name": "path",
+          "type": "str_u16len"
+        }
+      ]
+    },
+    {
+      "cmd": "0x2002",
+      "name": "FILE_CHUNK",
+      "payload": [
+        {
+          "name": "file_id",
+          "type": "u16"
+        },
+        {
+          "name": "offset",
+          "type": "u32"
+        },
+        {
+          "name": "data",
+          "type": "bytes_rest"
+        }
+      ]
+    },
+    {
+      "cmd": "0x2003",
+      "name": "FILE_END",
+      "payload": [
+        {
+          "name": "file_id",
+          "type": "u16"
+        }
+      ]
+    },
+    {
+      "cmd": "0x2004",
+      "name": "FILE_ACK",
+      "payload": [
+        {
+          "name": "file_id",
+          "type": "u16"
+        },
+        {
+          "name": "offset",
+          "type": "u32"
+        }
+      ]
+    },
+    {
+      "cmd": "0x2005",
+      "name": "FILE_QUERY",
+      "payload": [
+        {
+          "name": "path",
+          "type": "str_u16len"
+        }
+      ]
+    },
+    {
+      "cmd": "0x2006",
+      "name": "FILE_QUERY_RSP",
+      "payload": [
+        {
+          "name": "exists",
+          "type": "u8"
+        },
+        {
+          "name": "sha256",
+          "type": "bytes_fixed",
+          "len": 32
+        },
+        {
+          "name": "size",
+          "type": "u32"
+        },
+        {
+          "name": "path",
+          "type": "str_u16len"
+        }
+      ]
+    },
+    {
+      "cmd": "0x2007",
+      "name": "FILE_READ",
+      "payload": [
+        {
+          "name": "path",
+          "type": "str_u16len"
+        },
+        {
+          "name": "offset",
+          "type": "u32"
+        },
+        {
+          "name": "length",
+          "type": "u16"
+        }
+      ]
+    },
+    {
+      "cmd": "0x2009",
+      "name": "FILE_DELETE",
+      "payload": [
+        {
+          "name": "path",
+          "type": "str_u16len"
+        }
+      ]
+    },
+    {
+      "cmd": "0x200B",
+      "name": "FILE_SCAN",
+      "payload": []
+    }
+  ]
+}

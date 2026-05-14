@@ -7,8 +7,9 @@ from lib.buffer_hub import AtomicStreamHub
 from lib.config_loader import load_config
 from lib.media_source import compute_max_file_size, compute_max_frame_size, list_jpegs
 from lib.pack_source import PackSource
+from lib.comm import init_comms_from_config
 from lib.sdio_mount import mount_from_config
-from lib.sys_bus import SysBus
+from lib.sys_bus import bus
 
 
 def _parse_pixel_format(raw):
@@ -99,7 +100,9 @@ def build_bus():
     pipeline_preload_limit = pipeline_cfg.get("preload_limit_bytes", None)
     io_buffers = None if pipeline_io_buffers is None else int(pipeline_io_buffers)
     frame_buffers = None if pipeline_frame_buffers is None else int(pipeline_frame_buffers)
-    stats_cfg = player_cfg.get("stats", {}) or {}
+    stats_cfg = player_cfg.get("stats", None)
+    if not isinstance(stats_cfg, dict):
+        stats_cfg = cfg.get("stats", {}) or {}
     stats_enabled = bool(stats_cfg.get("enabled", False))
     stats_interval_ms = int(stats_cfg.get("interval_ms", 1000) or 1000)
     stats_frames_n = int(stats_cfg.get("frames_n", 60) or 60)
@@ -259,7 +262,7 @@ def build_bus():
     )
     lcd.set_window(0, 0)
 
-    bus = SysBus()
+    bus.reset()
     bus.shared["config"] = cfg
     bus.shared["debug"] = debug
     bus.shared["width"] = width
@@ -283,6 +286,7 @@ def build_bus():
     bus.shared["engine_run"] = True
     bus.shared["core1_ready"] = False
 
+    bus.set_service("data_Phat", sd_mount or "")
     bus.set_service("lcd", lcd)
     bus.set_service("decoder", decoder)
     bus.set_service("paths", paths)
@@ -327,5 +331,7 @@ def build_bus():
     if io_read_chunk < 0:
         io_read_chunk = 0
     bus.shared["io_read_chunk"] = io_read_chunk
+
+    init_comms_from_config(bus, cfg)
 
     return bus

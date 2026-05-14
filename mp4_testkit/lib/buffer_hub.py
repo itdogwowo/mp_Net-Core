@@ -31,7 +31,7 @@ class AtomicStreamHub:
         self.num_buffers = num_buffers
         self._last_read_idx = -1
 
-        print("[BufferHub] Ready: {} KB total".format((size * num_buffers) // 1024))
+        print("🚀 [BufferHub] Ready: {} KB total".format((size * num_buffers) // 1024))
 
     @property
     def dirty(self):
@@ -59,13 +59,6 @@ class AtomicStreamHub:
         self._status[ptr] = _IDLE
         self._r_ptr = (ptr + 1) % self.num_buffers
         return True
-
-    @micropython.native
-    def release_read(self):
-        idx = self._last_read_idx
-        if idx != -1:
-            self._status[idx] = _IDLE
-            self._last_read_idx = -1
 
     @micropython.native
     def flush(self):
@@ -98,6 +91,9 @@ class AtomicStreamHub:
 
     @micropython.native
     def get_read_view(self):
+        if self._last_read_idx != -1:
+            self._status[self._last_read_idx] = _IDLE
+            self._last_read_idx = -1
         ptr = self._r_ptr
         if self._status[ptr] == _READY:
             self._status[ptr] = _READING
@@ -105,6 +101,12 @@ class AtomicStreamHub:
             self._r_ptr = (ptr + 1) % self.num_buffers
             return self._views[ptr]
         return None
+
+    @micropython.native
+    def release_read(self):
+        if self._last_read_idx != -1:
+            self._status[self._last_read_idx] = _IDLE
+            self._last_read_idx = -1
 
     def force_get_view(self):
         return self._views[self._r_ptr]

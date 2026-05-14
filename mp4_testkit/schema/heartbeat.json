@@ -1,0 +1,23 @@
+{
+  "group": "heartbeat",
+  "cmds": [
+    {
+      "cmd": "0x1201",
+      "name": "HEARTBEAT",
+      "payload": [
+        {"name": "slave_id", "type": "str_u16len"},
+        {"name": "uptime_ms", "type": "u32"},
+        {"name": "mem_free", "type": "u32"},
+        {"name": "ws_connected", "type": "u8"}
+      ]
+    },
+    {
+      "cmd": "0x1202",
+      "name": "HEARTBEAT_ACK",
+      "payload": [
+        {"name": "server_time", "type": "u32"},
+        {"name": "success", "type": "u8"}
+      ]
+    }
+  ]
+}

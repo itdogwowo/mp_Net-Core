@@ -5,8 +5,9 @@ def load_config():
     candidates = [
         "mp4_testkit/dp_config.json",
         "./mp4_testkit/dp_config.json",
+        "/dp_config.json",
         "dp_config.json",
-        "./dp_config.json",
+        "./config.json",
         "jpeg/dp_config.json",
         "./jpeg/dp_config.json",
         "/jpeg/dp_config.json",

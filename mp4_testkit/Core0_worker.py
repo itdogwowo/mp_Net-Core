@@ -34,6 +34,7 @@ def task_loop(bus):
     # 依賴的服務（由 bus 注入）
     lcd = bus.get_service("lcd")
     paths = bus.get_service("paths")
+    comm = bus.get_service("comm")
 
     # 執行參數（由 shared 設定）
     pace_ms = int(bus.shared.get("pace_ms", 0) or 0)
@@ -185,7 +186,8 @@ def task_loop(bus):
     # 主迴圈：持續餵 JPEG 到 io_hub；同時從 frame_hub 取出已解碼 frame 顯示到 LCD
     while True:
         did_work = False
-
+        if comm is not None:
+            comm.poll()
 
         r = frame_hub.get_read_view()
         if r is not None:
@@ -214,6 +216,8 @@ def task_loop(bus):
                         break
                     remain = pace_ms - dt_ms
                     if remain <= 2:
+                        if comm is not None:
+                            comm.poll()
                         time.sleep_ms(1)
                         continue
 
