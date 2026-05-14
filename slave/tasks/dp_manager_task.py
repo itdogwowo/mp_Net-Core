@@ -33,6 +33,8 @@ def _fmt_frame(fmt, frame_idx):
 
 
 class DpManagerTask(Task):
+    log_schema = ["jpeg_in_fill"]
+
     def on_start(self):
         super().on_start()
         self._svc = ensure_dp_manager_service(bus)
@@ -157,6 +159,10 @@ class DpManagerTask(Task):
         schedule = self._svc.get("schedule") or []
         if hub is None or not schedule:
             return
+        try:
+            self._lw_ex(0, int(hub.get_fill_level() or 0) + 1)
+        except Exception:
+            pass
 
         pace_ms = int(self.fcache_get("jpeg_pace_ms", 0, ttl_ms=500) or 0)
         if pace_ms > 0:

@@ -7,6 +7,8 @@ from lib.dp_buffer_service import HDR_OUT, ensure_dp_buffer_service, configure_f
 
 
 class JpegDecodeTask(Task):
+    log_schema = ["jpeg_out_fill", "jpeg_in_fill"]
+
     def on_start(self):
         super().on_start()
         self._dp = None
@@ -126,6 +128,16 @@ class JpegDecodeTask(Task):
         jpeg_out = self._buf.get("jpeg_out")
         if jpeg_out is None:
             return
+        try:
+            self._lw_ex(0, int(jpeg_out.get_fill_level() or 0) + 1)
+        except Exception:
+            pass
+        try:
+            hub_in = dp.get("jpeg_in")
+            if hub_in is not None:
+                self._lw_ex(1, int(hub_in.get_fill_level() or 0) + 1)
+        except Exception:
+            pass
 
         if not self._ensure_decoder():
             return
@@ -162,7 +174,10 @@ class JpegDecodeTask(Task):
             return
 
         fb = wv[HDR_OUT : HDR_OUT + frame_bytes]
-        step_blocks = int((dp.get("jpeg") or {}).get("step_blocks", 1) or 1)
+        step_blocks = (dp.get("jpeg") or {}).get("step_blocks", 1)
+        if step_blocks is None:
+            step_blocks = 1
+        step_blocks = int(step_blocks)
         if step_blocks < 0:
             step_blocks = 0
 

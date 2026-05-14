@@ -10,12 +10,14 @@ class DpBufferTask(Task):
     def on_start(self):
         super().on_start()
         self._svc = ensure_dp_buffer_service(bus)
+        self._disabled = False
 
         pf = str(self._svc.get("pixel_format") or "")
         if pf.startswith("RGB888"):
             tm = bus.get_service("task_manager")
             if tm:
                 tm.set_affinity("dp_buffer", (0, 0))
+            self._disabled = True
             return
 
     def loop(self):
@@ -24,6 +26,14 @@ class DpBufferTask(Task):
 
         self._svc = bus.get_service("dp_buffer") or self._svc
         if not self._svc or not self._svc.get("enable", True):
+            return
+        pf = str(self._svc.get("pixel_format") or "")
+        if pf.startswith("RGB888"):
+            if not self._disabled:
+                tm = bus.get_service("task_manager")
+                if tm:
+                    tm.set_affinity("dp_buffer", (0, 0))
+                self._disabled = True
             return
 
         jpeg_out = self._svc.get("jpeg_out")

@@ -6,20 +6,17 @@ from lib.dp_buffer_service import HDR_OUT, ensure_dp_buffer_service, unpack_out_
 
 
 class DisplayTask(Task):
-    log_schema = ["fps_window", "fps_total"]
+    log_schema = ["fps_window", "fps_total", "disp_src_fill"]
 
     def on_start(self):
         super().on_start()
         self._buf = ensure_dp_buffer_service(bus)
         self._lcd = None
-        self._read_buf = None
         self._out_hdr = [0] * 9
         self._last_x = -1
         self._last_y = -1
         self._last_w = -1
         self._last_h = -1
-
-        self._use_jpeg_out = str(self._buf.get("pixel_format") or "").startswith("RGB888")
 
         self._fps_window_t0 = 0
         self._fps_window_count = 0
@@ -80,19 +77,21 @@ class DisplayTask(Task):
         if not self._buf or not self._buf.get("enable", True):
             return
 
-        hub = self._buf.get("jpeg_out") if self._use_jpeg_out else self._buf.get("out_hub")
+        use_jpeg_out = str(self._buf.get("pixel_format") or "").startswith("RGB888")
+        hub = self._buf.get("jpeg_out") if use_jpeg_out else self._buf.get("out_hub")
         if hub is None:
             return
+        try:
+            self._lw_ex(2, int(hub.get_fill_level() or 0) + 1)
+        except Exception:
+            pass
 
-        hub_size = HDR_OUT + int(self._buf.get("max_frame_bytes", 0) or 0)
-        if self._read_buf is None or len(self._read_buf) < hub_size:
-            self._read_buf = bytearray(hub_size)
-
-        if not hub.read_into(self._read_buf):
+        rv = hub.get_read_view()
+        if rv is None:
             return
 
         try:
-            unpack_out_header_into(self._read_buf, self._out_hdr)
+            unpack_out_header_into(rv, self._out_hdr)
             payload_len = int(self._out_hdr[0])
             if payload_len <= 0:
                 return
@@ -100,7 +99,7 @@ class DisplayTask(Task):
             y = int(self._out_hdr[4])
             w = int(self._out_hdr[5])
             h = int(self._out_hdr[6])
-            payload = self._read_buf[HDR_OUT : HDR_OUT + payload_len]
+            payload = rv[HDR_OUT : HDR_OUT + payload_len]
             if x != self._last_x or y != self._last_y or w != self._last_w or h != self._last_h:
                 try:
                     lcd.set_window(x, y, x + w - 1, y + h - 1)
@@ -127,3 +126,8 @@ class DisplayTask(Task):
             except Exception:
                 pass
             self._lcd = None
+        finally:
+            try:
+                hub.release_read()
+            except Exception:
+                pass

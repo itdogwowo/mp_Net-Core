@@ -91,7 +91,10 @@ def configure_for_layout(bus, layout, *, pixel_format="RGB565_LE", num_buffers=3
     svc["max_frame_bytes"] = int(max_frame_bytes)
     hub_size = HDR_OUT + int(max_frame_bytes)
     svc["jpeg_out"] = AtomicStreamHub(hub_size, num_buffers=int(num_buffers))
-    svc["out_hub"] = AtomicStreamHub(hub_size, num_buffers=int(num_buffers))
+    if str(svc["pixel_format"]).startswith("RGB888"):
+        svc["out_hub"] = None
+    else:
+        svc["out_hub"] = AtomicStreamHub(hub_size, num_buffers=int(num_buffers))
     svc["pending"] = None
     svc["cfg_epoch"] = (int(svc.get("cfg_epoch", 0) or 0) + 1) & 0xFFFF
     return svc
@@ -103,4 +106,3 @@ def pack_out_header(buf, payload_len, *, seq=0, label_id=0, x=0, y=0, w=0, h=0, 
 
 def unpack_out_header(buf):
     return _unpack_from(buf, 0)
-
