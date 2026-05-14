@@ -44,10 +44,9 @@ class FileSystemManager:
                 self.manifest = ujson.load(f)
             print(f"📦 [FS] Manifest loaded: {len(self.manifest)} files")
         except:
-            print("⚠️ [FS] Manifest missing or corrupt, starting scan...")
+            print("⚠️ [FS] Manifest missing or corrupt, skip auto scan")
             self.manifest = {}
-            # Start background scan if manifest is missing
-            self.scan_all()
+            return
 
     def _load_scan_ignore(self):
         prefixes = []

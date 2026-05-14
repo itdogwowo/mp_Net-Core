@@ -1,0 +1,39 @@
+{
+  "group": "mp4",
+  "cmds": [
+    {
+      "cmd": "0x3201",
+      "name": "MP4_PLAYER_CTL",
+      "payload": [
+        {"name": "action", "type": "u8"},
+        {"name": "value", "type": "u32"}
+      ]
+    },
+    {
+      "cmd": "0x3202",
+      "name": "MP4_SOURCE_SET",
+      "payload": [
+        {"name": "source", "type": "str_u16len"},
+        {"name": "mode", "type": "u8"}
+      ]
+    },
+    {
+      "cmd": "0x3203",
+      "name": "MP4_STATUS_GET",
+      "payload": []
+    },
+    {
+      "cmd": "0x3204",
+      "name": "MP4_STATUS_RSP",
+      "payload": [
+        {"name": "playing", "type": "u8"},
+        {"name": "paused", "type": "u8"},
+        {"name": "mode", "type": "u8"},
+        {"name": "frame", "type": "u32"},
+        {"name": "total", "type": "u32"},
+        {"name": "source", "type": "str_u16len"},
+        {"name": "err", "type": "str_u16len"}
+      ]
+    }
+  ]
+}

@@ -1,5 +1,39 @@
 {
   "assets_root": "/sd",
+  "debug": true,
+  "scan_ignore": ["/sd"],
+  "System": {
+    "master_IP": "",
+    "master_port": 0,
+    "discovery_port": 9000,
+    "heartbeat_interval": 10000,
+    "log_interval_ms": 1000
+  },
+  "Network": {
+    "priority": ["wifi", "lan"],
+    "lan": { "enable": 0, "active_mode": 1 },
+    "wifi": {
+      "enable": 1,
+      "active_mode": 2,
+      "timeout": 300,
+      "ssid": "",
+      "ssid_pw": "",
+      "mdns_name": "esp32-led-"
+    }
+  },
+  "Buffer": {
+    "size": 4096,
+    "rx_hub_buffers": 8,
+    "decode_budget_slots": 32,
+    "drop_on_full": 1,
+    "drain_reads": 1
+  },
+  "UART": {
+    "enable": 1,
+    "list": [
+      { "id": 1, "baudrate": 115200, "GPIO": { "tx": 8, "rx": 18 } }
+    ]
+  },
   "tft": {
     "driver": "ST7789",
     "width": 240,
@@ -49,7 +83,7 @@
       "preload": 16
     },
     "stats": {
-      "enabled": 0,
+      "enabled": 1,
       "interval_ms": 1000,
       "frames_n": 60
     }

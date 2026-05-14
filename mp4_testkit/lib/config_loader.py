@@ -3,6 +3,11 @@ import json
 
 def load_config():
     candidates = [
+        "mp4_testkit/config.json",
+        "./mp4_testkit/config.json",
+        "/config.json",
+        "config.json",
+        "./config.json",
         "mp4_testkit/dp_config.json",
         "./mp4_testkit/dp_config.json",
         "/dp_config.json",

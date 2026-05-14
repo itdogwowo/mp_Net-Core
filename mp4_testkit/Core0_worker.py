@@ -35,6 +35,10 @@ def task_loop(bus):
     lcd = bus.get_service("lcd")
     paths = bus.get_service("paths")
     comm = bus.get_service("comm")
+    mp4 = bus.shared.get("mp4_player")
+    if not isinstance(mp4, dict):
+        mp4 = {}
+        bus.shared["mp4_player"] = mp4
 
     # 執行參數（由 shared 設定）
     pace_ms = int(bus.shared.get("pace_ms", 0) or 0)
@@ -166,6 +170,95 @@ def task_loop(bus):
             return i % len(paths)
         return len(paths) - 1
 
+    def _flush_hubs():
+        try:
+            io_hub.flush()
+        except Exception:
+            pass
+        try:
+            frame_hub.flush()
+        except Exception:
+            pass
+
+    def _apply_source_req(req):
+        nonlocal paths, pack, idx, max_jpeg_bytes
+        if not isinstance(req, dict):
+            return
+        source = str(req.get("source", "") or "").strip()
+        mode = int(req.get("mode", 0) or 0)
+        if not source:
+            mp4["err"] = "empty source"
+            return
+
+        mp4["err"] = ""
+        mp4["source"] = source
+        mp4["mode"] = mode
+        mp4["frame"] = 0
+        idx = 0
+        bus.shared["src_idx"] = 0
+
+        import os
+        if mode == 1:
+            try:
+                from lib.pack_source import PackSource
+                cand = source
+                if not cand.startswith("/"):
+                    assets_root = (bus.shared.get("config") or {}).get("assets_root") or "/jpeg"
+                    assets_root = str(assets_root).rstrip("/")
+                    cand = assets_root + "/" + cand
+                os.stat(cand)
+                new_pack = PackSource(cand, loop=loop_play)
+                if int(new_pack.max_size) > int(max_jpeg_bytes):
+                    new_pack.close()
+                    mp4["err"] = "pack too big"
+                    return
+                if pack is not None:
+                    try:
+                        pack.close()
+                    except Exception:
+                        pass
+                pack = new_pack
+                paths = []
+                bus.set_service("pack", pack)
+                bus.set_service("paths", paths)
+                mp4["total"] = int(pack.count)
+            except Exception as e:
+                mp4["err"] = str(e)
+                return
+        else:
+            try:
+                folder = source
+                if folder.endswith(".jpk"):
+                    mp4["err"] = "folder expects name, got .jpk"
+                    return
+                assets_root = (bus.shared.get("config") or {}).get("assets_root") or "/jpeg"
+                assets_root = str(assets_root).rstrip("/")
+                folder_path = assets_root + "/" + folder
+                from lib.media_source import list_jpegs, compute_max_file_size
+                pths = list_jpegs(folder_path)
+                if not pths:
+                    mp4["err"] = "no jpegs"
+                    return
+                mx = int(compute_max_file_size(pths))
+                if mx > int(max_jpeg_bytes):
+                    mp4["err"] = "jpeg too big"
+                    return
+                if pack is not None:
+                    try:
+                        pack.close()
+                    except Exception:
+                        pass
+                pack = None
+                paths = pths
+                bus.set_service("pack", None)
+                bus.set_service("paths", paths)
+                mp4["total"] = int(len(paths))
+            except Exception as e:
+                mp4["err"] = str(e)
+                return
+
+        _flush_hubs()
+
     def _pack_fill_step(w, step):
         step = 1 if step < 1 else step
         frame_idx = 0
@@ -188,9 +281,51 @@ def task_loop(bus):
         did_work = False
         if comm is not None:
             comm.poll()
+        if bus.shared.pop("mp4_flush", 0):
+            _flush_hubs()
+
+        req = bus.shared.pop("mp4_source_req", None)
+        if req is not None:
+            _apply_source_req(req)
+
+        seek = bus.shared.pop("mp4_seek", None)
+        if seek is not None:
+            try:
+                seek = int(seek)
+            except Exception:
+                seek = 0
+            if seek > 0:
+                idx = 0 if not paths else (seek % len(paths))
+                bus.shared["src_idx"] = idx
+                if pack is not None:
+                    try:
+                        pack.reset()
+                        if seek > 0:
+                            pack.skip_next(seek)
+                    except Exception:
+                        pass
+                _flush_hubs()
+
+        paused = bool(bus.shared.get("mp4_paused", False))
+        playing = bool(bus.shared.get("mp4_playing", True))
+        mp4["playing"] = bool(playing)
+        mp4["paused"] = bool(paused)
+        mp4["frame"] = int(bus.shared.get("src_idx", 0) or 0)
+        if pack is not None:
+            mp4["mode"] = 1
+            mp4["total"] = int(getattr(pack, "count", 0) or 0)
+            mp4["source"] = str(getattr(pack, "path", "") or "")
+        else:
+            mp4["mode"] = 2
+            mp4["total"] = int(len(paths) if paths else 0)
+
+        if paused or not playing:
+            time.sleep_ms(1)
+            continue
 
         r = frame_hub.get_read_view()
         if r is not None:
+            frame_t0_ms = time.ticks_ms()
             frame_t0_ms = time.ticks_ms()
             dec_us = read_u32_le(r, frame_bytes + 4)
             read_us = read_u32_le(r, frame_bytes + 8)

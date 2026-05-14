@@ -9,6 +9,7 @@ from action import sys_actions
 from action import heartbeat_actions
 from action import ram_bench_actions
 from action import jpeg_actions
+from action import mp4_actions
 
 def register_all(app):
     file_actions.register(app)
@@ -19,3 +20,4 @@ def register_all(app):
     heartbeat_actions.register(app)
     ram_bench_actions.register(app)
     jpeg_actions.register(app)
+    mp4_actions.register(app)
