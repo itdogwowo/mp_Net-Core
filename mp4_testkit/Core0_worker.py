@@ -46,6 +46,9 @@ def task_loop(bus):
     stats_enabled = bool(bus.shared.get("stats_enabled", False))
     stats_interval_ms = int(bus.shared.get("stats_interval_ms", 1000) or 1000)
     stats_frames_n = int(bus.shared.get("stats_frames_n", 60) or 60)
+    range_enabled = bool(bus.shared.get("mp4_range_enabled", False))
+    range_start = int(bus.shared.get("mp4_range_start", 0) or 0)
+    range_end = int(bus.shared.get("mp4_range_end", 0) or 0)
 
     # 統計用計數器：以 1 秒窗口與 N 帧窗口各自計算一次
     sec_t0 = time.ticks_ms()
@@ -156,6 +159,49 @@ def task_loop(bus):
         idx = 0
         bus.shared["src_idx"] = 0
 
+    def _set_range(total, enable, start, end):
+        nonlocal range_enabled, range_start, range_end, idx
+        total = int(total or 0)
+        if total <= 0:
+            range_enabled = False
+            range_start = 0
+            range_end = 0
+            bus.shared["mp4_range_enabled"] = False
+            bus.shared["mp4_range_start"] = 0
+            bus.shared["mp4_range_end"] = 0
+            idx = 0
+            bus.shared["src_idx"] = 0
+            return
+
+        if enable:
+            rs = int(start or 0)
+            re = int(end or 0)
+            if rs < 0:
+                rs = 0
+            if rs >= total:
+                rs = total - 1
+            if re == 0xFFFFFFFF:
+                re = total - 1
+            if re < rs:
+                re = rs
+            if re >= total:
+                re = total - 1
+            range_enabled = True
+            range_start = rs
+            range_end = re
+        else:
+            range_enabled = False
+            range_start = 0
+            range_end = total - 1
+
+        bus.shared["mp4_range_enabled"] = bool(range_enabled)
+        bus.shared["mp4_range_start"] = int(range_start)
+        bus.shared["mp4_range_end"] = int(range_end)
+
+        if idx < range_start or idx > range_end:
+            idx = int(range_start)
+            bus.shared["src_idx"] = idx
+
     def _get_pace_frames():
         n = int(bus.shared.get("pace_frames", 1) or 1)
         return 1 if n < 1 else n
@@ -164,6 +210,15 @@ def task_loop(bus):
         if not paths:
             return i
         i += step
+        if range_enabled:
+            if i <= range_end:
+                return i
+            if loop_play:
+                span = range_end - range_start + 1
+                if span <= 0:
+                    return range_start
+                return range_start + ((i - range_start) % span)
+            return range_end
         if i < len(paths):
             return i
         if loop_play:
@@ -186,6 +241,9 @@ def task_loop(bus):
             return
         source = str(req.get("source", "") or "").strip()
         mode = int(req.get("mode", 0) or 0)
+        req_range_enable = bool(req.get("range_enable", 0))
+        req_range_start = int(req.get("range_start", 0) or 0)
+        req_range_end = int(req.get("range_end", 0) or 0)
         if not source:
             mp4["err"] = "empty source"
             return
@@ -207,7 +265,7 @@ def task_loop(bus):
                     assets_root = str(assets_root).rstrip("/")
                     cand = assets_root + "/" + cand
                 os.stat(cand)
-                new_pack = PackSource(cand, loop=loop_play)
+                new_pack = PackSource(cand, loop=False)
                 if int(new_pack.max_size) > int(max_jpeg_bytes):
                     new_pack.close()
                     mp4["err"] = "pack too big"
@@ -222,6 +280,15 @@ def task_loop(bus):
                 bus.set_service("pack", pack)
                 bus.set_service("paths", paths)
                 mp4["total"] = int(pack.count)
+                _set_range(mp4["total"], req_range_enable, req_range_start, req_range_end)
+                try:
+                    pack.reset()
+                    if int(range_start) > 0:
+                        pack.skip_next(int(range_start))
+                except Exception:
+                    pass
+                idx = int(range_start)
+                bus.shared["src_idx"] = idx
             except Exception as e:
                 mp4["err"] = str(e)
                 return
@@ -253,6 +320,9 @@ def task_loop(bus):
                 bus.set_service("pack", None)
                 bus.set_service("paths", paths)
                 mp4["total"] = int(len(paths))
+                _set_range(mp4["total"], req_range_enable, req_range_start, req_range_end)
+                idx = int(range_start)
+                bus.shared["src_idx"] = idx
             except Exception as e:
                 mp4["err"] = str(e)
                 return
@@ -261,16 +331,87 @@ def task_loop(bus):
 
     def _pack_fill_step(w, step):
         step = 1 if step < 1 else step
-        frame_idx = 0
-        n = 0
         read_us2 = 0
+
+        def _goto_range_start():
+            nonlocal read_us2
+            try:
+                pack.reset()
+                if int(range_start) > 0:
+                    _, dt_skip = pack.skip_next(int(range_start))
+                    read_us2 += dt_skip
+                return True
+            except Exception:
+                return False
+
+        if range_enabled:
+            next_i = int(getattr(pack, "_idx", 0) or 0)
+            if next_i < range_start:
+                _goto_range_start()
+            next_i = int(getattr(pack, "_idx", 0) or 0)
+            if next_i > range_end:
+                if loop_play:
+                    _goto_range_start()
+                else:
+                    bus.shared["mp4_playing"] = False
+                    return
+
         if step > 1:
-            _, dt_skip = pack.skip_next(step - 1)
+            ok, dt_skip = pack.skip_next(step - 1)
             read_us2 += dt_skip
+            if not ok:
+                if loop_play and (not range_enabled or int(range_start) == 0):
+                    try:
+                        pack.reset()
+                        ok2, dt_skip2 = pack.skip_next(step - 1)
+                        read_us2 += dt_skip2
+                        ok = ok2
+                    except Exception:
+                        ok = False
+            if range_enabled and ok:
+                next_i = int(getattr(pack, "_idx", 0) or 0)
+                if next_i > range_end:
+                    if loop_play:
+                        _goto_range_start()
+                    else:
+                        bus.shared["mp4_playing"] = False
+                        return
+
         frame_idx, n, dt_read = pack.read_next_into(w, max_jpeg_bytes)
         read_us2 += dt_read
+        if frame_idx is None:
+            if loop_play:
+                if range_enabled:
+                    if not _goto_range_start():
+                        bus.shared["mp4_playing"] = False
+                        return
+                else:
+                    try:
+                        pack.reset()
+                    except Exception:
+                        bus.shared["mp4_playing"] = False
+                        return
+                frame_idx, n, dt_read = pack.read_next_into(w, max_jpeg_bytes)
+                read_us2 += dt_read
+            else:
+                bus.shared["mp4_playing"] = False
+                return
+
+        if range_enabled and frame_idx > range_end:
+            if loop_play:
+                if not _goto_range_start():
+                    bus.shared["mp4_playing"] = False
+                    return
+                frame_idx, n, dt_read = pack.read_next_into(w, max_jpeg_bytes)
+                read_us2 += dt_read
+            else:
+                bus.shared["mp4_playing"] = False
+                return
+
         if n <= 0:
             frame_idx = 0
+
+        bus.shared["src_idx"] = int(frame_idx or 0)
         tail_off = max_jpeg_bytes
         write_u32_le(w, tail_off + 0, frame_idx if frame_idx is not None else 0)
         write_u32_le(w, tail_off + 4, n)
@@ -295,6 +436,11 @@ def task_loop(bus):
             except Exception:
                 seek = 0
             if seek > 0:
+                if range_enabled:
+                    if seek < range_start:
+                        seek = range_start
+                    if seek > range_end:
+                        seek = range_end
                 idx = 0 if not paths else (seek % len(paths))
                 bus.shared["src_idx"] = idx
                 if pack is not None:
@@ -364,6 +510,7 @@ def task_loop(bus):
                                 _pack_fill_step(w, _get_pace_frames())
                                 continue
                             if (not cache_active) and paths:
+                                cur_idx = idx
                                 p = paths[idx]
                                 t2 = time.ticks_us()
                                 n = _read_file_into(p, w, max_jpeg_bytes, io_read_chunk)
@@ -376,6 +523,8 @@ def task_loop(bus):
                                 io_hub.commit()
                                 idx = _advance_idx(idx, _get_pace_frames())
                                 bus.shared["src_idx"] = idx
+                                if range_enabled and (not loop_play) and cur_idx >= range_end:
+                                    bus.shared["mp4_playing"] = False
                                 continue
 
                     time.sleep_ms(remain if remain < 5 else 5)
@@ -384,6 +533,7 @@ def task_loop(bus):
             if pack is None and (not cache_active) and io_hub.get_fill_level() < io_prefetch:
                 w = io_hub.get_write_view()
                 if w is not None:
+                    cur_idx = idx
                     p = paths[idx]
                     t0 = time.ticks_us()
                     n = _read_file_into(p, w, max_jpeg_bytes, io_read_chunk)
@@ -398,6 +548,8 @@ def task_loop(bus):
 
                     idx = _advance_idx(idx, _get_pace_frames())
                     bus.shared["src_idx"] = idx
+                    if range_enabled and (not loop_play) and cur_idx >= range_end:
+                        bus.shared["mp4_playing"] = False
                     did_work = True
             if pack is not None and io_hub.get_fill_level() < io_prefetch:
                 w = io_hub.get_write_view()

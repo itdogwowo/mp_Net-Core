@@ -91,6 +91,9 @@ def on_mp4_player_ctl(ctx, args):
 def on_mp4_source_set(ctx, args):
     source = str(args.get("source", "") or "").strip()
     mode = int(args.get("mode", 0) or 0)
+    range_enable = int(args.get("range_enable", 0) or 0)
+    range_start = int(args.get("range_start", 0) or 0)
+    range_end = int(args.get("range_end", 0) or 0)
     if not source:
         _send_status(ctx, playing=0, paused=0, mode=0, frame=0, total=0, source="", err="empty source")
         return
@@ -112,6 +115,10 @@ def on_mp4_source_set(ctx, args):
         "mode": int(mode),
         "source": source,
     }
+    if range_enable:
+        req["range_enable"] = 1
+        req["range_start"] = range_start
+        req["range_end"] = range_end
     bus.shared["mp4_source_req"] = req
 
     st["mode"] = int(mode)

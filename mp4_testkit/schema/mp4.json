@@ -14,7 +14,10 @@
       "name": "MP4_SOURCE_SET",
       "payload": [
         {"name": "source", "type": "str_u16len"},
-        {"name": "mode", "type": "u8"}
+        {"name": "mode", "type": "u8"},
+        {"name": "range_enable", "type": "u8"},
+        {"name": "range_start", "type": "u32"},
+        {"name": "range_end", "type": "u32"}
       ]
     },
     {
