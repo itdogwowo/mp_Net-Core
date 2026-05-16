@@ -241,9 +241,16 @@ def task_loop(bus):
             return
         source = str(req.get("source", "") or "").strip()
         mode = int(req.get("mode", 0) or 0)
-        req_range_enable = bool(req.get("range_enable", 0))
-        req_range_start = int(req.get("range_start", 0) or 0)
-        req_range_end = int(req.get("range_end", 0) or 0)
+        req_start = int(req.get("start", req.get("range_start", 0)) or 0)
+        raw_range = req.get("range", None)
+        if raw_range is None:
+            req_end = int(req.get("range_end", 0xFFFFFFFF) or 0)
+        else:
+            span = int(raw_range or 0)
+            if span == 0xFFFFFFFF or span <= 0:
+                req_end = 0xFFFFFFFF
+            else:
+                req_end = req_start + span - 1
         if not source:
             mp4["err"] = "empty source"
             return
@@ -280,11 +287,14 @@ def task_loop(bus):
                 bus.set_service("pack", pack)
                 bus.set_service("paths", paths)
                 mp4["total"] = int(pack.count)
-                _set_range(mp4["total"], req_range_enable, req_range_start, req_range_end)
+                _set_range(mp4["total"], True, req_start, req_end)
                 try:
                     pack.reset()
                     if int(range_start) > 0:
                         pack.skip_next(int(range_start))
+                    if hasattr(pack, "tell"):
+                        pos, _ = pack.tell()
+                        bus.shared["mp4_pack_range_pos"] = int(pos)
                 except Exception:
                     pass
                 idx = int(range_start)
@@ -320,7 +330,7 @@ def task_loop(bus):
                 bus.set_service("pack", None)
                 bus.set_service("paths", paths)
                 mp4["total"] = int(len(paths))
-                _set_range(mp4["total"], req_range_enable, req_range_start, req_range_end)
+                _set_range(mp4["total"], True, req_start, req_end)
                 idx = int(range_start)
                 bus.shared["src_idx"] = idx
             except Exception as e:
@@ -336,10 +346,17 @@ def task_loop(bus):
         def _goto_range_start():
             nonlocal read_us2
             try:
+                pos = bus.shared.get("mp4_pack_range_pos", None)
+                if pos is not None and hasattr(pack, "seek_to"):
+                    pack.seek_to(int(pos), int(range_start))
+                    return True
                 pack.reset()
                 if int(range_start) > 0:
                     _, dt_skip = pack.skip_next(int(range_start))
                     read_us2 += dt_skip
+                if hasattr(pack, "tell"):
+                    pos2, _ = pack.tell()
+                    bus.shared["mp4_pack_range_pos"] = int(pos2)
                 return True
             except Exception:
                 return False
@@ -525,6 +542,8 @@ def task_loop(bus):
                                 bus.shared["src_idx"] = idx
                                 if range_enabled and (not loop_play) and cur_idx >= range_end:
                                     bus.shared["mp4_playing"] = False
+                                if (not loop_play) and (not range_enabled) and paths and cur_idx >= (len(paths) - 1):
+                                    bus.shared["mp4_playing"] = False
                                 continue
 
                     time.sleep_ms(remain if remain < 5 else 5)
@@ -549,6 +568,8 @@ def task_loop(bus):
                     idx = _advance_idx(idx, _get_pace_frames())
                     bus.shared["src_idx"] = idx
                     if range_enabled and (not loop_play) and cur_idx >= range_end:
+                        bus.shared["mp4_playing"] = False
+                    if (not loop_play) and (not range_enabled) and paths and cur_idx >= (len(paths) - 1):
                         bus.shared["mp4_playing"] = False
                     did_work = True
             if pack is not None and io_hub.get_fill_level() < io_prefetch:

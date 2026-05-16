@@ -68,8 +68,9 @@
       "width": 320,
       "x": 0,
       "y": 0,
-      "depth": -1,
-      "assets_pack": 1
+      "assets_pack": 1,
+      "start": 0,
+      "range": -1
     }
   ],
   "player": {
@@ -94,7 +95,7 @@
     "config": {
       "slot": 0,
       "width": 4,
-      "freq": 20000000
+      "freq": 40000000
     },
     "GPIO": {
       "sck": 7,

@@ -15,9 +15,8 @@
       "payload": [
         {"name": "source", "type": "str_u16len"},
         {"name": "mode", "type": "u8"},
-        {"name": "range_enable", "type": "u8"},
-        {"name": "range_start", "type": "u32"},
-        {"name": "range_end", "type": "u32"}
+        {"name": "start", "type": "u32"},
+        {"name": "range", "type": "u32"}
       ]
     },
     {

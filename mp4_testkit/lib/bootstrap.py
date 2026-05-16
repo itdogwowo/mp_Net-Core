@@ -76,8 +76,6 @@ def build_bus():
     height = int(tft_cfg.get("height", layout.get("height", 240)))
     folder = layout.get("type", "background")
     folder_path = assets_root + "/" + folder
-    depth_val = layout.get("depth", -1)
-    depth = -1 if depth_val is None else int(depth_val)
 
     pixel_format, tft_order = _parse_pixel_format(jpeg_cfg.get("pixel_format", "RGB565_BE"))
     rotation = int(jpeg_cfg.get("rotation", 0))
@@ -157,11 +155,38 @@ def build_bus():
             ) from e
         if not paths:
             raise OSError("No JPEG files in: " + folder_path)
-        if depth > 0 and depth < len(paths):
-            paths = paths[:depth]
 
         if max_jpeg_bytes <= 0:
             max_jpeg_bytes = compute_max_file_size(paths)
+
+    total_frames = int(getattr(pack, "count", 0) or 0) if pack is not None else int(len(paths) if paths else 0)
+    if total_frames > 0:
+        raw_rs = layout.get("start", None)
+        if raw_rs is None:
+            raw_rs = layout.get("range_start", None)
+        raw_range = layout.get("range", None)
+        if raw_range is None:
+            raw_range = layout.get("range_frames", -1)
+
+        range_rs = 0 if raw_rs is None else int(raw_rs or 0)
+        if range_rs < 0:
+            range_rs = 0
+        if range_rs >= total_frames:
+            range_rs = total_frames - 1
+
+        span = -1 if raw_range is None else int(raw_range)
+        if span == 0xFFFFFFFF or span <= 0:
+            range_re = total_frames - 1
+        else:
+            range_re = range_rs + span - 1
+            if range_re >= total_frames:
+                range_re = total_frames - 1
+        if range_re < range_rs:
+            range_re = range_rs
+    else:
+        range_rs = 0
+        range_re = 0
+    src_after_cache = int(range_rs)
 
     if pack is None:
         preload_cfg = pipeline_preload
@@ -203,7 +228,8 @@ def build_bus():
             limit = 0
         total = 0
         cache = []
-        for i, p in enumerate(paths):
+        for i in range(int(range_rs), int(range_re) + 1):
+            p = paths[i]
             sz = int(os.stat(p)[6])
             if sz <= 0:
                 continue
@@ -219,6 +245,23 @@ def build_bus():
             gc.collect()
         if not cache:
             cache = None
+        src_after_cache = int(range_rs)
+        if cache is not None:
+            pf = int(pace_frames)
+            if pf < 1:
+                pf = 1
+            advance = ((len(cache) + pf - 1) // pf) * pf
+            next_i = int(range_rs) + int(advance)
+            if next_i > int(range_re):
+                if loop_play:
+                    span2 = int(range_re) - int(range_rs) + 1
+                    if span2 <= 0:
+                        next_i = int(range_rs)
+                    else:
+                        next_i = int(range_rs) + ((next_i - int(range_rs)) % span2)
+                else:
+                    next_i = int(range_re)
+            src_after_cache = int(next_i)
         if debug:
             print("[Preload] frames:", 0 if cache is None else len(cache), "bytes:", total)
 
@@ -295,10 +338,10 @@ def build_bus():
     if cache is not None:
         bus.set_service("jpeg_cache", cache)
         bus.shared["cache_active"] = True
-        bus.shared["src_idx"] = len(cache)
+        bus.shared["src_idx"] = int(src_after_cache)
     else:
         bus.shared["cache_active"] = False
-        bus.shared["src_idx"] = 0
+        bus.shared["src_idx"] = int(range_rs)
 
     frame_tail = 16
     io_tail = 16 + 16
@@ -333,5 +376,20 @@ def build_bus():
     bus.shared["io_read_chunk"] = io_read_chunk
 
     init_comms_from_config(bus, cfg)
+
+    if total_frames > 0:
+        bus.shared["mp4_range_enabled"] = True
+        bus.shared["mp4_range_start"] = int(range_rs)
+        bus.shared["mp4_range_end"] = int(range_re)
+        if pack is not None:
+            bus.shared["src_idx"] = int(range_rs)
+            try:
+                pack.reset()
+                if int(range_rs) > 0:
+                    pack.skip_next(int(range_rs))
+                pos, _ = pack.tell() if hasattr(pack, "tell") else (0, 0)
+                bus.shared["mp4_pack_range_pos"] = int(pos)
+            except Exception:
+                pass
 
     return bus

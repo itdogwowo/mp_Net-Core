@@ -91,9 +91,17 @@ def on_mp4_player_ctl(ctx, args):
 def on_mp4_source_set(ctx, args):
     source = str(args.get("source", "") or "").strip()
     mode = int(args.get("mode", 0) or 0)
-    range_enable = int(args.get("range_enable", 0) or 0)
-    range_start = int(args.get("range_start", 0) or 0)
-    range_end = int(args.get("range_end", 0) or 0)
+    start = int(args.get("start", args.get("range_start", 0)) or 0)
+    raw_range = args.get("range", None)
+    if raw_range is None:
+        end = int(args.get("range_end", 0xFFFFFFFF) or 0)
+        span = 0xFFFFFFFF
+    else:
+        span = int(raw_range or 0)
+        if span == 0xFFFFFFFF or span <= 0:
+            end = 0xFFFFFFFF
+        else:
+            end = start + span - 1
     if not source:
         _send_status(ctx, playing=0, paused=0, mode=0, frame=0, total=0, source="", err="empty source")
         return
@@ -114,11 +122,11 @@ def on_mp4_source_set(ctx, args):
     req = {
         "mode": int(mode),
         "source": source,
+        "start": int(start),
+        "range": int(span),
+        "range_start": int(start),
+        "range_end": int(end),
     }
-    if range_enable:
-        req["range_enable"] = 1
-        req["range_start"] = range_start
-        req["range_end"] = range_end
     bus.shared["mp4_source_req"] = req
 
     st["mode"] = int(mode)
@@ -143,4 +151,3 @@ def register(app):
     app.disp.on(0x3202, on_mp4_source_set)
     app.disp.on(0x3203, on_mp4_status_get)
     print("✅ [Action] MP4 actions registered")
-

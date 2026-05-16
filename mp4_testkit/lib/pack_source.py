@@ -35,6 +35,16 @@ class PackSource:
     def reset(self):
         self._f.seek(self._start)
         self._idx = 0
+    
+    def tell(self):
+        try:
+            return int(self._f.tell()), int(self._idx)
+        except Exception:
+            return 0, int(self._idx)
+    
+    def seek_to(self, pos, idx=0):
+        self._f.seek(int(pos))
+        self._idx = int(idx or 0)
 
     def skip_next(self, count):
         count = int(count or 0)
