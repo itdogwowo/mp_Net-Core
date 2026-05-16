@@ -45,12 +45,105 @@ def _pack_candidates(assets_root, folder, raw):
     return []
 
 
+def _lcd_black(lcd, width, height, bytes_per_pixel):
+    total = int(width) * int(height) * int(bytes_per_pixel)
+    if total <= 0:
+        return
+    chunk = 4096
+    if chunk > total:
+        chunk = total
+    buf = bytearray(chunk)
+    mv = memoryview(buf)
+    sent = 0
+    while sent < total:
+        n = total - sent
+        if n > chunk:
+            n = chunk
+        lcd.write_data(mv[:n])
+        sent += n
+
+
+def _parse_backlight_cfg(tft_cfg):
+    pins_cfg = tft_cfg.get("pins", {}) or {}
+    bl_cfg = tft_cfg.get("backlight", {}) or {}
+    pin = pins_cfg.get("bl", None)
+    if pin is None:
+        pin = pins_cfg.get("BL", None)
+    if pin is None:
+        pin = bl_cfg.get("pin", None)
+    if pin is None:
+        return None
+    freq = bl_cfg.get("freq", pins_cfg.get("bl_freq", 20000))
+    duty = bl_cfg.get("duty", pins_cfg.get("bl_duty", 1))
+    inv = bl_cfg.get("invert", pins_cfg.get("bl_invert", 0))
+    return int(pin), int(freq or 20000), bool(inv), duty
+
+
+def _backlight_duty_value(raw, *, invert=False):
+    try:
+        if raw is None:
+            raw = 1
+        if isinstance(raw, str):
+            raw = raw.strip()
+            if not raw:
+                raw = 1
+            raw = float(raw) if ("." in raw) else int(raw, 0)
+        if isinstance(raw, float):
+            v = raw
+        else:
+            v = float(int(raw))
+        if 0 <= v <= 1:
+            duty = int(65535 * v)
+        elif 0 <= v <= 100:
+            duty = int(65535 * (v / 100.0))
+        else:
+            duty = int(v)
+    except Exception:
+        duty = 65535
+    if duty < 0:
+        duty = 0
+    if duty > 65535:
+        duty = 65535
+    if invert:
+        duty = 65535 - duty
+    return duty
+
+
+def _backlight_apply(pwm, duty):
+    if pwm is None:
+        return
+    try:
+        if hasattr(pwm, "duty_u16"):
+            pwm.duty_u16(int(duty) & 0xFFFF)
+            return
+    except Exception:
+        pass
+    try:
+        dv = (int(duty) * 1023) // 65535
+        pwm.duty(int(dv))
+    except Exception:
+        pass
+
+
 def build_bus():
     cfg = load_config()
     player_cfg = cfg.get("player", {}) or {}
     debug = bool(cfg.get("debug", False) or player_cfg.get("debug", False))
     if debug:
         print("[Config]", cfg.get("_config_path", "?"))
+    
+    raw_autoplay = player_cfg.get("autoplay", cfg.get("autoplay", 1))
+    if isinstance(raw_autoplay, str):
+        s = raw_autoplay.strip().lower()
+        if s in ("0", "false", "no", "off", ""):
+            autoplay = False
+        else:
+            autoplay = True
+    else:
+        try:
+            autoplay = bool(int(raw_autoplay))
+        except Exception:
+            autoplay = bool(raw_autoplay)
 
     sd_mount = mount_from_config(cfg)
     if debug and sd_mount:
@@ -305,6 +398,31 @@ def build_bus():
     )
     lcd.set_window(0, 0)
 
+    bl_cfg = _parse_backlight_cfg(tft_cfg)
+    bl_pwm = None
+    if bl_cfg is not None:
+        bl_pin, bl_freq, bl_inv, bl_duty_raw = bl_cfg
+        try:
+            from machine import PWM
+            bl_pwm = PWM(Pin(int(bl_pin), Pin.OUT))
+            try:
+                bl_pwm.freq(int(bl_freq))
+            except Exception:
+                pass
+            _backlight_apply(bl_pwm, 65535 if bl_inv else 0)
+        except Exception:
+            bl_pwm = None
+
+    if not autoplay:
+        try:
+            _lcd_black(lcd, width, height, bytes_per_pixel)
+        except Exception:
+            pass
+        try:
+            lcd.set_window(0, 0)
+        except Exception:
+            pass
+
     bus.reset()
     bus.shared["config"] = cfg
     bus.shared["debug"] = debug
@@ -328,6 +446,15 @@ def build_bus():
     bus.shared["stats_frames_n"] = stats_frames_n
     bus.shared["engine_run"] = True
     bus.shared["core1_ready"] = False
+    bus.shared["mp4_playing"] = bool(autoplay)
+    bus.shared["mp4_paused"] = False
+    if bl_cfg is not None and bl_pwm is not None:
+        bus.set_service("backlight", bl_pwm)
+        bus.shared["backlight_on"] = False
+        bus.shared["backlight_duty"] = int(_backlight_duty_value(bl_duty_raw, invert=bl_inv))
+        if not autoplay:
+            _backlight_apply(bl_pwm, int(bus.shared.get("backlight_duty", 65535) or 65535))
+            bus.shared["backlight_on"] = True
 
     bus.set_service("data_Phat", sd_mount or "")
     bus.set_service("lcd", lcd)

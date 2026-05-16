@@ -50,7 +50,13 @@
     "pins": {
       "dc": 12,
       "cs": 11,
-      "rst": 13
+      "rst": 13,
+      "bl": 10
+    },
+    "backlight": {
+      "freq": 1000,
+      "duty": 100,
+      "invert": 0
     }
   },
   "jpeg": {

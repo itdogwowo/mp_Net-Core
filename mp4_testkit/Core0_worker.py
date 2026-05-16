@@ -7,6 +7,23 @@ def _yield():
     time.sleep_ms(0)
 
 
+def _backlight_try_on(bus):
+    if not bus or bool(bus.shared.get("backlight_on", False)):
+        return
+    pwm = bus.get_service("backlight")
+    if pwm is None:
+        return
+    duty = int(bus.shared.get("backlight_duty", 65535) or 65535)
+    try:
+        if hasattr(pwm, "duty_u16"):
+            pwm.duty_u16(duty & 0xFFFF)
+        else:
+            pwm.duty((duty * 1023) // 65535)
+        bus.shared["backlight_on"] = True
+    except Exception:
+        pass
+
+
 def _read_file_into(path, dst, max_len, chunk):
     if chunk <= 0:
         with open(path, "rb") as f:
@@ -505,6 +522,7 @@ def task_loop(bus):
             t0 = time.ticks_us()
             try:
                 lcd.write_data(r[:frame_bytes])
+                _backlight_try_on(bus)
             finally:
                 frame_hub.release_read()
             t1 = time.ticks_us()
