@@ -33,6 +33,10 @@ _CMD_NAMES = {
     0x2007: "FILE_READ",
     0x2009: "FILE_DELETE",
     0x200B: "FILE_SCAN",
+    0x3201: "MP4_PLAYER_CTL",
+    0x3202: "MP4_SOURCE_SET",
+    0x3203: "MP4_STATUS_GET",
+    0x3204: "MP4_STATUS_RSP",
 }
 
 
@@ -235,6 +239,343 @@ def _wait_packet(uart, parser, want_cmd, timeout_ms,
     return None
 
 
+def _wait_any_cmd(uart, parser, want_cmd, timeout_ms, debug=False, drain_ms=0):
+    start = _ticks_ms()
+    tmp = bytearray(512)
+
+    if drain_ms and drain_ms > 0:
+        ds = _ticks_ms()
+        while _ticks_diff(_ticks_ms(), ds) < int(drain_ms):
+            n = _read_uart(uart, tmp)
+            if n <= 0:
+                _sleep_ms(2)
+                continue
+            parser.feed(memoryview(tmp)[:n])
+            for _ in parser.pop():
+                pass
+
+    while _ticks_diff(_ticks_ms(), start) < int(timeout_ms):
+        n = _read_uart(uart, tmp)
+        if n <= 0:
+            _sleep_ms(2)
+            continue
+        parser.feed(memoryview(tmp)[:n])
+        for ver, addr, cmd, payload in parser.pop():
+            if debug:
+                name = _CMD_NAMES.get(cmd, "UNKNOWN")
+                print("DEBUG RX cmd=0x{:04X}({}) len={} hex={}".format(
+                    int(cmd), name, len(payload), _hex_preview(payload)))
+            if cmd == want_cmd:
+                return ver, addr, cmd, payload
+    return None
+
+
+def _mp4_wait_status(uart, parser, store, timeout_ms=2000, debug=False):
+    pkt = _wait_any_cmd(uart, parser, 0x3204, timeout_ms, debug=debug)
+    if pkt is None:
+        return None
+    _, _, _, payload = pkt
+    cmd_def = store.get(0x3204)
+    return SchemaCodec.decode(cmd_def, payload, store=store)
+
+
+def run_mp4_smoke(
+    uart_id=1,
+    baudrate=115200,
+    tx=None,
+    rx=None,
+    source="output.jpk",
+    mode=1,
+    start=0,
+    range=0xFFFFFFFF,
+    seek_frame=0,
+    require_rsp=False,
+    debug=False,
+):
+    store = SchemaStore("/schema")
+    store.finalize()
+
+    def _try_once(tx2, rx2):
+        print("MP4 init UART{} baud={} tx={} rx={}".format(
+            int(uart_id), int(baudrate), tx2, rx2))
+        uart2 = _uart_open(uart_id, baudrate, tx=tx2, rx=rx2, timeout=0, timeout_char=0)
+        try:
+            uart2.read()
+        except Exception:
+            pass
+
+        parser2 = StreamParser(max_len=16384)
+        src_def = store.get(0x3202)
+        src_payload = SchemaCodec.encode(src_def, {
+            "source": str(source),
+            "mode": int(mode),
+            "start": int(start),
+            "range": int(range),
+        })
+        uart2.write(Proto.pack(0x3202, src_payload))
+        st2 = _mp4_wait_status(uart2, parser2, store, debug=debug)
+        if st2 is None:
+            return None, uart2, parser2
+        print("MP4 status after SOURCE_SET:", st2)
+        return st2, uart2, parser2
+
+    st, uart, parser = _try_once(tx, rx)
+    if st is None and tx is not None and rx is not None and int(tx) != int(rx):
+        st, uart, parser = _try_once(rx, tx)
+    if st is None and require_rsp:
+        raise RuntimeError("No MP4_STATUS_RSP after SOURCE_SET")
+    if st is None:
+        print("WARN: No MP4_STATUS_RSP after SOURCE_SET")
+
+    ctl_def = store.get(0x3201)
+
+    pause_payload = SchemaCodec.encode(ctl_def, {"action": 2, "value": 1})
+    uart.write(Proto.pack(0x3201, pause_payload))
+    st = _mp4_wait_status(uart, parser, store, debug=debug)
+    if st is None and require_rsp:
+        raise RuntimeError("No MP4_STATUS_RSP after PAUSE")
+    if st is None:
+        print("WARN: No MP4_STATUS_RSP after PAUSE")
+    else:
+        print("MP4 status after PAUSE:", st)
+
+    resume_payload = SchemaCodec.encode(ctl_def, {"action": 2, "value": 0})
+    uart.write(Proto.pack(0x3201, resume_payload))
+    st = _mp4_wait_status(uart, parser, store, debug=debug)
+    if st is None and require_rsp:
+        raise RuntimeError("No MP4_STATUS_RSP after RESUME")
+    if st is None:
+        print("WARN: No MP4_STATUS_RSP after RESUME")
+    else:
+        print("MP4 status after RESUME:", st)
+
+    if seek_frame and int(seek_frame) > 0:
+        seek_payload = SchemaCodec.encode(ctl_def, {"action": 3, "value": int(seek_frame)})
+        uart.write(Proto.pack(0x3201, seek_payload))
+        st = _mp4_wait_status(uart, parser, store, debug=debug)
+        if st is None and require_rsp:
+            raise RuntimeError("No MP4_STATUS_RSP after SEEK")
+        if st is None:
+            print("WARN: No MP4_STATUS_RSP after SEEK")
+        else:
+            print("MP4 status after SEEK:", st)
+
+        _sleep_ms(50)
+        uart.write(Proto.pack(0x3203, b""))
+        st = _mp4_wait_status(uart, parser, store, debug=debug)
+        if st is None and require_rsp:
+            raise RuntimeError("No MP4_STATUS_RSP after STATUS_GET")
+        if st is None:
+            print("WARN: No MP4_STATUS_RSP after STATUS_GET")
+        else:
+            print("MP4 status after STATUS_GET:", st)
+
+    stop_payload = SchemaCodec.encode(ctl_def, {"action": 0, "value": 0})
+    uart.write(Proto.pack(0x3201, stop_payload))
+    st = _mp4_wait_status(uart, parser, store, debug=debug)
+    if st is None and require_rsp:
+        raise RuntimeError("No MP4_STATUS_RSP after STOP")
+    if st is None:
+        print("WARN: No MP4_STATUS_RSP after STOP")
+    else:
+        print("MP4 status after STOP:", st)
+
+    play_payload = SchemaCodec.encode(ctl_def, {"action": 1, "value": 0})
+    uart.write(Proto.pack(0x3201, play_payload))
+    st = _mp4_wait_status(uart, parser, store, debug=debug)
+    if st is None and require_rsp:
+        raise RuntimeError("No MP4_STATUS_RSP after PLAY")
+    if st is None:
+        print("WARN: No MP4_STATUS_RSP after PLAY")
+    else:
+        print("MP4 status after PLAY:", st)
+    return True
+
+
+def run_mp4_smoke_quick(uart_id=1, baudrate=115200, tx=None, rx=None, debug=False):
+    return run_mp4_smoke(
+        uart_id=uart_id,
+        baudrate=baudrate,
+        tx=tx,
+        rx=rx,
+        source="output.jpk",
+        mode=1,
+        start=0,
+        range=0xFFFFFFFF,
+        seek_frame=0,
+        debug=debug,
+    )
+
+
+def _input_line(prompt):
+    try:
+        return input(prompt)
+    except Exception:
+        try:
+            print(prompt, end="")
+        except Exception:
+            pass
+        return ""
+
+
+def _parse_int_or_default(s, default):
+    if s is None:
+        return default
+    ss = str(s).strip()
+    if not ss:
+        return default
+    try:
+        return int(ss, 0)
+    except Exception:
+        try:
+            return int(ss)
+        except Exception:
+            return default
+
+
+def run_mp4_interactive(
+    uart_id=1,
+    baudrate=115200,
+    tx=None,
+    rx=None,
+    debug=False,
+):
+    store = SchemaStore("/schema")
+    store.finalize()
+
+    def _open_try(tx2, rx2):
+        print("MP4 init UART{} baud={} tx={} rx={}".format(
+            int(uart_id), int(baudrate), tx2, rx2))
+        uart2 = _uart_open(uart_id, baudrate, tx=tx2, rx=rx2, timeout=0, timeout_char=0)
+        try:
+            uart2.read()
+        except Exception:
+            pass
+        return uart2, StreamParser(max_len=16384)
+
+    uart, parser = _open_try(tx, rx)
+    ok = False
+    uart.write(Proto.pack(0x3203, b""))
+    st = _mp4_wait_status(uart, parser, store, timeout_ms=800, debug=debug)
+    if st is not None:
+        ok = True
+        print("MP4 status:", st)
+    elif tx is not None and rx is not None and int(tx) != int(rx):
+        uart, parser = _open_try(rx, tx)
+        uart.write(Proto.pack(0x3203, b""))
+        st = _mp4_wait_status(uart, parser, store, timeout_ms=800, debug=debug)
+        if st is not None:
+            ok = True
+            print("MP4 status:", st)
+
+    if not ok:
+        print("警告：收不到 MP4_STATUS_RSP（仍會繼續發送指令）")
+
+    src = "output.jpk"
+    mode = 1
+    start = 0
+    span = 0xFFFFFFFF
+
+    src_def = store.get(0x3202)
+    ctl_def = store.get(0x3201)
+    last_st = st
+
+    while True:
+        print("")
+        print("1) 播放  2) 暫停  3) 跳轉  4) 設定來源  5) 狀態  6) 停止  0) 離開")
+        cmd = _input_line("> ")
+        cmd = "" if cmd is None else str(cmd).strip().lower()
+        if cmd in ("0", "q", "quit", "exit"):
+            return True
+        if cmd in ("1", "play"):
+            payload = SchemaCodec.encode(ctl_def, {"action": 1, "value": 0})
+            uart.write(Proto.pack(0x3201, payload))
+            st = _mp4_wait_status(uart, parser, store, timeout_ms=800, debug=debug)
+            if st is not None:
+                print("MP4 狀態:", st)
+                last_st = st
+            continue
+        if cmd in ("2", "pause"):
+            payload = SchemaCodec.encode(ctl_def, {"action": 2, "value": 1})
+            uart.write(Proto.pack(0x3201, payload))
+            st = _mp4_wait_status(uart, parser, store, timeout_ms=800, debug=debug)
+            if st is not None:
+                print("MP4 狀態:", st)
+                last_st = st
+            continue
+        if cmd in ("3", "seek"):
+            s = _input_line("跳轉到 frame（絕對）> ")
+            seek_frame = _parse_int_or_default(s, 0)
+            s = _input_line("同時更新播放範圍？(y/N)> ")
+            yes = ("" if s is None else str(s).strip().lower()) in ("y", "yes", "1")
+            if yes:
+                start = int(seek_frame)
+                default_range = -1 if int(span) == 0xFFFFFFFF else int(span)
+                s = _input_line("新的範圍 range（幀數，-1=到最後）[{}]> ".format(str(int(default_range))))
+                r = _parse_int_or_default(s, int(default_range))
+                span = 0xFFFFFFFF if int(r) < 0 else int(r)
+                payload = SchemaCodec.encode(src_def, {
+                    "source": str(src),
+                    "mode": int(mode),
+                    "start": int(start),
+                    "range": int(span),
+                })
+                uart.write(Proto.pack(0x3202, payload))
+                st = _mp4_wait_status(uart, parser, store, timeout_ms=1200, debug=debug)
+                if st is not None:
+                    print("MP4 狀態:", st)
+                    last_st = st
+            else:
+                print("實際送出 seek frame =", int(seek_frame))
+                payload = SchemaCodec.encode(ctl_def, {"action": 3, "value": int(seek_frame)})
+                uart.write(Proto.pack(0x3201, payload))
+                st = _mp4_wait_status(uart, parser, store, timeout_ms=800, debug=debug)
+                if st is not None:
+                    print("MP4 狀態:", st)
+                    last_st = st
+            continue
+        if cmd in ("4", "source", "src"):
+            s = _input_line("來源 source [{}]> ".format(src))
+            s = "" if s is None else str(s).strip()
+            if s:
+                src = s
+            s = _input_line("模式 mode [{}] (0=auto 1=pack 2=folder)> ".format(int(mode)))
+            mode = _parse_int_or_default(s, int(mode))
+            s = _input_line("起點 start [{}]> ".format(int(start)))
+            start = _parse_int_or_default(s, int(start))
+            default_range = -1 if int(span) == 0xFFFFFFFF else int(span)
+            s = _input_line("範圍 range（幀數，-1=到最後）[{}]> ".format(str(int(default_range))))
+            r = _parse_int_or_default(s, int(default_range))
+            span = 0xFFFFFFFF if int(r) < 0 else int(r)
+            payload = SchemaCodec.encode(src_def, {
+                "source": str(src),
+                "mode": int(mode),
+                "start": int(start),
+                "range": int(span),
+            })
+            uart.write(Proto.pack(0x3202, payload))
+            st = _mp4_wait_status(uart, parser, store, timeout_ms=1200, debug=debug)
+            if st is not None:
+                print("MP4 狀態:", st)
+                last_st = st
+            continue
+        if cmd in ("5", "status", "get"):
+            uart.write(Proto.pack(0x3203, b""))
+            st = _mp4_wait_status(uart, parser, store, timeout_ms=800, debug=debug)
+            if st is not None:
+                print("MP4 狀態:", st)
+                last_st = st
+            continue
+        if cmd in ("6", "stop"):
+            payload = SchemaCodec.encode(ctl_def, {"action": 0, "value": 0})
+            uart.write(Proto.pack(0x3201, payload))
+            st = _mp4_wait_status(uart, parser, store, timeout_ms=800, debug=debug)
+            if st is not None:
+                print("MP4 狀態:", st)
+                last_st = st
+            continue
+
+
 def run_master(
     uart_id=1,
     baudrate=115200,
@@ -366,4 +707,30 @@ def run_master_quick(uart_id=1, baudrate=115200, tx=None, rx=None, debug=False):
     )
 
 
-run_master_quick(uart_id=1, baudrate=115200, tx=8, rx=18, debug=True)
+def main():
+    argv = getattr(sys, "argv", None)
+    mode = "mp4i"
+    tx = 18
+    rx = 8
+    if argv and len(argv) >= 2:
+        mode = str(argv[1] or "").strip().lower()
+    if argv and len(argv) >= 4:
+        try:
+            tx = int(argv[2])
+            rx = int(argv[3])
+        except Exception:
+            tx = 8
+            rx = 18
+    if mode in ("file", "uart_file"):
+        return run_master_quick(uart_id=1, baudrate=115200, tx=tx, rx=rx, debug=True)
+    if mode in ("mp4i", "i", "interactive"):
+        return run_mp4_interactive(uart_id=1, baudrate=115200, tx=tx, rx=rx, debug=True)
+    if mode in ("all", "full"):
+        run_master_quick(uart_id=1, baudrate=115200, tx=tx, rx=rx, debug=True)
+        _sleep_ms(200)
+        return run_mp4_smoke_quick(uart_id=1, baudrate=115200, tx=tx, rx=rx, debug=True)
+    return run_mp4_smoke_quick(uart_id=1, baudrate=115200, tx=tx, rx=rx, debug=True)
+
+
+if __name__ == "__main__":
+    main()

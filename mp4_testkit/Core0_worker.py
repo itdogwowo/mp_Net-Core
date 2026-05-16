@@ -452,22 +452,31 @@ def task_loop(bus):
                 seek = int(seek)
             except Exception:
                 seek = 0
-            if seek > 0:
-                if range_enabled:
-                    if seek < range_start:
-                        seek = range_start
-                    if seek > range_end:
-                        seek = range_end
-                idx = 0 if not paths else (seek % len(paths))
-                bus.shared["src_idx"] = idx
-                if pack is not None:
-                    try:
+            if seek < 0:
+                seek = 0
+            if range_enabled:
+                if seek < range_start:
+                    seek = range_start
+                if seek > range_end:
+                    seek = range_end
+            if pack is not None:
+                bus.shared["src_idx"] = int(seek)
+                try:
+                    pos = bus.shared.get("mp4_pack_range_pos", None)
+                    if range_enabled and pos is not None and hasattr(pack, "seek_to") and seek >= range_start:
+                        pack.seek_to(int(pos), int(range_start))
+                        if seek > range_start:
+                            pack.skip_next(int(seek - range_start))
+                    else:
                         pack.reset()
                         if seek > 0:
                             pack.skip_next(seek)
-                    except Exception:
-                        pass
-                _flush_hubs()
+                except Exception:
+                    pass
+            else:
+                idx = 0 if not paths else (seek % len(paths))
+                bus.shared["src_idx"] = idx
+            _flush_hubs()
 
         paused = bool(bus.shared.get("mp4_paused", False))
         playing = bool(bus.shared.get("mp4_playing", True))
