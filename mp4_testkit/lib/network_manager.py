@@ -298,6 +298,10 @@ class NetworkManager:
     def enable_wifi(self):
         wifi_cfg = self.bus.shared.get('Network', {}).get('wifi', {})
         wifi_cfg['enable'] = 1
+        try:
+            self.boot_time = time.time()
+        except Exception:
+            self.boot_time = 0
         self._init_wifi(wifi_cfg)
 
     def set_app_connected(self, state=True):

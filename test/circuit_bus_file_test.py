@@ -33,6 +33,8 @@ _CMD_NAMES = {
     0x2007: "FILE_READ",
     0x2009: "FILE_DELETE",
     0x200B: "FILE_SCAN",
+    0x1008: "WIFI_CTRL",
+    0x1009: "WEB_CTRL",
     0x3201: "MP4_PLAYER_CTL",
     0x3202: "MP4_SOURCE_SET",
     0x3203: "MP4_STATUS_GET",
@@ -171,6 +173,62 @@ def _parse_ack_payload(payload):
     fid = payload[0] | (payload[1] << 8)
     aoff = payload[2] | (payload[3] << 8) | (payload[4] << 16) | (payload[5] << 24)
     return fid, aoff
+
+
+def _wait_file_ack(uart, parser, file_id, offset, timeout_ms, *, debug=False):
+    start = _ticks_ms()
+    tmp = bytearray(512)
+    fid_expect = int(file_id) & 0xFFFF
+    off_expect = int(offset) & 0xFFFFFFFF
+    nack_expect = off_expect | 0x80000000
+    while _ticks_diff(_ticks_ms(), start) < int(timeout_ms):
+        n = _read_uart(uart, tmp)
+        if n <= 0:
+            _sleep_ms(2)
+            continue
+        parser.feed(memoryview(tmp)[:n])
+        for ver, addr, cmd, payload in parser.pop():
+            if debug:
+                name = _CMD_NAMES.get(cmd, "UNKNOWN")
+                print("DEBUG RX cmd=0x{:04X}({}) len={} hex={}".format(
+                    int(cmd), name, len(payload), _hex_preview(payload)))
+            if cmd != 0x2004:
+                continue
+            fid, aoff = _parse_ack_payload(payload)
+            if fid != fid_expect:
+                continue
+            if aoff == off_expect:
+                return True
+            if aoff == nack_expect:
+                return False
+    return None
+
+
+def _wait_file_begin_ack(uart, parser, file_id, timeout_ms, *, debug=False):
+    start = _ticks_ms()
+    tmp = bytearray(512)
+    fid_expect = int(file_id) & 0xFFFF
+    while _ticks_diff(_ticks_ms(), start) < int(timeout_ms):
+        n = _read_uart(uart, tmp)
+        if n <= 0:
+            _sleep_ms(2)
+            continue
+        parser.feed(memoryview(tmp)[:n])
+        for ver, addr, cmd, payload in parser.pop():
+            if debug:
+                name = _CMD_NAMES.get(cmd, "UNKNOWN")
+                print("DEBUG RX cmd=0x{:04X}({}) len={} hex={}".format(
+                    int(cmd), name, len(payload), _hex_preview(payload)))
+            if cmd != 0x2004:
+                continue
+            fid, aoff = _parse_ack_payload(payload)
+            if fid != fid_expect:
+                continue
+            if aoff == 0xFFFFFFFE:
+                return 1
+            if aoff == 0xFFFFFFFF:
+                return -1
+    return 0
 
 
 def _parse_query_rsp_payload(payload):
@@ -591,14 +649,6 @@ def run_master(
     log_interval_ms=1000,
     debug=False,
 ):
-    print("MASTER init UART{} baud={} tx={} rx={}".format(
-        int(uart_id), int(baudrate), tx, rx))
-    uart = _uart_open(uart_id, baudrate, tx=tx, rx=rx, timeout=0, timeout_char=0)
-    try:
-        uart.read()
-    except Exception:
-        pass
-
     store = SchemaStore("/schema")
     store.finalize()
 
@@ -610,6 +660,32 @@ def run_master(
         int(file_id), int(total_size), int(chunk_size), binascii.hexlify(sha).decode()
     ))
 
+    def _probe(uart, parser, *, timeout_ms=600):
+        q_def = store.get(0x2005)
+        q_payload = SchemaCodec.encode(q_def, {"path": "/__ping__"})
+        uart.write(Proto.pack(0x2005, q_payload))
+        pkt = _wait_any_cmd(uart, parser, 0x2006, timeout_ms, debug=debug, drain_ms=0)
+        return pkt is not None
+
+    def _try_open(tx2, rx2):
+        print("MASTER init UART{} baud={} tx={} rx={}".format(
+            int(uart_id), int(baudrate), tx2, rx2))
+        uart2 = _uart_open(uart_id, baudrate, tx=tx2, rx=rx2, timeout=0, timeout_char=0)
+        try:
+            uart2.read()
+        except Exception:
+            pass
+        parser2 = StreamParser(max_len=16384)
+        if not _probe(uart2, parser2, timeout_ms=600):
+            return None, None
+        return uart2, parser2
+
+    uart, parser = _try_open(tx, rx)
+    if uart is None and tx is not None and rx is not None and int(tx) != int(rx):
+        uart, parser = _try_open(rx, tx)
+    if uart is None:
+        raise RuntimeError("No response from target (FILE_QUERY_RSP). Check wiring TX/RX and target firmware.")
+
     begin_def = store.get(0x2001)
     begin_payload = SchemaCodec.encode(begin_def, {
         "file_id": int(file_id),
@@ -619,10 +695,28 @@ def run_master(
         "path": str(path),
     })
     raw_begin = Proto.pack(0x2001, begin_payload)
-    uart.write(raw_begin)
-    print("SEND FILE_BEGIN {} bytes".format(len(raw_begin)))
+    _sleep_ms(30)
+    begin_ok = False
+    begin_reject = False
+    for attempt in range(3):
+        uart.write(raw_begin)
+        if attempt == 0:
+            print("SEND FILE_BEGIN {} bytes".format(len(raw_begin)))
+        else:
+            print("RESEND FILE_BEGIN attempt={} bytes={}".format(int(attempt + 1), len(raw_begin)))
+        st = _wait_file_begin_ack(uart, parser, file_id, 5000, debug=debug)
+        if st == 1:
+            begin_ok = True
+            break
+        if st == -1:
+            begin_reject = True
+            break
+        _sleep_ms(50)
+    if not begin_ok:
+        if begin_reject:
+            raise RuntimeError("FILE_BEGIN rejected by target")
+        raise RuntimeError("No FILE_BEGIN ACK from target")
 
-    parser = StreamParser(max_len=16384)
     sent = 0
     off = 0
     last_log = _ticks_ms()
@@ -644,14 +738,15 @@ def run_master(
                 print("SEND chunk#{} off={} len={}".format(
                     int(chunk_idx), int(off), len(raw_chunk)))
 
-            pkt = _wait_packet(
-                uart, parser, 0x2004, ack_timeout_ms,
-                expected_fid=int(file_id), expected_off=int(off),
+            ack = _wait_file_ack(
+                uart, parser, file_id, off, ack_timeout_ms,
                 debug=debug,
             )
-            if pkt is not None:
+            if ack is True:
                 ok = True
                 break
+            if ack is False:
+                raise RuntimeError("NACK at offset {}".format(int(off)))
             if debug:
                 print("DEBUG retry={} no ACK for off={}".format(int(retry), int(off)))
             _sleep_ms(10)
@@ -707,9 +802,202 @@ def run_master_quick(uart_id=1, baudrate=115200, tx=None, rx=None, debug=False):
     )
 
 
+def _open_uart_with_fallback(uart_id, baudrate, tx, rx):
+    uart = _uart_open(uart_id, baudrate, tx=tx, rx=rx, timeout=0, timeout_char=0)
+    try:
+        uart.read()
+    except Exception:
+        pass
+    return uart
+
+
+def _send_schema_cmd(uart, store, cmd_id, obj, *, fallback_payload=None):
+    cmd_def = store.get(int(cmd_id) & 0xFFFF)
+    if cmd_def:
+        payload = SchemaCodec.encode(cmd_def, obj or {})
+    else:
+        payload = fallback_payload if fallback_payload is not None else b""
+    uart.write(Proto.pack(int(cmd_id) & 0xFFFF, payload))
+
+
+def _drain_print(uart, duration_ms=300, debug=False):
+    parser = StreamParser(max_len=16384)
+    tmp = bytearray(512)
+    start = _ticks_ms()
+    while _ticks_diff(_ticks_ms(), start) < int(duration_ms):
+        n = _read_uart(uart, tmp)
+        if n <= 0:
+            _sleep_ms(2)
+            continue
+        parser.feed(memoryview(tmp)[:n])
+        for _ver, _addr, cmd, payload in parser.pop():
+            name = _CMD_NAMES.get(cmd, "UNKNOWN")
+            if debug:
+                print("RX cmd=0x{:04X}({}) len={} hex={}".format(
+                    int(cmd), name, len(payload), _hex_preview(payload)))
+            else:
+                print("RX cmd=0x{:04X}({}) len={}".format(int(cmd), name, len(payload)))
+
+
+def run_circuit_bus_interactive(
+    uart_id=1,
+    baudrate=115200,
+    tx=None,
+    rx=None,
+    debug=False,
+):
+    store = SchemaStore("/schema")
+    store.finalize()
+
+    cur_uart_id = int(uart_id)
+    cur_baud = int(baudrate)
+    cur_tx = tx
+    cur_rx = rx
+
+    def _probe():
+        uart = _open_uart_with_fallback(cur_uart_id, cur_baud, cur_tx, cur_rx)
+        parser = StreamParser(max_len=16384)
+        q_def = store.get(0x2005)
+        q_payload = SchemaCodec.encode(q_def, {"path": "/__ping__"})
+        uart.write(Proto.pack(0x2005, q_payload))
+        pkt = _wait_any_cmd(uart, parser, 0x2006, 800, debug=debug, drain_ms=0)
+        if pkt is None:
+            print("Probe: no FILE_QUERY_RSP")
+            return False
+        print("Probe: OK (got FILE_QUERY_RSP)")
+        return True
+
+    while True:
+        print("")
+        print("UART{} baud={} tx={} rx={}".format(int(cur_uart_id), int(cur_baud), cur_tx, cur_rx))
+        print("1) MP4 控制  2) 檔案傳輸  3) Wi-Fi 開關  4) Web Server 開關  5) 任意 CMD  6) UART 設定  7) Probe  8) 監聽  0) 離開")
+        cmd = _input_line("> ")
+        cmd = "" if cmd is None else str(cmd).strip().lower()
+
+        if cmd in ("0", "q", "quit", "exit"):
+            return True
+
+        if cmd in ("1", "mp4"):
+            run_mp4_interactive(uart_id=cur_uart_id, baudrate=cur_baud, tx=cur_tx, rx=cur_rx, debug=debug)
+            continue
+
+        if cmd in ("2", "file"):
+            path = "/test_500kb.bin"
+            total_size = 512000
+            chunk_size = 1024
+            seed = 0xC0FFEE
+
+            s = _input_line("path [{}]> ".format(path))
+            s = "" if s is None else str(s).strip()
+            if s:
+                path = s
+            s = _input_line("total_size [{}]> ".format(int(total_size)))
+            total_size = _parse_int_or_default(s, int(total_size))
+            s = _input_line("chunk_size [{}]> ".format(int(chunk_size)))
+            chunk_size = _parse_int_or_default(s, int(chunk_size))
+            s = _input_line("seed (hex ok) [0x{:X}]> ".format(int(seed)))
+            seed = _parse_int_or_default(s, int(seed))
+
+            run_master(
+                uart_id=cur_uart_id,
+                baudrate=cur_baud,
+                tx=cur_tx,
+                rx=cur_rx,
+                path=path,
+                total_size=total_size,
+                chunk_size=chunk_size,
+                seed=seed,
+                debug=debug,
+            )
+            continue
+
+        if cmd in ("3", "wifi"):
+            s = _input_line("Wi-Fi: 1=開 0=關 > ")
+            en = _parse_int_or_default(s, 0)
+            en = 1 if int(en) else 0
+
+            uart = _open_uart_with_fallback(cur_uart_id, cur_baud, cur_tx, cur_rx)
+            _send_schema_cmd(uart, store, 0x1008, {"wifi_enable": int(en)}, fallback_payload=bytes([int(en) & 0xFF]))
+            _drain_print(uart, duration_ms=200, debug=debug)
+            continue
+
+        if cmd in ("4", "web"):
+            s = _input_line("Web Server: 1=開 0=關 > ")
+            en = _parse_int_or_default(s, 0)
+            en = 1 if int(en) else 0
+
+            uart = _open_uart_with_fallback(cur_uart_id, cur_baud, cur_tx, cur_rx)
+            _send_schema_cmd(uart, store, 0x1009, {"web_enable": int(en)}, fallback_payload=bytes([int(en) & 0xFF]))
+            _drain_print(uart, duration_ms=200, debug=debug)
+            continue
+
+        if cmd in ("5", "cmd", "raw"):
+            s = _input_line("cmd (hex ok, e.g. 0x1009)> ")
+            cmd_id = _parse_int_or_default(s, 0)
+            if not cmd_id:
+                continue
+
+            obj = None
+            raw_payload = b""
+            cmd_def = store.get(int(cmd_id) & 0xFFFF)
+            if cmd_def:
+                s = _input_line("payload JSON (空白代表 {})> ")
+                s = "" if s is None else str(s).strip()
+                if s:
+                    try:
+                        obj = json.loads(s)
+                    except Exception as e:
+                        print("JSON 解析失敗:", e)
+                        continue
+                else:
+                    obj = {}
+            else:
+                s = _input_line("payload hex (空白代表空 payload)> ")
+                s = "" if s is None else str(s).strip().lower().replace(" ", "")
+                if s.startswith("0x"):
+                    s = s[2:]
+                if s:
+                    try:
+                        raw_payload = binascii.unhexlify(s)
+                    except Exception as e:
+                        print("hex 解析失敗:", e)
+                        continue
+
+            uart = _open_uart_with_fallback(cur_uart_id, cur_baud, cur_tx, cur_rx)
+            _send_schema_cmd(uart, store, int(cmd_id) & 0xFFFF, obj, fallback_payload=raw_payload)
+            _drain_print(uart, duration_ms=300, debug=debug)
+            continue
+
+        if cmd in ("6", "uart"):
+            s = _input_line("uart_id [{}]> ".format(int(cur_uart_id)))
+            cur_uart_id = int(_parse_int_or_default(s, int(cur_uart_id)))
+            s = _input_line("baudrate [{}]> ".format(int(cur_baud)))
+            cur_baud = int(_parse_int_or_default(s, int(cur_baud)))
+            s = _input_line("tx pin [{}]> ".format(str(cur_tx)))
+            s = "" if s is None else str(s).strip()
+            if s:
+                cur_tx = int(_parse_int_or_default(s, int(cur_tx) if cur_tx is not None else 0))
+            s = _input_line("rx pin [{}]> ".format(str(cur_rx)))
+            s = "" if s is None else str(s).strip()
+            if s:
+                cur_rx = int(_parse_int_or_default(s, int(cur_rx) if cur_rx is not None else 0))
+            continue
+
+        if cmd in ("7", "probe"):
+            _probe()
+            continue
+
+        if cmd in ("8", "listen", "rx"):
+            s = _input_line("listen ms [2000]> ")
+            ms = _parse_int_or_default(s, 2000)
+            uart = _open_uart_with_fallback(cur_uart_id, cur_baud, cur_tx, cur_rx)
+            _drain_print(uart, duration_ms=int(ms), debug=True)
+            continue
+
+
 def main():
     argv = getattr(sys, "argv", None)
-    mode = "mp4i"
+    mode = "menu"
     tx = 18
     rx = 8
     if argv and len(argv) >= 2:
@@ -723,8 +1011,10 @@ def main():
             rx = 18
     if mode in ("file", "uart_file"):
         return run_master_quick(uart_id=1, baudrate=115200, tx=tx, rx=rx, debug=True)
-    if mode in ("mp4i", "i", "interactive"):
+    if mode in ("mp4i", "mp4"):
         return run_mp4_interactive(uart_id=1, baudrate=115200, tx=tx, rx=rx, debug=True)
+    if mode in ("menu", "m", "i", "interactive"):
+        return run_circuit_bus_interactive(uart_id=1, baudrate=115200, tx=tx, rx=rx, debug=True)
     if mode in ("all", "full"):
         run_master_quick(uart_id=1, baudrate=115200, tx=tx, rx=rx, debug=True)
         _sleep_ms(200)

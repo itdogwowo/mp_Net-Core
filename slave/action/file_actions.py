@@ -4,13 +4,25 @@ import ubinascii
 from lib.sys_bus import bus
 from lib.fs_manager import fs
 import _thread
+import struct
 
 def on_file_begin(ctx, args):
-    if args.get("path",False):
-        args['path'] = bus.get_service("data_Phat") + args['path']
-
     ok = fs.begin_write(args)
-    if ok: print(f"📂 [File] Start -> {fs.session['path']} (Atomic)")
+    if ok:
+        print(f"📂 [File] Start -> {fs.session['path']} (Atomic)")
+    else:
+        try:
+            print(f"❌ [File] Begin Failed: {fs.session.get('last_error')}")
+        except Exception:
+            pass
+    if "send" in ctx:
+        try:
+            fid = int(args.get("file_id", 0) or 0) & 0xFFFF
+            aoff = 0xFFFFFFFE if ok else 0xFFFFFFFF
+            ack_data = struct.pack("<HI", fid, int(aoff) & 0xFFFFFFFF)
+            ctx["send"](Proto.pack(0x2004, ack_data))
+        except Exception:
+            pass
 
 def on_file_chunk(ctx, args):
     app = ctx["app"]
@@ -18,15 +30,25 @@ def on_file_chunk(ctx, args):
         # 🚀 關鍵：每收到一包就回傳 ACK
         # 讓 PC 知道可以發下一包了
         if "send" in ctx:
-            ack_def = app.store.get(0x2004)
-            ack_data = SchemaCodec.encode(ack_def, {
-                "file_id": args["file_id"],
-                "offset": args["offset"]
-            })
-            ctx["send"](Proto.pack(0x2004, ack_data))
+            try:
+                fid = int(args.get("file_id", 0) or 0) & 0xFFFF
+                off = int(args.get("offset", 0) or 0) & 0xFFFFFFFF
+                ack_data = struct.pack("<HI", fid, off)
+                ctx["send"](Proto.pack(0x2004, ack_data))
+            except Exception:
+                pass
     else:
         # ⚠️ 如果寫入失敗，打印原因方便調試
         print(f"⚠️ [File] Chunk Failed: Off={args.get('offset')} Err={fs.session['last_error']}")
+        if "send" in ctx:
+            try:
+                off = int(args.get("offset", 0) or 0) & 0xFFFFFFFF
+                nack_off = off | 0x80000000
+                fid = int(args.get("file_id", 0) or 0) & 0xFFFF
+                ack_data = struct.pack("<HI", fid, nack_off & 0xFFFFFFFF)
+                ctx["send"](Proto.pack(0x2004, ack_data))
+            except Exception:
+                pass
 
 def on_file_end(ctx, args):
     app = ctx["app"]
@@ -129,9 +151,6 @@ def on_file_read(ctx, args):
     offset = args.get("offset", 0)
     length = args.get("length", 1024)
     full_path = path
-    
-    if path:
-        full_path = bus.get_service("data_Phat") + path
 
     try:
         with open(full_path, "rb") as f:
@@ -164,11 +183,8 @@ def on_file_delete(ctx, args):
     path = args.get("path")
     
     if not path: return
-    
-    full_path = bus.get_service("data_Phat") + path
-    
-    # 使用 FS Manager 刪除
-    fs.delete_file(full_path)
+
+    fs.delete_file(path)
     
     # 操作後查詢狀態並回傳
     on_file_query(ctx, {"path": path})

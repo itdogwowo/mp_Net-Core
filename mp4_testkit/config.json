@@ -13,13 +13,18 @@
     "priority": ["wifi", "lan"],
     "lan": { "enable": 0, "active_mode": 1 },
     "wifi": {
-      "enable": 1,
+      "enable": 0,
       "active_mode": 2,
       "timeout": 300,
       "ssid": "",
       "ssid_pw": "",
       "mdns_name": "esp32-led-"
     }
+  },
+  "Web": {
+    "enable": 0,
+    "port": 80,
+    "root": "web"
   },
   "Buffer": {
     "size": 4096,

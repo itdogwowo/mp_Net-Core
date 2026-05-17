@@ -53,8 +53,8 @@
         "list": [
             {
                 "id": 1,
-                "baudrate": 9600,
-                "GPIO": { "tx": 43, "rx": 44 }
+                "baudrate": 115200,
+                "GPIO": { "tx": 18, "rx": 8 }
             }
         ]
     },

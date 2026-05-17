@@ -52,6 +52,8 @@ def task_loop(bus):
     lcd = bus.get_service("lcd")
     paths = bus.get_service("paths")
     comm = bus.get_service("comm")
+    nm = bus.get_service("network_manager")
+    web_ui = bus.get_service("web_ui")
     mp4 = bus.shared.get("mp4_player")
     if not isinstance(mp4, dict):
         mp4 = {}
@@ -456,6 +458,10 @@ def task_loop(bus):
         did_work = False
         if comm is not None:
             comm.poll()
+        if nm is not None:
+            nm.check_network()
+        if web_ui is not None:
+            web_ui.poll()
         if bus.shared.pop("mp4_flush", 0):
             _flush_hubs()
 

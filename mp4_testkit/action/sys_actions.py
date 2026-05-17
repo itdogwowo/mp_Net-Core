@@ -16,6 +16,8 @@ CMD_SYS_CTRL = 0x1004
 CMD_SYS_TASK_QUERY = 0x1005
 CMD_SYS_TASK_RSP = 0x1006
 CMD_SYS_TASK_SET = 0x1007
+CMD_WIFI_CTRL = 0x1008
+CMD_WEB_CTRL = 0x1009
 
 # --- 處理函數 (嚴格遵循 ctx, args 兩個參數) ---
 
@@ -136,6 +138,36 @@ def on_sys_ctrl(ctx, args):
                         tm.set_affinity(name, affinity)
                     print("▶️ [SysCtrl] 任務 affinity 已恢復")
 
+def on_wifi_ctrl(ctx, args):
+    wifi_enable = args.get("wifi_enable", 0xFF)
+    if wifi_enable not in (0, 1):
+        return
+    nm = bus.get_service("network_manager")
+    if not nm:
+        return
+    if wifi_enable == 0:
+        nm.disable_wifi()
+    else:
+        nm.enable_wifi()
+
+def on_web_ctrl(ctx, args):
+    web_enable = args.get("web_enable", 0xFF)
+    if web_enable not in (0, 1):
+        return
+    svc = bus.get_service("web_ui")
+    if not svc:
+        return
+    if web_enable == 0:
+        try:
+            svc.disable()
+        except Exception:
+            pass
+    else:
+        try:
+            svc.enable()
+        except Exception:
+            pass
+
 def on_sys_task_query(ctx, args):
     """查詢所有任務的 affinity 與執行核心 (0x1005)"""
     tm = bus.get_service("task_manager")
@@ -162,6 +194,8 @@ def register(app):
     app.disp.on(CMD_DISCOVER, on_discover)
     app.disp.on(CMD_SYS_INFO_GET, on_sys_info_get)
     app.disp.on(CMD_SYS_CTRL, on_sys_ctrl)
+    app.disp.on(CMD_WIFI_CTRL, on_wifi_ctrl)
+    app.disp.on(CMD_WEB_CTRL, on_web_ctrl)
     app.disp.on(CMD_SYS_TASK_QUERY, on_sys_task_query)
     app.disp.on(CMD_SYS_TASK_SET, on_sys_task_set)
     print("✅ [Action] Sys actions registered")

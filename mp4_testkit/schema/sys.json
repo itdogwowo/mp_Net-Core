@@ -7,6 +7,12 @@
       {"name": "wifi_enable", "type": "u8"},
       {"name": "core_control", "type": "u8"}
     ]},
+    {"cmd": "0x1008", "name": "WIFI_CTRL", "payload": [
+      {"name": "wifi_enable", "type": "u8"}
+    ]},
+    {"cmd": "0x1009", "name": "WEB_CTRL", "payload": [
+      {"name": "web_enable", "type": "u8"}
+    ]},
     {"cmd": "0x1005", "name": "SYS_TASK_QUERY", "payload": []},
     {"cmd": "0x1006", "name": "SYS_TASK_RSP", "payload": [
       {"name": "tasks_json", "type": "str_u16len"}

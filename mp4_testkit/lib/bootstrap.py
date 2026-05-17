@@ -424,6 +424,14 @@ def build_bus():
             pass
 
     bus.reset()
+    try:
+        import ubinascii
+        bus.slave_id = ubinascii.hexlify(machine.unique_id()).decode().upper()
+    except Exception:
+        try:
+            bus.slave_id = "".join("{:02X}".format(b) for b in machine.unique_id())
+        except Exception:
+            bus.slave_id = "UNKNOWN"
     bus.shared["config"] = cfg
     bus.shared["debug"] = debug
     bus.shared["width"] = width

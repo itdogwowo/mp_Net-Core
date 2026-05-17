@@ -4,7 +4,15 @@ from lib.ConfigManager import *
 from lib.sys_bus import bus
 from lib.network_manager import NetworkManager
 from lib.log_service import get_log
-import machine, os
+import machine, os, ubinascii
+
+try:
+    bus.slave_id = ubinascii.hexlify(machine.unique_id()).decode().upper()
+except Exception:
+    try:
+        bus.slave_id = "".join("{:02X}".format(b) for b in machine.unique_id())
+    except Exception:
+        bus.slave_id = "UNKNOWN"
 
 
 def exists(path):

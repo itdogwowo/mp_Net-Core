@@ -36,35 +36,66 @@ class CircuitTask(Task):
         for idx, item in enumerate(lst):
             uid = int(item.get("id", 1) or 1)
             baud = int(item.get("baudrate", 115200) or 115200)
+            rxbuf = item.get("rxbuf", None)
+            txbuf = item.get("txbuf", None)
+            timeout = int(item.get("timeout", 0) or 0)
+            timeout_char = int(item.get("timeout_char", 0) or 0)
+            buf_cfg = bus.shared.get("Buffer", {}) or {}
+            buf_size = int(buf_cfg.get("size", 4096) or 4096)
+            if rxbuf is None:
+                rxbuf = buf_size
+            if txbuf is None:
+                txbuf = buf_size
             gpio = item.get("GPIO", {}) or {}
             tx = gpio.get("tx", None)
             rx = gpio.get("rx", None)
 
             uart = None
             try:
-                uart = machine.UART(
-                    uid,
-                    baudrate=baud,
-                    bits=8,
-                    parity=None,
-                    stop=1,
-                    tx=machine.Pin(tx) if tx is not None else None,
-                    rx=machine.Pin(rx) if rx is not None else None,
-                    timeout=0,
-                    timeout_char=0,
-                )
+                kwargs = {
+                    "baudrate": baud,
+                    "bits": 8,
+                    "parity": None,
+                    "stop": 1,
+                    "tx": machine.Pin(tx) if tx is not None else None,
+                    "rx": machine.Pin(rx) if rx is not None else None,
+                    "timeout": timeout,
+                    "timeout_char": timeout_char,
+                }
+                if rxbuf is not None:
+                    kwargs["rxbuf"] = int(rxbuf)
+                if txbuf is not None:
+                    kwargs["txbuf"] = int(txbuf)
+                uart = machine.UART(uid, **kwargs)
             except TypeError:
-                uart = machine.UART(
-                    uid,
-                    baudrate=baud,
-                    bits=8,
-                    parity=None,
-                    stop=1,
-                    tx=tx,
-                    rx=rx,
-                    timeout=0,
-                    timeout_char=0,
-                )
+                try:
+                    kwargs = {
+                        "baudrate": baud,
+                        "bits": 8,
+                        "parity": None,
+                        "stop": 1,
+                        "tx": tx,
+                        "rx": rx,
+                        "timeout": timeout,
+                        "timeout_char": timeout_char,
+                    }
+                    if rxbuf is not None:
+                        kwargs["rxbuf"] = int(rxbuf)
+                    if txbuf is not None:
+                        kwargs["txbuf"] = int(txbuf)
+                    uart = machine.UART(uid, **kwargs)
+                except TypeError:
+                    uart = machine.UART(
+                        uid,
+                        baudrate=baud,
+                        bits=8,
+                        parity=None,
+                        stop=1,
+                        tx=tx,
+                        rx=rx,
+                        timeout=timeout,
+                        timeout_char=timeout_char,
+                    )
             except Exception as e:
                 get_log().error("❌ [CircuitTask] UART init failed (id={}): {}".format(uid, e))
                 continue
