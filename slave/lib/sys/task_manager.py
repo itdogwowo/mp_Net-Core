@@ -289,6 +289,25 @@ class TaskManager:
         loop_count = 0
         start_time = time.ticks_ms()
 
+        # ── 分批驗證鉤子注入 (core0 only) ──
+        #   全檔 SHA 讀取迴圈 (fs_manager) 每 ~256KB 讓步一次; 若 WDT 已建立,
+        #   讓步 = 餵狗 + sleep_ms(0), 避免大檔驗證同步阻塞卡死 core0 超過
+        #   WDT timeout 被 TWDT 復位。WDT 未建立 (enable=0) → 不注入, 鉤子維持
+        #   no-op, fs_manager 模組零 WDT 耦合 (由啟動方決定餵狗策略)。
+        if core_id == 0:
+            try:
+                _wdt0 = bus.get_service("wdt")
+                if _wdt0 is not None:
+                    from lib.sys.fs_manager import set_yield_cb
+
+                    def _fs_yield():
+                        _wdt0.feed()
+                        time.sleep_ms(0)
+
+                    set_yield_cb(_fs_yield)
+            except Exception:
+                pass
+
         _need_task_perf = False
         _need_core_metrics = False
         _log_cfg_refresh_ms = 0

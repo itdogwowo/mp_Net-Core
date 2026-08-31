@@ -5,6 +5,30 @@ import ubinascii
 import hashlib
 from lib.sys.dispatch import dprint
 
+# ── 分批驗證的讓步鉤子 ─────────────────────────────────────────
+# 全檔 SHA 讀取迴圈 (_finalize_atomic_write / calc_sha256) 每 ~256KB 讓出
+# 控制權一次，避免大檔重讀在 core0 上同步阻塞超過看門狗 timeout。
+# 鉤子預設 no-op；由啟動方 (TaskManager.runner_loop core0) 依看門狗策略注入
+# 回呼 —— 模組本身不知道 WDT 存在，不會與看門狗耦合。
+_yield_cb = None
+
+
+def set_yield_cb(cb):
+    """注入讓步回呼 (None = 恢復 no-op)。回呼執行頻率 ≈ 每 256KB 一次。"""
+    global _yield_cb
+    _yield_cb = cb
+
+
+def yield_point():
+    """全檔讀取迴圈的讓步點: 呼叫注入的回呼 (若有的話)。"""
+    global _yield_cb
+    cb = _yield_cb
+    if cb is not None:
+        try:
+            cb()
+        except Exception:
+            pass
+
 MANIFEST_FILE = "/manifest.json"          # 本地 flash 的 manifest
 MANIFEST_FILE_SD = "/sd/.manifest.json"   # SD 的 manifest (與本地分開存放)
 DELTA_FILE = "/sd/.delta.json"            # 兩段式 commit + 斷點續傳 journal (存 SD)
@@ -477,14 +501,21 @@ class FileSystemManager:
         try:
             # 1. Calc SHA
             h = hashlib.sha256()
-            buf = bytearray(2048)
+            buf = bytearray(4096)
             size = 0
+            chunk_since_yield = 0
             with open(temp_path, "rb") as f:
                 while True:
                     n = f.readinto(buf)
                     if n == 0: break
                     h.update(memoryview(buf)[:n])
                     size += n
+                    # 🔧 分批驗證: 每 ~256KB 讓出控制權 (鉤子由啟動方依 WDT 策略
+                    #    注入, 模組不知道 WDT 存在)。避免大檔全檔重讀卡死 core0。
+                    chunk_since_yield += n
+                    if chunk_since_yield >= 262144:
+                        yield_point()
+                        chunk_since_yield = 0
             
             got_sha = ubinascii.hexlify(h.digest()).decode()
             
@@ -1165,12 +1196,18 @@ class FileSystemManager:
         """Helper for external use"""
         try:
             h = hashlib.sha256()
-            buf = bytearray(2048)
+            buf = bytearray(4096)
+            chunk_since_yield = 0
             with open(path, "rb") as f:
                 while True:
                     n = f.readinto(buf)
                     if n == 0: break
                     h.update(memoryview(buf)[:n])
+                    # 🔧 分批驗證: 與 _finalize_atomic_write 一致, 每 ~256KB 讓出控制權
+                    chunk_since_yield += n
+                    if chunk_since_yield >= 262144:
+                        yield_point()
+                        chunk_since_yield = 0
             return ubinascii.hexlify(h.digest()).decode()
         except:
             return None
@@ -1306,7 +1343,7 @@ class FileSystemManager:
 
         try:
             h = hashlib.sha256()
-            buf = bytearray(2048)
+            buf = bytearray(4096)
             size = 0
             chunk_since_yield = 0
             with open(path, "rb") as f:

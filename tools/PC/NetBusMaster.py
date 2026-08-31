@@ -347,6 +347,7 @@ class DeviceMonitor:
         self.frame_history = deque(maxlen=10)
         self.last_update = time.time()
         self.last_frame_update = time.time()
+        self.last_probe_at = 0.0   # 🔧 健康檢查固定週期探測 (0x100A) 上次成功時間
         
         # ========== 錯誤信息 ==========
         self.error_msg = ""
@@ -767,6 +768,7 @@ class DeviceManager:
                 "partial_sha": None,                 # 🔧 續傳 session 的 sha256
                 "read_data": None,
                 "read_offset": 0,
+                "transfer_active": False,        # 🔧 動態離線判斷: 傳輸中設備視為活著
                 "last_seen": time.time()  # 用於內部連接保活檢查
             }
             
@@ -815,6 +817,7 @@ class DeviceManager:
                     mon = self.panel.monitors.get(cid)
                     if mon:
                         mon.last_update = time.time()
+                        mon.last_probe_at = time.time()   # 🔧 固定週期探測成功基準
                         if mon.status == "無響應":
                             mon.status = "待機"
                             self.panel.log("ok", f"💓 [Health] {cid} ping OK → 恢復待機")
@@ -912,6 +915,15 @@ class DeviceManager:
                     monitor.last_update = now
                     continue
 
+                # 🔧 動態判斷「對方可能在計算」而非離線 (改 Master, 不動 Slave):
+                #    長檔案操作 (大檔 SHA 驗證/整檔 hash) 期間 Slave 在 core0 阻塞,
+                #    可能暫時回不了 0x100A/0x1101。若該設備「有正在進行/剛進行的檔案
+                #    操作」(transfer_active 旗標) → 強制視為活著, 不標離線、不敲門。
+                node = self.slaves.get(cid)
+                if node is not None and node.get("transfer_active"):
+                    monitor.last_update = now
+                    continue
+
                 idle = now - monitor.last_update
                 if idle >= timeout:
                     if monitor.status != "離線" and monitor.status != "無響應":
@@ -919,8 +931,10 @@ class DeviceManager:
                     # 已標無響應仍持續探測, 恢復連線時自動回到待機
                     self._probe_device(cid)
                     continue
-                if idle >= probe_at:
-                    # 🔧 主動探測: 有回應就保持活著 (避免 Wi-Fi 不穩的假警報)
+                if idle >= probe_at or now - monitor.last_probe_at >= probe_at:
+                    # 🔧 固定週期探測 (不再只等 idle 累積):
+                    #    monitor.last_probe_at 由 _probe_device 成功後更新,
+                    #    確保 master 每 probe_at 秒都餵一次 0x100A, 刷新 slave idle。
                     self._probe_device(cid)
     def get_counts(self):
         """返回 (在線總數, 離線總數)"""
@@ -1999,6 +2013,10 @@ class NetBusMaster:
     def _transfer_begin(self):
         self.transfer_cancel.clear()
         self._transfer_kb_stop.clear()
+        # 🔧 動態離線判斷: 標記「傳輸中」, health check 對這些設備強制視為活著
+        #    (對方可能在算 hash, 暫時回不了 ping), 避免誤標離線觸發敲門。
+        for tid in list(self.slaves.keys()):
+            self.slaves[tid]["transfer_active"] = True
         self.panel.start(
             interactive=True,
             controls_text="║  [S] 停止傳輸  │  [Q] 退出                                                                  ║",
@@ -2036,6 +2054,9 @@ class NetBusMaster:
         self._transfer_kb_thread = None
         input_handler.exit_raw_mode()
         input_handler.flush_input()
+        # 🔧 清除傳輸中旗標 (health check 恢復正常離線判定)
+        for tid in list(self.slaves.keys()):
+            self.slaves[tid]["transfer_active"] = False
         if self.panel.running:
             self.panel.start(interactive=False, controls_text=None)
         else:
@@ -4508,6 +4529,9 @@ class NetBusMaster:
                 node = self.slaves[tid]
                 node["query_event"].clear()
                 node["remote_sha"] = None
+                # 🔧 查詢/上傳期間標記傳輸中: 大檔 SHA 驗證時 slave 可能暫時回不了
+                #    ping, health check 對這些設備視為活著, 不誤標離線 (動態判斷)。
+                node["transfer_active"] = True
                 valid_tids.append(tid)
                 
         # 批量發送查詢
@@ -4575,6 +4599,11 @@ class NetBusMaster:
         
         if not final_targets:
             print("ℹ️ 無設備被選中")
+            # 🔧 清掉查詢階段的傳輸中旗標 (無設備要上傳)
+            for tid in self.selected_targets:
+                node = self.slaves.get(tid)
+                if node:
+                    node["transfer_active"] = False
             time.sleep(1)
             self.panel.start()
             return
