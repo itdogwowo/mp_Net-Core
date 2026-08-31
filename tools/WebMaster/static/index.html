@@ -3,76 +3,78 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta name="csrf-token" content="">
   <title>NetBus WebMaster</title>
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
   <header class="topbar">
-    <div class="brand">🎬 NetBus <span>WebMaster</span></div>
+    <div class="topbar-left">
+      <button id="btnCollapseSide" class="btn ghost" title="摺疊/展開左側欄">☰</button>
+      <div class="brand">🎬 NetBus <span>WebMaster</span></div>
+    </div>
     <div class="topbar-right">
+      <span id="deviceBadge" class="badge off">未選設備</span>
+      <button id="btnSettings" class="btn ghost" title="開啟設定" disabled>⚙</button>
       <span id="connState" class="conn-state off">未連線</span>
       <button id="themeToggle" class="btn ghost" title="切換主題">🌓</button>
     </div>
   </header>
 
   <div class="layout">
-    <aside class="sidebar">
-      <div class="side-section">
-        <h3>設備</h3>
-        <ul id="deviceList" class="device-list"></ul>
-      </div>
-      <div class="side-section">
-        <h3>音訊</h3>
-        <select id="mp3Select" class="select"></select>
-        <div class="delay-row">
-          <label>延遲 <span id="delayVal">0</span> ms</label>
-          <input id="delaySlider" type="range" min="-500" max="500" value="0" step="10">
+    <!-- 左側：設備概況 -->
+    <aside class="sidebar" id="sidebar">
+      <div class="side-head"><h3>設備概況</h3></div>
+      <div class="side-tools">
+        <button id="btnDiscover" class="btn block">🔍 發現（廣播）</button>
+        <div class="connect-row">
+          <input id="knockIp" type="text" placeholder="固定 IP 敲門 (可多個)" class="input mono">
+          <button id="btnKnockIp" class="btn primary">連</button>
         </div>
+        <label class="chk"><input type="checkbox" id="showOffline"> 顯示離線/已知設備</label>
+      </div>
+      <ul id="deviceList" class="device-list"><li class="muted-body">(尚無)</li></ul>
+      <div class="device-legend">
+        <span><span class="dot"></span> 在線</span>
+        <span><span class="dot offline"></span> 離線</span>
       </div>
     </aside>
 
-    <main class="content">
-      <section class="card">
-        <div class="card-head">
-          <h2>播放控制</h2>
-          <span id="activeSlave" class="muted">尚未選擇設備</span>
-        </div>
-        <div class="controls">
-          <div class="ctrl-row">
-            <label>檔案 / 緩衝區</label>
-            <input id="fileName" type="text" value="/ram/live.bin" class="input" placeholder="/ram/live.bin 或 data.bin">
-          </div>
-          <div class="ctrl-row">
-            <label>Play Mode</label>
-            <select id="playMode" class="select">
-              <option value="0">播放一次</option>
-              <option value="1">循環</option>
-            </select>
-            <label>FPS</label>
-            <input id="fps" type="number" value="40" min="1" max="120" class="input short">
+    <!-- 右側：分頁面板 -->
+    <main class="content" id="content">
+      <nav class="tabs">
+        <button class="tab active" data-tab="control">🎛 控制</button>
+        <button class="tab" data-tab="files">📁 檔案</button>
+        <button class="tab" data-tab="firmware">🔥 固件</button>
+        <button class="tab" data-tab="console">⌨ Console</button>
+        <button class="tab" data-tab="log">📋 終端</button>
+      </nav>
+
+      <!-- 控制 -->
+      <section id="tab-control" class="tab-panel active">
+        <div class="card">
+          <div class="card-head"><h2>播放控制</h2><span id="activeSlave" class="muted">尚未選擇設備</span></div>
+          <div class="grid-2">
+            <div class="field"><label>檔案 / 緩衝區</label><input id="fileName" type="text" value="/ram/live.bin" class="input" placeholder="/ram/live.bin 或 data.bin"></div>
+            <div class="field"><label>Play Mode</label>
+              <select id="playMode" class="select"><option value="0">播放一次</option><option value="1">循環</option></select>
+            </div>
+            <div class="field"><label>FPS</label><input id="fps" type="number" value="40" min="1" max="120" class="input"></div>
+            <div class="field"><label>起播幀</label><input id="startFrame" type="number" value="0" min="0" class="input"></div>
           </div>
           <div class="btn-row">
             <button id="btnPrepare" class="btn primary">準備</button>
             <button id="btnPlay" class="btn success">播放</button>
-            <button id="btnPause" class="btn">暫停/繼續</button>
+            <button id="btnPause" class="btn">暫停</button>
             <button id="btnStop" class="btn danger">停止</button>
-            <button id="btnSeek" class="btn">跳轉 0</button>
+            <button id="btnSeek" class="btn">跳轉</button>
           </div>
         </div>
-      </section>
 
-      <section class="card">
-        <div class="card-head">
-          <h2>RAM 實時播放</h2>
-          <span class="muted">上傳到指定 RAM 緩衝區後可直接串流</span>
-        </div>
-        <div class="controls">
-          <div class="ctrl-row">
-            <label>緩衝區路徑</label>
-            <input id="ramPath" type="text" value="/ram/live.bin" class="input">
-            <label>Chunk</label>
-            <input id="ramChunk" type="number" value="4096" class="input short">
+        <div class="card">
+          <div class="card-head"><h2>RAM 實時播放</h2><span class="muted">上傳到 RAM 緩衝區後直接串流</span></div>
+          <div class="grid-2">
+            <div class="field"><label>緩衝區路徑</label><input id="ramPath" type="text" value="/ram/live.bin" class="input"></div>
+            <div class="field"><label>Chunk</label><input id="ramChunk" type="number" value="4096" class="input"></div>
           </div>
           <div class="btn-row">
             <input id="ramFile" type="file" class="file">
@@ -82,15 +84,107 @@
         </div>
       </section>
 
-      <section class="card">
-        <div class="card-head"><h2>終端 / 日誌</h2></div>
-        <div id="terminal" class="terminal"></div>
+      <!-- 檔案 -->
+      <section id="tab-files" class="tab-panel">
+        <div class="card">
+          <div class="card-head"><h2>上傳檔案</h2>
+            <div class="btn-row">
+              <input id="upFile" type="file" class="file">
+              <input id="upPath" type="text" value="/sd/upload.bin" class="input" placeholder="/sd/upload.bin 或 /boot.py">
+              <button id="btnUpload" class="btn primary">上傳</button>
+            </div>
+          </div>
+          <div class="progress"><div id="upProgress" class="progress-bar"></div></div>
+        </div>
+        <div class="card">
+          <div class="card-head"><h2>設備檔案</h2>
+            <div class="btn-row">
+              <input id="dlRemote" type="text" value="/boot.py" class="input" placeholder="要下載的路徑">
+              <button id="btnDownload" class="btn">下載</button>
+              <button id="btnRefreshFiles" class="btn">⟳ 列出</button>
+            </div>
+          </div>
+          <div class="file-table-wrap">
+            <table class="file-table">
+              <thead><tr><th>路徑</th><th>大小</th><th>狀態</th><th>操作</th></tr></thead>
+              <tbody id="fileList"><tr><td colspan="4" class="muted">尚未載入</td></tr></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- 固件 -->
+      <section id="tab-firmware" class="tab-panel">
+        <div class="card">
+          <div class="card-head"><h2>固件更新</h2><span class="muted">比對本地 <code>slave/</code> 與設備 manifest，只上傳差異檔</span></div>
+          <div class="ctrl-row">
+            <label class="chk"><input type="checkbox" id="fwConfirm" checked> 上傳後確認</label>
+            <label class="chk"><input type="checkbox" id="fwReboot"> 上傳後重啟</label>
+            <button id="btnFwPreview" class="btn">🔍 預覽差異</button>
+            <button id="btnFwUpdate" class="btn primary">⬆️ 執行更新</button>
+          </div>
+          <pre id="fwResult" class="result-block">(尚未執行)</pre>
+        </div>
+      </section>
+
+      <!-- Console -->
+      <section id="tab-console" class="tab-panel">
+        <div class="card">
+          <div class="card-head"><h2>命令 Console</h2><span class="muted">送任意 NC4 命令</span></div>
+          <div class="grid-3">
+            <div class="field"><label>cmd_id</label><select id="cmdSelect" class="select"></select></div>
+            <div class="field span2"><label>args (JSON)</label><input id="cmdArgs" type="text" value="{}" class="input mono"></div>
+          </div>
+          <div class="grid-2">
+            <div class="field"><label>expect (可空)</label><input id="cmdExpect" type="text" placeholder="0x2006" class="input mono"></div>
+            <div class="field"><label>timeout(s)</label><input id="cmdTimeout" type="number" value="5" class="input"></div>
+          </div>
+          <div class="btn-row">
+            <button id="btnCmdSend" class="btn primary">送出</button>
+            <button id="btnCmdFill" class="btn ghost">填入範例</button>
+          </div>
+          <pre id="cmdResult" class="result-block">(尚未送出)</pre>
+        </div>
+      </section>
+
+      <!-- 終端 -->
+      <section id="tab-log" class="tab-panel">
+        <div class="card">
+          <div class="card-head"><h2>終端 / 日誌</h2><button id="btnClearLog" class="btn ghost">清除</button></div>
+          <div id="terminal" class="terminal"></div>
+        </div>
       </section>
     </main>
   </div>
 
-  <!-- 隱藏音訊播放器 (原生 <audio>) -->
-  <audio id="player" preload="auto"></audio>
+  <!-- 設定 Modal -->
+  <div id="settingsModal" class="modal-overlay hidden">
+    <div class="modal">
+      <div class="modal-head">
+        <h2 id="settingsTitle">設定</h2>
+        <button id="btnCloseSettings" class="btn ghost">✕</button>
+      </div>
+      <div class="modal-body">
+        <div class="card">
+          <div class="card-head"><h2>config.json</h2>
+            <div class="btn-row">
+              <button id="btnCfgDownload" class="btn">下載</button>
+              <button id="btnCfgUpload" class="btn primary">上傳</button>
+            </div>
+          </div>
+          <textarea id="cfgText" class="cfg-text" placeholder="按「下載」取得設備 config，編輯後按「上傳」"></textarea>
+        </div>
+        <div class="card">
+          <div class="card-head"><h2>設備操作</h2></div>
+          <div class="btn-row">
+            <button id="btnOpReboot" class="btn danger">軟重啟</button>
+            <button id="btnOpScan" class="btn">重掃檔案</button>
+            <button id="btnOpListDelta" class="btn">列出待確認</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
 
   <script src="/static/app.js"></script>
 </body>

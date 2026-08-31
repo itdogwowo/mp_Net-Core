@@ -2104,70 +2104,54 @@ class NetBusMaster:
         return node.get("remote_pending", -1) == 0
 
     def _confirm_path_batch(self, tids, remote_path, wait=3.0):
-        """廣播 0x2008 FILE_CONFIRM 給多台設備 (同時發送), 回傳 {tid: bool}。
+        """平行對多台設備發 0x2008 FILE_CONFIRM (每台獨立並行), 回傳 {tid: bool}。
 
         以 slave 回覆的 pending 欄位判定是否真的清掉; 失敗的再重試一次 (slave
         可能忙線未即時清), 避免假確認留下的 pending 在重啟後被自動回滾。
         """
-        nodes = {}
-        for tid in tids:
-            node = self.slaves.get(tid)
-            if node:
-                node["query_event"].clear()
-                node["remote_pending"] = -1
-                nodes[tid] = node
-        if not nodes:
+        return self._commit_path_batch(tids, remote_path, 0x2008, wait=wait)
+
+    def _undo_path_batch(self, tids, remote_path, wait=3.0):
+        """平行對多台設備發 0x200A FILE_UNDO (每台獨立並行), 回傳 {tid: bool}。"""
+        return self._commit_path_batch(tids, remote_path, 0x200A, wait=wait)
+
+    def _commit_path_batch(self, tids, remote_path, cmd, wait=3.0):
+        """對每台設備「平行」發送 confirm/undo (cmd 0x2008/0x200A), 回傳 {tid: bool}。
+
+        像上傳一樣用 ThreadPoolExecutor 每台獨立並行發送+等待, 一台卡住不拖住其他台;
+        失敗自動重試一次。原先是「一次廣播後串行等待」, 慢的那台會拖累全部。
+        """
+        tids = [t for t in tids if t in self.slaves]
+        if not tids:
             return {}
-        self.send_pkt(list(nodes.keys()), 0x2008, {"path": remote_path})
-        res = {}
-        for tid, node in nodes.items():
+
+        def _commit_one(tid):
+            node = self.slaves.get(tid)
+            if not node:
+                return tid, False
+            node["query_event"].clear()
+            node["remote_pending"] = -1
+            self.send_pkt([tid], cmd, {"path": remote_path})
             if node["query_event"].wait(timeout=wait):
-                res[tid] = node.get("remote_pending", -1) == 0
-            else:
-                res[tid] = False
+                return tid, (node.get("remote_pending", -1) == 0)
+            return tid, False
+
+        def _run_all(ts):
+            res = {}
+            with ThreadPoolExecutor(max_workers=min(16, len(ts))) as ex:
+                futs = [ex.submit(_commit_one, tid) for tid in ts]
+                for f in futs:
+                    tid, ok = f.result()
+                    res[tid] = ok
+            return res
+
+        res = _run_all(tids)
         # 🔧 失敗的重試一次 (pending 可能因 slave 忙線未即時清)
         retry_tids = [tid for tid, ok in res.items() if not ok]
         if retry_tids:
             time.sleep(0.5)
-            rnodes = {tid: self.slaves[tid] for tid in retry_tids if tid in self.slaves}
-            for node in rnodes.values():
-                node["query_event"].clear()
-                node["remote_pending"] = -1
-            self.send_pkt(list(rnodes.keys()), 0x2008, {"path": remote_path})
-            for tid, node in rnodes.items():
-                if node["query_event"].wait(timeout=wait):
-                    res[tid] = node.get("remote_pending", -1) == 0
-        return res
-
-    def _undo_path_batch(self, tids, remote_path, wait=3.0):
-        """廣播 0x200A FILE_UNDO 給多台設備 (同時發送), 回傳 {tid: bool}。"""
-        nodes = {}
-        for tid in tids:
-            node = self.slaves.get(tid)
-            if node:
-                node["query_event"].clear()
-                node["remote_pending"] = -1
-                nodes[tid] = node
-        if not nodes:
-            return {}
-        self.send_pkt(list(nodes.keys()), 0x200A, {"path": remote_path})
-        res = {}
-        for tid, node in nodes.items():
-            if node["query_event"].wait(timeout=wait):
-                res[tid] = node.get("remote_pending", -1) == 0
-            else:
-                res[tid] = False
-        retry_tids = [tid for tid, ok in res.items() if not ok]
-        if retry_tids:
-            time.sleep(0.5)
-            rnodes = {tid: self.slaves[tid] for tid in retry_tids if tid in self.slaves}
-            for node in rnodes.values():
-                node["query_event"].clear()
-                node["remote_pending"] = -1
-            self.send_pkt(list(rnodes.keys()), 0x200A, {"path": remote_path})
-            for tid, node in rnodes.items():
-                if node["query_event"].wait(timeout=wait):
-                    res[tid] = node.get("remote_pending", -1) == 0
+            for tid, ok in _run_all(retry_tids).items():
+                res[tid] = ok
         return res
 
     def _download_remote_delta(self, tid):
@@ -2194,7 +2178,7 @@ class NetBusMaster:
         return obj.get("pending", {}) or {}
 
     def _run_confirm_or_undo(self, promoted, action):
-        """依路徑分組後「廣播」confirm/undo 給所有受影響設備 (同時發送, 不逐台串行)。
+        """依路徑分組後「平行」confirm/undo 給所有受影響設備 (每台獨立並行, 不逐台串行)。
 
         promoted: {tid: [remote_path, ...]} 或 {tid: {path: rec}}; action: "confirm"|"undo"。
         回傳 (成功數, 失敗數)。
@@ -2227,28 +2211,27 @@ class NetBusMaster:
         return ok_n, fail_n
 
     def _prompt_confirm_promoted(self, promoted):
-        """批次 promote 後的手動確認: c=確認全部 / u=復原全部 / Enter=暫不確認。
+        """批次上傳後的手動確認: [Enter/c]=確認全部 / [u]=復原全部 / [q]=暫不確認。
 
-        未確認的檔案保留 pending, MCU 會在 3 次重啟後自動復原 (回滾舊版)。
-        確認/復原以「路徑分組廣播」到所有設備, 同時發送。
+        預設「確認」——避免一路 Enter 卻沒確認, 導致 pending 留存 → 3 次重啟自動回滾
+        → 下次又顯示「需要更新」的無限循環。確認/復原以路徑分組平行發送到所有設備。
         """
         total = sum(len(v) for v in promoted.values())
-        print(f"\n📢 [Promote] {total} 個檔案已搬到 root (舊檔已備份 .bak), 等待確認:")
-        print("   ⚠️ 未確認的話, MCU 會在 3 次重啟後自動復原 (回滾舊版)")
-        print("   [c] 確認全部 (正式生效, 刪除 .bak 備份)")
-        print("   [u] 復原全部 (立即回滾, 用 .bak 還原)")
-        print("   [Enter] 暫不確認 (保留 pending, 由 MCU 3 次重啟自動判斷)")
+        print(f"\n📢 [Confirm] {total} 個檔案已寫入 root (舊檔已備份 .bak):")
+        print("   [Enter/c] 確認全部 (正式生效, 刪除 .bak 備份) ← 預設")
+        print("   [u] 復原全部 (立即回滾, 用 .bak 還原舊版)")
+        print("   [q] 暫不確認 (保留 pending, MCU 3 次重啟後自動回滾)")
         ch = input("👉 請選擇: ").strip().lower()
-        if ch == 'c':
+        if ch == 'u':
+            ok_n, fail_n = self._run_confirm_or_undo(promoted, "undo")
+            print(f"♻️ 已復原 {ok_n} 個檔案; 失敗 {fail_n}")
+        elif ch == 'q':
+            print("ℹ️ 暫不確認 — MCU 將在 3 次重啟後自動復原未確認的檔案")
+            print("   (之後可再用 Step 0 檔案管理 或本工具的確認/復原指令處理)")
+        else:
             ok_n, fail_n = self._run_confirm_or_undo(promoted, "confirm")
             print(f"✅ 已確認 {ok_n} 個檔案 (正式生效); 失敗 {fail_n}")
             self._verify_promoted(promoted)
-        elif ch == 'u':
-            ok_n, fail_n = self._run_confirm_or_undo(promoted, "undo")
-            print(f"♻️ 已復原 {ok_n} 個檔案; 失敗 {fail_n}")
-        else:
-            print("ℹ️ 暫不確認 — MCU 將在 3 次重啟後自動復原未確認的檔案")
-            print("   (之後可再用 Step 0 檔案管理 或本工具的確認/復原指令處理)")
 
     def _auto_confirm_promoted(self, promoted):
         """批次 promote 後「直接確認」: 對有信心的上傳立即 confirm (刪 .bak, 正式生效)。
@@ -2861,6 +2844,11 @@ class NetBusMaster:
             for f in futures:
                 f.result()
         self._transfer_end()
+        # 🔧 停止面板: 之後要印上傳結果報告 + 確認提示(需要 input),
+        #    不能讓面板每 0.1s 重繪把這些文字覆蓋掉 (否則會「顯示完成卻其實在等 Enter」)。
+        if self.panel.running:
+            self.panel.stop()
+        ConsoleUI.show_cursor()
 
         self.last_upload_results = results
 
@@ -3468,12 +3456,10 @@ class NetBusMaster:
         #    否則「上傳後再跑一次」會拿到過期快取, 比對永遠顯示「全部一致」。
         self._firmware_manifest_cache = {}
 
-        # 🔧 先觸發每台重掃 root flash 重建 manifest, 再下載——確保比對用的是
-        #    最新哈希表, 而不是 slave 記憶體/磁碟上的過期 manifest (例如檔案被
-        #    外部改動、或舊韌體把檔寫到 /sd 導致 root manifest 沒更新)。
-        print("🔄 觸發設備重掃 manifest (0x200B)...")
-        self.send_pkt(targets, 0x200B, {"target": 0})
-        self._wait_fs_scan_idle(targets, timeout=30.0)
+        # 🔧 直接下載 manifest 比對, 不再每次觸發 root 重掃 (0x200B):
+        #    manifest 是 write-through 的權威哈希表, 上傳/還原/確認/刪除都會同步更新;
+        #    每跑一次就重掃會拖慢整批, 且掃描本身若未完成會誤用過期 manifest。
+        #    需要手動重建時, 用 Step 0 選單的「4. 重建文件索引 (Scan)」。
 
         # 🔧 並行下載 manifest: 一台卡住/掉線不阻塞其餘設備；個別逾時直接跳過。
         manifests = {}   # tid -> dict|None
@@ -3525,8 +3511,8 @@ class NetBusMaster:
             return
 
         print("\n👉 請選擇上傳方式:")
-        print("  [Enter] 全部更新 (只傳差異 + 上傳後詢問確認 + 軟重啟) ← 預設")
-        print("  [a] 全部更新 (只傳差異 + 直接確認 + 軟重啟)")
+        print("  [Enter] 全部更新 (只傳差異 + 直接確認 + 軟重啟) ← 預設")
+        print("  [p] 全部更新 (只傳差異 + 上傳後手動確認 + 軟重啟)")
         print("  [s] 逐檔上傳 (一個一個來, 每檔即時進度 + 直接確認)")
         print("  [1] 挑選單一檔案上傳到全部設備")
         print("  [q] 返回")
@@ -3534,16 +3520,16 @@ class NetBusMaster:
 
         if ch == "q":
             return
-        elif ch == "a":
-            self._run_upload_batch(diff_by_target, targets=targets, confirm_mode="auto")
+        elif ch == "p":
+            self._run_upload_batch(diff_by_target, targets=targets, confirm_mode="prompt")
         elif ch == "s":
             self._upload_files_sequential(diff_by_target, targets=targets)
             return
         elif ch == "1":
             self._upload_single_file_interactive(files_to_upload, targets=targets)
             return
-        elif ch in ("", "c", "y", "yes"):
-            self._run_upload_batch(diff_by_target, targets=targets, confirm_mode="prompt")
+        elif ch in ("", "a", "y", "yes"):
+            self._run_upload_batch(diff_by_target, targets=targets, confirm_mode="auto")
         else:
             print("❌ 無效選擇")
             return
@@ -3571,6 +3557,8 @@ class NetBusMaster:
             (os.path.join(PROJECT_ROOT, "slave", "action", "file_actions.py"), "/action/file_actions.py"),
             (os.path.join(PROJECT_ROOT, "slave", "lib", "sys", "fs_manager.py"), "/lib/sys/fs_manager.py"),
             (os.path.join(PROJECT_ROOT, "slave", "action", "status_actions.py"), "/action/status_actions.py"),
+            # 🔧 ConfigManager: 補上「寫 config 後立刻 reset 丟寫入」的 os.sync 修正
+            (os.path.join(PROJECT_ROOT, "slave", "lib", "sys", "ConfigManager.py"), "/lib/sys/ConfigManager.py"),
         ]
         for l, r in boot_files:
             if not os.path.isfile(l):

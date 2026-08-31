@@ -1,0 +1,197 @@
+# NetBus WebMaster 使用教學
+
+操控 mp_Net-Core 設備（NC4 協議）的網頁控制台。設備透過 WebSocket 連入，
+瀏覽器端做串流控制、檔案管理、遠端命令。
+
+---
+
+## 1. 一鍵啟動
+
+```bash
+cd tools/WebMaster
+python launch.py            # 預設 port 8000
+python launch.py 9000       # 自訂 port
+python launch.py --no-browser   # 不自動開瀏覽器
+```
+
+`launch.py` 會自動：
+1. 建立虛擬環境 `.venv`（若無）
+2. 安裝 `requirements.txt` 的模組
+3. 啟動伺服器
+4. 2 秒後開瀏覽器到 `http://127.0.0.1:<port>/`
+
+Windows 也可直接雙擊 `launch.bat`。
+
+> 若 venv 建立/裝模組失敗，會自動改用「目前 Python」（需已裝 fastapi/uvicorn/websockets）。
+
+---
+
+## 2. 設備怎麼連進來
+
+設備（slave）韌體會**主動連到 master 的 WS**：
+
+```
+ws://<master_ip>:<port>/ws/<slave_id>
+```
+
+所以設備 config 的 `master_IP`、`master_port` 要指到這台機器。設備開機或收到
+DISCOVER 敲門時會自動連入。連上後左側「設備」清單會出現。
+
+設備的 `master_port` 要對上 `launch.py` 用的 port（預設 8000）。
+
+### 設備概況（左側「設備概況」面板）
+
+左側欄可**摺疊/展開**（topbar 的 ☰）。
+
+- **預設只顯示連線設備**：綠點 = 在線，可點選操作（顯示 IP + 上線秒數 + PlayID）。
+- **顯示離線/已知設備**：勾選「顯示離線/已知設備」後，會列出所有曾連過或
+  `slave_map.json` 有紀錄的設備（紅點 = 離線，只能看狀態、不能操作），依 `slave_id` 排序。
+- 每台線上設備右側有 **⚙ 設定** 按鈕：
+
+「已知設備」來源：`slave_map.json`（NetBusMaster 的紀錄）作為種子 + WebMaster
+跑起來後連線過的設備會自動累積（存到 `tools/WebMaster/devices.json`）。
+
+#### 發現 / 敲門
+
+- **🔍 發現（廣播）**：送 DISCOVER (0x1001) 到 `255.255.255.255` + 子網廣播 → 所有網路上的
+  設備會依 `ws_url` 連回本 master。
+- **固定 IP 敲門**：輸入框填 IP（多個以逗號分隔，如 `10.161.185.89,10.161.185.22`）→ 按「連」
+  → unicast DISCOVER 到指定 IP:9000。
+
+#### 設定（⚙）
+
+點線上設備的 ⚙ 或 topbar 的 ⚙，開啟設定視窗：
+
+- **config.json**：按「下載」取得設備 config → 在文字框編輯 → 「上傳」寫回設備。
+- **設備操作**：軟重啟(0x100F) / 重掃檔案(0x200B) / 列出待確認(pending)。
+
+---
+
+## 3. 介面說明（分頁）
+
+### 🎛 控制（tab "控制"）
+
+| 欄位 | 說明 |
+|---|---|
+| 檔案 / 緩衝區 | 播放的資料檔（如 `/ram/live.bin`、`data.bin`） |
+| Play Mode | 0=播放一次 / 1=循環 |
+| FPS | 渲染幀率 |
+| 起播幀 | 從第幾幀開始 |
+
+按鈕：**準備 / 播放 / 暫停 / 停止 / 跳轉**。
+
+下方「RAM 實時播放」：選檔案、填緩衝區路徑、上傳到 RAM 後可直接串流。
+
+### 📁 檔案（tab "檔案"）
+
+- **上傳檔案**：選本地檔案 + 填遠端路徑 → 上傳（進度條顯示）。
+- **下載**：在「要下載的路徑」填路徑 → 下載。
+- **列出**：列出設備 manifest 的所有檔案（路徑/大小/狀態）。
+- 每個檔案有按鈕：
+  - **下載**：抓回本地。
+  - **待確認**（黃色徽章）：表示該檔已寫入 root、已留 `.bak` 備份但尚未 confirm。
+    - **確認**：正式生效（刪 `.bak`、清 pending）。
+    - **還原**：回滾到 `.bak` 舊版。
+  - **刪除**：刪除該檔。
+
+> 注意：上傳同名檔會自動兩段式 commit（留 `.bak` + pending）。沒 confirm 的話
+> 設備 3 次重啟會自動回滾舊版——所以看到「待確認」要記得處理。
+
+### 🔥 固件（tab "固件"）
+
+固件全量更新（delta）：比對本地 `slave/` 與設備 manifest，**只上傳差異檔**。
+
+- **預覽差異**：先跑 `dry_run=1`，只列出本地幾檔、差異幾檔、一致幾檔，不上傳。
+- **執行更新**：上傳所有差異檔。選項：
+  - **上傳後確認**（預設勾）：上傳後 `confirm` 清 pending（正式生效，避免 3 次重啟回滾）。
+  - **上傳後重啟**：更新完軟重啟。
+- 結果會顯示上傳了幾檔、清單。
+
+注意：只有「本地 `slave/` 有、且 sha 與設備 manifest 不同」的檔才會上傳，
+所以反覆執行不會重複推相同內容。
+
+### ⌨ Console（tab "Console"）
+
+通用命令探險家：選任意 NC4 命令 → 填參數 → 送出 → 看回應。
+
+- **cmd_id**：從 schema 下拉（含 0x2005 FILE_QUERY、0x1101 STATUS_GET…）。
+- **args**：JSON 格式的參數（選命令後會自動填範例）。
+- **expect**：期待的回應命令（可空；填了才會等待回應）。
+- **timeout**：等待秒數。
+
+適用於試任何協議功能、偵錯。
+
+### 📋 終端（tab "終端"）
+
+即時日誌：連線狀態、指令結果、錯誤等。可清除。
+
+---
+
+## 4. 常用操作範例
+
+### 上傳一個檔案到設備
+
+```bash
+# 直接呼叫 REST
+curl -X POST "http://127.0.0.1:8000/api/upload/SLAVE_ID?remote_path=/sd/data.bin&chunk_size=4096" \
+     --data-binary @local.bin
+```
+或用 UI「檔案」分頁上傳。
+
+### 下載設備檔案
+
+```bash
+curl "http://127.0.0.1:8000/api/download/SLAVE_ID?path=/boot.py" -o boot.py
+```
+
+### 查設備狀態
+
+Console 分頁：cmd_id=`0x1101`，args=`{"query_type":0}`，expect=`0x1102`。
+
+---
+
+## 5. REST API 列表
+
+| 方法 | 路徑 | 說明 |
+|---|---|---|
+| GET | `/` | SPA 頁面 |
+| GET | `/api/devices` | 所有已知設備概況（依 id 排序，含 online 狀態） |
+| GET | `/api/commands` | 所有 NC4 命令（cmd_id + 名稱 + 參數） |
+| POST | `/api/upload/{sid}?remote_path=..&chunk_size=..` | raw body 上傳 |
+| GET | `/api/files/{sid}` | 設備 manifest 檔案清單 |
+| GET | `/api/download/{sid}?path=..` | 下載檔案（attachment） |
+| POST | `/api/delete/{sid}?path=..` | 刪除檔案 |
+| POST | `/api/confirm/{sid}?path=..` | 確認覆蓋（刪 .bak） |
+| POST | `/api/undo/{sid}?path=..` | 復原（.bak 蓋回） |
+| POST | `/api/promote/{sid}?path=..` | /sd 暫存 → root |
+| POST | `/api/firmware/{sid}?dry_run=..&confirm=..&reboot=..` | 固件 delta 更新 |
+| POST | `/api/knock?broadcast=1&port=..` | DISCOVER 廣播發現 |
+| POST | `/api/knock?ip=10.1.2.3,10.1.2.4&port=..` | DISCOVER 定向敲門 |
+
+### WebSocket
+
+| 路徑 | 說明 |
+|---|---|
+| `/ws/{slave_id}` | slave 連入（binary NC 幀） |
+| `/ws/ui` | 瀏覽器控制台（JSON） |
+
+WS `/ws/ui` 指令範例：
+
+```json
+{"action":"stream_play","slave_id":"S1","start_frame":0}
+{"action":"file_list","slave_id":"S1"}
+{"action":"file_confirm","slave_id":"S1","path":"/boot.py"}
+{"action":"cmd","slave_id":"S1","cmd_id":"0x1101","args":{"query_type":0},"expect":"0x1102","timeout":5}
+```
+
+---
+
+## 6. 排障
+
+| 症狀 | 檢查 |
+|---|---|
+| 設備不是線 | 設備 `master_IP`/`master_port` 有沒有指到本機 + WebMaster 的 port |
+| 設備顯示離線 | 心跳逾時（`device_manager.heartbeat_loop` 30s 無回應標離線） |
+| 上傳失敗 | 設備在線？`chunk_size` 合不合理？遠端路徑有無權限問題 |
+| `等待確認` 一直出現 | 該檔已寫入 root 未 confirm；用「檔案」分頁按「確認」 |
+| 連線/指令跳 `Connection reset` | 設備在重啟 / 看門狗 re-arm；等它穩定再操作 |

@@ -489,6 +489,11 @@ class ConfigManager:
                 
                 with open(self.path, 'w') as f:
                     f.write(new_content)
+                # 🔧 sync 落盤：無損更新後若緊接著 machine.reset()（例如 WDT re-arm），
+                #    未 sync 的寫入會被丟掉 → enable=1 沒存進 → 下次開機又 enable=0
+                #    → 60s 沉默又 re-arm → 無限重啟循環。
+                if hasattr(os, 'sync'):
+                    os.sync()
                 dprint(f"[Config] ✓ 無損更新成功: {key_path}")
                 return True
             else:
@@ -532,6 +537,9 @@ class ConfigManager:
             with open(tmp_path, 'w') as f:
                 self._pretty_dump(config_only, f)
             os.replace(tmp_path, self.path)
+            # 🔧 sync 落盤：標準保存也一樣，避免 rename 後立刻 reset 丟寫入
+            if hasattr(os, 'sync'):
+                os.sync()
             self._update_btree_only(self.bus.shared)
             self._db.flush()
             dprint(f"[Config] ✓ 配置已同步 (已自動忽略 _obj 對象)")

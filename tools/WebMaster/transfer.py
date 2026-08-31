@@ -163,3 +163,42 @@ async def download_delta(dev):
         return json.loads(data.decode("utf-8")).get("pending", {})
     except Exception:
         return {}
+
+
+async def delete(dev, remote_path, timeout=5.0):
+    """0x2009 FILE_DELETE: 刪除檔案/目錄。回傳 bool (依 0x2006 exists=0 判定)。
+
+    若路徑已在 pending (待確認)，刪除會連 pending/.bak 一起清掉。
+    """
+    r = await dev.request(0x2009, {"path": remote_path}, expect=0x2006, timeout=timeout)
+    if r is None:
+        return False
+    _, args = r
+    return int(args.get("exists", 1)) == 0
+
+
+async def list_files(dev):
+    """讀取設備 manifest → {path: {"s": size, "h": sha, "pending": bool}} 或 None。
+
+    - manifest 是 write-through 的權威哈希表。
+    - pending 從 /sd/.delta.json 取得（哪些檔已寫入 root 但尚未 confirm）。
+    注意: manifest 本身不含自己 (scan 跳過 manifest.json)，所以這不會列出 /manifest.json。
+    """
+    data = await download(dev, "/manifest.json")
+    if not data:
+        return None
+    import json
+    try:
+        manifest = json.loads(data.decode("utf-8"))
+    except Exception:
+        return None
+    delta = await download_delta(dev)
+    result = {}
+    for path, info in manifest.items():
+        if isinstance(info, dict):
+            result[path] = {
+                "s": info.get("s", 0),
+                "h": info.get("h", ""),
+                "pending": path in delta,
+            }
+    return result

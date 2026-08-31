@@ -188,6 +188,10 @@ class FileSystemManager:
                     else:
                         f.write("\n")
                 f.write("}")
+            # 🔧 落盤後立即 sync：否則軟重啟 (machine.reset) 可能丟掉剛寫的 manifest，
+            #    下次「下載 manifest 比對」就會拿到過期哈希表 → 一直顯示需要更新。
+            if hasattr(os, 'sync'):
+                os.sync()
         except Exception as e:
             print(f"❌ [FS] Save manifest failed: {e}")
 
@@ -233,6 +237,9 @@ class FileSystemManager:
             self._ensure_parent(DELTA_FILE)
             with open(DELTA_FILE, "w") as f:
                 f.write(ujson.dumps(self.delta))
+            # 🔧 sync 落盤：pending/partial 是回滾與斷點續傳的權威紀錄，丟了等於失去保護
+            if hasattr(os, 'sync'):
+                os.sync()
         except Exception as e:
             print(f"❌ [FS] Save delta failed: {e}")
 
@@ -1245,6 +1252,7 @@ class FileSystemManager:
                     if name == "manifest.json": continue
                     if name.endswith(".tmp"): continue
                     if name.endswith(".db"): continue
+                    if name.endswith(".bak"): continue
                     if self._is_ignored(full_path, ignore_prefixes):
                         continue
                     if type_ == 0x4000:
