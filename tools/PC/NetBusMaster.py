@@ -1831,6 +1831,7 @@ class NetBusMaster:
         print("  6. 重試失敗/續傳 (斷點續傳)")
         print("  7. 軟重啟設備 (0x100F Reboot)")
         print("  8. 引導修復 (bootstrap 新韌體到 root)")
+        print("  9. 批量 Config 更新 (Profile/模板 → 依順序上傳)")
         print("  q. 返回")
         
         choice = input("\n👉 請選擇: ").strip().lower()
@@ -1853,6 +1854,8 @@ class NetBusMaster:
             self._soft_reboot_devices()
         elif choice == '8':
             self._bootstrap_root_fix()
+        elif choice == '9':
+            self._batch_config_update()
         elif choice == 'q':
             self.panel.start()
             return
@@ -2272,7 +2275,7 @@ class NetBusMaster:
 
         print("\n🔁 [Reboot] 軟重啟設備讓新韌體/配置生效:")
         for i, tid in enumerate(targets):
-            print(f"   {i+1}. {tid}")
+            print(f"   {i+1:2d}. {self._play_id_str(tid)}  {tid}")
         hint = "👉 [Enter] 是/全部重啟" if default_yes else "👉 [a] 全部重啟"
         ch = input(f"{hint} / [n] 挑選部分 / [q] 否: ").strip().lower()
         if ch == "q":
@@ -3190,6 +3193,18 @@ class NetBusMaster:
                 print("ℹ️ 已停止")
                 break
 
+            # 🔧 Profile 內附順序標籤: 放一個「檔名為 play_id」的小檔 (內容 = 順序號),
+            #    人類/工具打開 profile 資料夾就知道它對應哪個順序位置。
+            #    資料夾鍵仍是 device_id (不變), 不用 play_id 命名任何檔案/資料夾。
+            try:
+                pid = self.config["mapping"].get(target, {}).get("play_id")
+                if pid is not None:
+                    with open(os.path.join(save_dir, "play_id"), "w", encoding="utf-8") as f:
+                        f.write(str(pid))
+                    print(f"  🏷️ 順序標籤已寫: play_id = {pid}")
+            except Exception as e:
+                print(f"  ⚠️ 寫順序標籤失敗: {e}")
+
             # 3. Profile (模式/狀態/延遲 + 檔案清單)
             if self._save_profile(target, manifest):
                 print(f"  💾 Profile 已存: data/profiles/{target.replace(':', '_')}.json")
@@ -3480,6 +3495,232 @@ class NetBusMaster:
 
         print("\n✅ Bootstrap 完成, 準備重啟讓新韌體生效...")
         self._reboot_and_confirm(targets=targets, default_yes=True)
+
+    def _play_id_str(self, sid):
+        """slave_map 的 play_id → 'P03' 形式 (人讀順序標籤; 沒有就 'P??')。"""
+        pid = self.config["mapping"].get(sid, {}).get("play_id")
+        if pid is None:
+            return "P??"
+        try:
+            return "P%02d" % int(pid)
+        except Exception:
+            return "P" + str(pid)
+
+    def _batch_config_update(self):
+        """批量 Config 更新: 依「順序 (play_id)」把 config 批量上傳。
+
+        設計 (使用者需求):
+        - 40+ 台只有三套 config。每台設備的 profile 資料夾
+          (data/downloads/<device_id>/) 放一份 config.json; 資料夾鍵仍是
+          device_id (不變, 不用 play_id 命名任何檔案/資料夾), 順序靠資料夾裏
+          一個檔名為 `play_id` 的小檔 (內容 = 順序號)。
+        - 設備 ID 難讀 → 顯示/排序一律用 play_id 順序。
+        - 上傳走既有兩段式 commit (自動 .bak → confirm), 有 .bak 保護,
+          不必先完整下載舊 config; 上傳後 sha 驗證 + 可選軟重啟生效。
+        - 🔧 最保險: 上傳前先把每台現有的 /config.json 下載留底進該台 profile
+          (config.backup.<時間戳>.json); 下載失敗就跳過該台, 不覆蓋。
+        """
+        if self.panel.running:
+            self.panel.stop()
+        ConsoleUI.show_cursor()
+
+        print("\n⚙️  [批量 Config 更新]")
+        print("Config 來源:")
+        print("  1. 每台設備自己的 Profile (data/downloads/<device_id>/config.json) ← 推薦")
+        print("  2. 單一檔案 → 已選中設備 (整組同一份, 例如三套模板之一)")
+        mode = input("👉 選擇 (1/2): ").strip()
+        if mode not in ("1", "2"):
+            print("❌ 無效選擇")
+            input("\n按 Enter 返回...")
+            self.panel.start()
+            return
+
+        def _read_play_id(d):
+            """讀 profile 資料夾裏的 play_id 標籤檔 → int 或 None。"""
+            p = os.path.join(d, "play_id")
+            if os.path.isfile(p):
+                try:
+                    with open(p, "r", encoding="utf-8") as f:
+                        return int(f.read().strip())
+                except Exception:
+                    return None
+            return None
+
+        def _pid(pid_val):
+            return ("P%02d" % pid_val) if isinstance(pid_val, int) else "P??"
+
+        plan = []   # (pid_or_None, device_id, local_path, data, sha_hex)
+        skip = []   # (pid_or_None, device_id, why)
+
+        if mode == "1":
+            # 掃所有 profile 資料夾 (鍵 = device_id), 依裏面的 play_id 檔排序
+            if not os.path.isdir(DOWNLOAD_DIR):
+                print("❌ 無 profile 資料夾 (先跑 Step 8 → 3 批次備份, 或手動放 config)")
+                input("\n按 Enter 返回...")
+                self.panel.start()
+                return
+            rows = []
+            for name in sorted(os.listdir(DOWNLOAD_DIR)):
+                d = os.path.join(DOWNLOAD_DIR, name)
+                if not os.path.isdir(d):
+                    continue
+                cfg = os.path.join(d, "config.json")
+                if not os.path.isfile(cfg):
+                    skip.append((_read_play_id(d), name, "profile 缺 config.json"))
+                    continue
+                with open(cfg, "rb") as f:
+                    data = f.read()
+                rows.append((_read_play_id(d), name, cfg, data, hashlib.sha256(data).hexdigest()))
+            # 有 play_id 的依順序; 沒標籤的放後面依資料夾名
+            rows.sort(key=lambda r: (r[0] is None, r[0] if r[0] is not None else 0, r[1]))
+            plan = rows
+        else:
+            single_path = input("👉 模板檔路徑 (例: tools/PC/configs/group_A.json): ").strip().strip('"')
+            if not os.path.isfile(single_path):
+                print(f"❌ 找不到檔案: {single_path}")
+                input("\n按 Enter 返回...")
+                self.panel.start()
+                return
+            with open(single_path, "rb") as f:
+                data = f.read()
+            sha_hex = hashlib.sha256(data).hexdigest()
+
+            online_sorted = sorted(
+                list(self.slaves.keys()),
+                key=lambda sid: self.config["mapping"].get(sid, {}).get("play_id", 999),
+            )
+            if not online_sorted:
+                print("❌ 無在線設備")
+                input("\n按 Enter 返回...")
+                self.panel.start()
+                return
+            targets = [t for t in online_sorted if t in self.selected_targets]
+            if not targets:
+                print("⚠️ 尚未選擇設備。可在此直接挑選 (依 PlayID 順序):")
+                print("-" * 58)
+                for i, sid in enumerate(online_sorted):
+                    ip = self.config["mapping"].get(sid, {}).get("ip", "?")
+                    print(f" {i+1:2d}. {self._play_id_str(sid)}  {sid}  ({ip})")
+                print("-" * 58)
+                ch = input("👉 輸入編號 (例: 1,2,3-10 / a 全選): ").strip().lower()
+                if ch == "a":
+                    targets = online_sorted[:]
+                else:
+                    indices = self._parse_index_ranges(ch, len(online_sorted))
+                    if not indices:
+                        print("❌ 輸入無效")
+                        input("\n按 Enter 返回...")
+                        self.panel.start()
+                        return
+                    targets = [online_sorted[i] for i in sorted(indices)]
+                self.selected_targets = targets
+            if not targets:
+                print("❌ 無目標設備")
+                input("\n按 Enter 返回...")
+                self.panel.start()
+                return
+            for tid in targets:
+                pid = self.config["mapping"].get(tid, {}).get("play_id")
+                plan.append((pid, tid, single_path, data, sha_hex))
+
+        # 計劃表 (依順序; 離線的照樣列出, 稍後標記)
+        print("\n📋 [計劃]")
+        online_ids = set(self.slaves.keys())
+        for pid, dev_id, l_path, _data, sha_hex in plan:
+            online = "在線" if dev_id in online_ids else "離線"
+            print(f"   {_pid(pid)}  {dev_id}  ({online})  ← {l_path}  (sha {sha_hex[:8]})")
+        for pid, dev_id, why in skip:
+            print(f"   {_pid(pid)}  {dev_id}  ⏭ 跳過 ({why})")
+
+        upload_rows = [r for r in plan if r[1] in online_ids]
+        offline_rows = [r for r in plan if r[1] not in online_ids]
+        if not upload_rows:
+            print("❌ 沒有在線設備可上傳 (離線的之後上線再跑一次即可)")
+            input("\n按 Enter 返回...")
+            self.panel.start()
+            return
+
+        confirm = input(f"\n👉 確認上傳到 {len(upload_rows)} 台在線設備? (y/n): ").lower()
+        if confirm != 'y':
+            self.panel.start()
+            return
+
+        print("\n⚠️ 提醒:")
+        print("   - 上傳前會先下載每台現有 config 留底: profile/config.backup.<時間戳>.json (下載失敗就跳過該台)")
+        print("   - 若設備還沒做 Step 0 → 8 引導修復, 舊韌體會把 /config.json 導向 /sd 而無效")
+        print('   - 模板請把 System.cID 留 "" — 重啟後每台會自動填回自己的 cID')
+        print("   - config 要軟重啟才生效 (完成後會問)")
+
+        self._transfer_begin()
+        results = {}
+        lock = threading.Lock()
+
+        def _task(row):
+            pid, tid, l_path, data, sha_hex = row
+            try:
+                if self.transfer_cancel.is_set():
+                    raise Exception("已停止")
+                # 🔧 上傳前先下載現有 config 留底 (最保險: 有本地備份才覆蓋)
+                try:
+                    old = self._download_bytes(tid, "/config.json", expected_size=None, status="備份 Config")
+                except Exception as e:
+                    raise Exception("備份下載失敗, 跳過上傳: %s" % e)
+                if old is None:
+                    raise Exception("備份下載失敗 (無資料), 跳過上傳")
+                backup_dir = os.path.join(DOWNLOAD_DIR, tid.replace(":", "_"))
+                os.makedirs(backup_dir, exist_ok=True)
+                backup_name = "config.backup.%s.json" % time.strftime("%Y%m%d_%H%M%S")
+                backup_path = os.path.join(backup_dir, backup_name)
+                with open(backup_path, "wb") as f:
+                    f.write(old)
+
+                self._upload_bytes(tid, data, "/config.json")
+                confirm_ok = self._confirm_file(tid, "/config.json")
+                rsha = self._query_remote_sha(tid, "/config.json")
+                sha_ok = (rsha is not None and rsha.hex() == sha_hex)
+                if confirm_ok and sha_ok:
+                    status = "ok"
+                elif not confirm_ok:
+                    status = "confirm-fail"
+                else:
+                    status = "sha-mismatch"
+                with lock:
+                    results[tid] = (status, os.path.basename(backup_path))
+            except Exception as e:
+                with lock:
+                    results[tid] = ("err", str(e))
+
+        try:
+            with ThreadPoolExecutor(max_workers=self._cfg_int("max_workers", 10)) as ex:
+                futs = [ex.submit(_task, r) for r in upload_rows]
+                for f in futs:
+                    f.result()
+        finally:
+            self._transfer_end()
+        # 🔧 停止面板再印報告 (面板每 0.1s 重繪會把報告文字覆蓋掉)
+        if self.panel.running:
+            self.panel.stop()
+        ConsoleUI.show_cursor()
+
+        # 結果表 (依順序)
+        print("\n📊 [結果]")
+        ok_tids = []
+        marks = {"ok": "✅ 成功", "confirm-fail": "⚠️ confirm 失敗 (pending 未清)",
+                 "sha-mismatch": "❌ sha 不符", "err": "❌"}
+        for pid, tid, l_path, _data, _sha in upload_rows:
+            st, detail = results.get(tid, ("err", "無結果"))
+            print(f"   {_pid(pid)}  {tid}  {marks.get(st, st)}" + (f"  ({detail})" if detail else ""))
+            if st == "ok":
+                ok_tids.append(tid)
+        for pid, tid, why in skip:
+            print(f"   {_pid(pid)}  {tid}  ⏭ 跳過 ({why})")
+        for pid, tid, _l, _d, _s in offline_rows:
+            print(f"   {_pid(pid)}  {tid}  📴 離線未上傳 (上線後重跑即可)")
+
+        if ok_tids:
+            print(f"\n✅ 成功 {len(ok_tids)} 台")
+            self._reboot_and_confirm(targets=ok_tids, default_yes=True)
+        self.panel.start()
 
     def _upload_single_file_to_targets(self, l_path, r_path, targets, confirm_mode="auto"):
         """上傳單一檔案到多台設備 (逐台, 每台即時進度), 之後 promote + 確認。"""
