@@ -10,13 +10,23 @@
   let cmds = [];
   let fileCache = {};
   let showOffline = false;
+  let lastDevices = [];
 
   const terminal = $("#terminal");
   const deviceList = $("#deviceList");
   const connState = $("#connState");
   const deviceBadge = $("#deviceBadge");
-  const settingsBtn = $("#btnSettings");
+  const settingsBtn = $("#btnOpenDeviceTab");
   const port = location.port || "80";
+
+  function switchTab(tab) {
+    $$(".tab").forEach((t) => t.classList.remove("active"));
+    $$(".tab-panel").forEach((p) => p.classList.remove("active"));
+    const tabBtn = document.querySelector(`.tab[data-tab="${tab}"]`);
+    if (tabBtn) tabBtn.classList.add("active");
+    const panel = $("#tab-" + tab);
+    if (panel) panel.classList.add("active");
+  }
 
   // ── terminal ────────────────────────────────────────────────
   function log(msg, level) {
@@ -68,8 +78,9 @@
 
   // ── devices ──────────────────────────────────────────────────
   function renderDevices(devices) {
+    lastDevices = devices || [];
     deviceList.innerHTML = "";
-    const list = devices.slice().sort((a, b) => (a.slave_id < b.slave_id ? -1 : 1));
+    const list = lastDevices.slice().sort((a, b) => (a.slave_id < b.slave_id ? -1 : 1));
     const online = list.filter((d) => d.online);
     const offline = list.filter((d) => !d.online);
     const shown = showOffline ? list : online;
@@ -100,8 +111,8 @@
         const gear = document.createElement("button");
         gear.className = "mini gear";
         gear.textContent = "⚙";
-        gear.title = "設定 " + d.slave_id;
-        gear.onclick = (e) => { e.stopPropagation(); openSettings(d.slave_id); };
+        gear.title = "設備維護 " + d.slave_id;
+        gear.onclick = (e) => { e.stopPropagation(); selectDevice(d.slave_id); switchTab("device"); };
         li.appendChild(gear);
       }
       li.onclick = () => { if (d.online) selectDevice(d.slave_id); else log(`${d.slave_id} 離線，無法操作`, "warn"); };
@@ -117,7 +128,22 @@
     $("#activeSlave").textContent = sid;
     refreshDevices();
     refreshFiles();
+    refreshDevSummary();
   }
+
+  function refreshDevSummary() {
+    if (!activeSlave) return;
+    const d = lastDevices.find((x) => x.slave_id === activeSlave);
+    if (!d) return;
+    $("#devPlayId").value = (d.play_id != null ? d.play_id : "—");
+    $("#devAddr").value = d.online ? ((d.addr || "?") + " · " + d.uptime_s + "s") : "離線";
+    const st = d.status || {};
+    const stTxt = st.stream_active ? ("streaming · " + (st.stream_pos_frame != null ? "frame " + st.stream_pos_frame : "")) : "待機";
+    $("#devStatus").value = stTxt;
+    $("#devSummary").textContent = sid2str(activeSlave) + " · " + (d.online ? "在線" : "離線");
+  }
+
+  function sid2str(sid) { return sid; }
 
   function requireSlave() {
     if (!activeSlave) { log("請先在左側選擇設備", "warn"); return false; }
@@ -348,52 +374,67 @@
     $("#btnCmdFill").onclick = () => { $("#cmdArgs").value = "{}"; $("#cmdExpect").value = ""; };
   }
 
-  // ── 設定 modal (config + ops) ────────────────────────────────
-  let settingsTarget = null;
+  // ── 設備 tab (per-slave profile: config / delta / manifest + 設備操作) ──
+  function bindDevice() {
+    settingsBtn.onclick = () => { if (requireSlave()) switchTab("device"); };
 
-  async function openSettings(sid) {
-    settingsTarget = sid;
-    $("#settingsTitle").textContent = "設定 — " + sid;
-    $("#settingsModal").classList.remove("hidden");
-    $("#cfgText").value = "";
-    // 自動下載 config
-    try {
-      const r = await fetch(`/api/download/${sid}?path=/config.json`);
-      if (!r.ok) { $("#cfgText").value = "// config 下載失敗"; return; }
-      const text = await r.text();
-      try { $("#cfgText").value = JSON.stringify(JSON.parse(text), null, 2); }
-      catch (e) { $("#cfgText").value = text; }
-      log(`已載入 ${sid} 的 config.json`, "ok");
-    } catch (e) { $("#cfgText").value = "// " + e; }
-  }
-
-  function bindSettings() {
-    settingsBtn.onclick = () => { if (requireSlave()) openSettings(activeSlave); };
-    $("#btnCloseSettings").onclick = () => { $("#settingsModal").classList.add("hidden"); };
-    $("#settingsModal").onclick = (e) => { if (e.target === $("#settingsModal")) $("#settingsModal").classList.add("hidden"); };
+    async function loadDeviceDoc(path, label) {
+      if (!requireSlave()) return;
+      $("#devDocBlock").textContent = "讀取中...";
+      try {
+        const r = await fetch(`/api/download/${activeSlave}?path=${encodeURIComponent(path)}`);
+        if (!r.ok) { $("#devDocBlock").textContent = `❌ ${path} 讀取失敗`; return; }
+        const text = await r.text();
+        try { $("#devDocBlock").textContent = path + "\n" + JSON.stringify(JSON.parse(text), null, 2); }
+        catch (e) { $("#devDocBlock").textContent = path + "\n" + text; }
+        log(`已讀取 ${activeSlave} ${label}`, "ok");
+      } catch (e) { $("#devDocBlock").textContent = "❌ " + e; }
+    }
 
     $("#btnCfgDownload").onclick = async () => {
-      if (!settingsTarget) return;
-      const r = await fetch(`/api/download/${settingsTarget}?path=/config.json`);
+      if (!requireSlave()) return;
+      const r = await fetch(`/api/download/${activeSlave}?path=/config.json`);
       if (!r.ok) { log("config 下載失敗", "err"); return; }
       const text = await r.text();
       try { $("#cfgText").value = JSON.stringify(JSON.parse(text), null, 2); } catch (e) { $("#cfgText").value = text; }
       log("config 已下載", "ok");
     };
     $("#btnCfgUpload").onclick = async () => {
-      if (!settingsTarget) return;
+      if (!requireSlave()) return;
       const body = $("#cfgText").value;
       try {
-        const r = await fetch(`/api/upload/${settingsTarget}?remote_path=/config.json&chunk_size=4096`, { method: "POST", body: body });
+        const r = await fetch(`/api/upload/${activeSlave}?remote_path=/config.json&chunk_size=4096`, { method: "POST", body: body });
         const j = await r.json();
         if (j.ok) { log(`✅ config 已上傳 (${j.size}B)`, "ok"); setTimeout(() => log("提示: 部分 config 需重啟生效", "warn"), 500); }
         else log("❌ " + j.err, "err");
       } catch (e) { log("config 上傳失敗: " + e, "err"); }
     };
 
-    $("#btnOpReboot").onclick = () => { if (settingsTarget) { sendUI({ action: "cmd", slave_id: settingsTarget, cmd_id: "0x100F", args: { delay_ms: 500 } }); log(`重啟 ${settingsTarget}`, "info"); } };
-    $("#btnOpScan").onclick = () => { if (settingsTarget) { sendUI({ action: "cmd", slave_id: settingsTarget, cmd_id: "0x200B", args: { target: 0 } }); log(`觸發 ${settingsTarget} 重掃`, "info"); } };
-    $("#btnOpListDelta").onclick = () => { if (settingsTarget) { sendUI({ action: "file_list", slave_id: settingsTarget }); } };
+    $("#btnCfgDelta").onclick = () => loadDeviceDoc("/sd/.delta.json", "delta");
+    $("#btnCfgManifest").onclick = () => loadDeviceDoc("/manifest.json", "manifest");
+    $("#btnCfgManifestSd").onclick = () => loadDeviceDoc("/sd/.manifest.json", "SD manifest");
+
+    $("#btnOpReboot").onclick = () => { if (requireSlave()) { sendUI({ action: "cmd", slave_id: activeSlave, cmd_id: "0x100F", args: { delay_ms: 500 } }); log(`重啟 ${activeSlave}`, "info"); } };
+    $("#btnOpScan").onclick = () => { if (requireSlave()) { sendUI({ action: "cmd", slave_id: activeSlave, cmd_id: "0x200B", args: { target: 0 } }); log(`觸發 ${activeSlave} 重掃 (core1)`, "info"); } };
+    $("#btnOpRebuildLocal").onclick = () => { if (requireSlave()) { sendUI({ action: "cmd", slave_id: activeSlave, cmd_id: "0x2009", args: { path: "/manifest.json" } }); log(`${activeSlave}: 剷 /manifest.json + 重啟 (開機自動重建索引)`, "warn"); } };
+    $("#btnOpRebuildSd").onclick = () => { if (requireSlave()) { sendUI({ action: "cmd", slave_id: activeSlave, cmd_id: "0x200B", args: { target: 1 } }); log(`${activeSlave}: 重建 SD 索引 (0x200B target=1, 背景掃描)`, "info"); } };
+    $("#btnOpListDelta").onclick = () => { if (requireSlave()) refreshFiles(); };
+  }
+
+  // ── PoE ──────────────────────────────────────────────────────
+  function bindPoe() {
+    $("#btnPoeRun").onclick = async () => {
+      const action = $("#poeAction").value;
+      const switches = Array.from($("#poeSwitch").selectedOptions).map((o) => o.value);
+      const ports = $("#poePort").value.trim();
+      const dryRun = $("#poeDryRun").checked ? "1" : "0";
+      $("#poeResult").textContent = "執行中...";
+      try {
+        const j = await (await fetch(`/api/poe?action=${action}&dry_run=${dryRun}&switches=${encodeURIComponent(switches.join(","))}&ports=${encodeURIComponent(ports)}`, { method: "POST" })).json();
+        $("#poeResult").textContent = j.ok ? j.output : ("錯誤: " + j.err);
+        log(`PoE ${action} ${switches.join("+")} ${dryRun ? "(DRY-RUN)" : ""}`, j.ok ? "info" : "err");
+      } catch (e) { $("#poeResult").textContent = "❌ " + e; }
+    };
   }
 
   // ── misc ─────────────────────────────────────────────────────
@@ -416,7 +457,7 @@
   // ── init ─────────────────────────────────────────────────────
   function init() {
     bindTabs(); bindSidebar(); bindControls(); bindRamUpload(); bindUpload(); bindDownload();
-    bindFirmware(); bindConsole(); bindSettings(); bindMisc();
+    bindFirmware(); bindConsole(); bindDevice(); bindPoe(); bindMisc();
     loadCommands(); refreshDevices(); connectUI();
     log("WebMaster 已啟動", "ok");
   }

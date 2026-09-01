@@ -42,6 +42,8 @@ class FsScanTask(Task):
             fs.finalize_scan()
             self.fcache_flush()
             bus.shared["fs_scan_requested"] = False
+            # 🔧 掃完先「叫佢自己關閉」(one-shot); 下次 0x200B 由 scan_all()
+            #    重新武裝 affinity 再叫醒。
             self._shutdown()
             return
 
@@ -50,3 +52,4 @@ class FsScanTask(Task):
         tm = bus.get_service("task_manager")
         if tm:
             tm.set_affinity("fs_scan", (0, 0))
+

@@ -203,27 +203,19 @@ class DeviceManager:
         for ws in dead:
             self.ui_clients.discard(ws)
 
-    # ── 心跳 / 離線偵測 (背景迴圈) ────────────────────────
+    # ── UI 廣播迴圈 (不向設備發任何封包) ────────────────────
     async def heartbeat_loop(self, interval=2.0, offline_after=30.0):
-        # 心跳 2s 一次：讓設備 _last_rx 頻繁刷新，避免設備端 ws_stale_ms(30s) 判逾時
-        """定期：
-        1. 向在線設備送 0x1101 STATUS_GET（保活兩端：設備收到→抬 idle_ms，
-           設備回 0x1102→更新 last_seen 與 status，避免設備「30s 無流量→斷線重連」）。
-        2. 偵測心跳逾時標離線。
-        3. 廣播 device_list 給 UI。
+        """定期廣播 device_list 給 UI (純 UI 刷新, 無定時 health 檢查)。
+
+        連線狀態以 WS 通道本身為準 (設計原則見 doc/03_notes/12_upload_wdt_diagnosis.md):
+          - slave 斷線 → /ws/{slave_id} 的 finally → unregister → 離線;
+          - 不再做「N 秒無回應 → 標離線」的逾時判定, 也不再定時向設備
+            送 0x1101 STATUS_GET 保活 (那是「頻繁 health 檢查」, 已移除)。
+        需要設備最新狀態時由操作者手動查詢 (Console 0x1101), 或播放期間
+        slave 自己推 0x1102。
         """
         while True:
             await asyncio.sleep(interval)
-            now = time.time()
-            for sid, d in list(self.devices.items()):
-                # 保活心跳（fire-and-forget，不佔用 request 的 pending）
-                try:
-                    await d.send(0x1101, {"query_type": 0})
-                except Exception:
-                    pass
-                if now - d.last_seen > offline_after:
-                    log.warning("slave %s 心跳逾時, 標記離線", sid)
-                    self.unregister(sid)
             await self.broadcast_ui({"type": "device_list", "data": self.list_devices()})
 
 

@@ -3,7 +3,10 @@ from lib.sys.schema_codec import SchemaCodec
 import ubinascii
 from lib.sys.sys_bus import bus
 from lib.sys.fs_manager import fs
+from lib.sys.log_service import get_log
 import _thread
+import os
+import machine
 
 
 def _hex_to_bytes(hexstr, fallback=b'\x00' * 32):
@@ -283,6 +286,19 @@ def on_file_delete(ctx, args):
     if not path:
         return
 
+    # 🔧 重建索引專用 (master 選單「4. 重建文件索引」): 剷 /manifest.json →
+    #    唔回覆、直接 self-reset —— 開機 detect 到 manifest 缺失會自動背景
+    #    重掃 (core1), 上線時索引已重建。master 見到 WS 斷線 = 已執行,
+    #    唔使加新指令、唔使 0x2006 回覆 (重用 0x2009 + 通道斷線信號)。
+    if str(path).lstrip("/").rstrip("/") == "manifest.json":
+        try:
+            os.remove("/manifest.json")
+            get_log().immediate("[FileScan] /manifest.json 已剷除 → 重啟 (boot 重建索引)")
+        except Exception as e:
+            get_log().error("[FileScan] 剷 manifest 失敗 (照重啟): {}".format(e))
+        machine.reset()
+        return
+
     # 根目錄檔用「絕對路徑」刪（resolve 會把 /xxx 誤映射成 /sd/xxx，刪錯 + 更新錯 manifest）
     raw = "/" + str(path).lstrip("/")
     if _root_file_exists(raw):
@@ -302,13 +318,18 @@ def on_file_scan(ctx, args):
     FILE_SCAN: 依 target 選擇掃描範圍
       0 = 本地 flash (背景掃描, 跳過 /sd)
       1 = SD (同步掃描)
+
+    註: 0x200B 冇定義回覆; master 選單「4. 重建文件索引」而家改用
+    「0x2009 剷 /manifest.json → 設備 self-reset → 開機重掃」嘅流程
+    (WS 斷線 = 已執行)。0x200B 保留畀 console 手動用, 進度可經
+    STATUS_GET 嘅 fs_scan_busy 查。
     """
     target = int(args.get("target", 0) or 0)
     if target == 1:
-        print("🔄 [File] SD Scan Requested")
+        get_log().info("[FileScan] 0x200B target=1 (SD 同步掃描) 收到, 已排隊")
         _thread.start_new_thread(fs.scan_sd, ())
     else:
-        print("🔄 [File] Local Scan Requested")
+        get_log().info("[FileScan] 0x200B target=0 (local 背景掃描) 收到, 已排隊 (core1)")
         # 🔧 同步先標記「掃描中」再開背景執行——否則 master 在 thread 尚未跑到
         #    scan_all() 前就輪詢, 會誤判「掃描已完成」而太早下載 manifest。
         bus.shared["fs_scan_requested"] = True

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-# poe_restart.py — Cisco 3560 PoE port 重啟工具（斷電 → 等待 → 恢復供電）
+# poe_restart.py — Cisco 3560 PoE port 電源工具（重啟 / 關閉 / 開啟）
+#   重啟 = 斷電 → 等待 → 恢復供電; 關閉 = 只斷電; 開啟 = 只供電
 # 跨平台：macOS / Windows。需要 netmiko（腳本會自動偵測並提議安裝）。
 # 模擬模式：python3 poe_restart.py --dry-run（只印指令，不連線）
 import sys
@@ -214,9 +215,26 @@ def power_on_with_retry(sw, conn, ports, dry_run):
     sys.exit(2)
 
 
-def restart_on_switch(sw, ports, dry_run):
-    """單一交換器的完整重啟流程：斷電 → 等待 → 恢復。"""
+def run_switch_action(sw, ports, action, dry_run):
+    """單一交換器的電源動作:
+      restart = 斷電 → 等待 OFF_DELAY → 恢復供電
+      off     = 只斷電 (關閉 PoE, 處理完嘢再自己開返)
+      on      = 只恢復供電
+    """
     conn = DryRunConnection(sw["name"]) if dry_run else connect_real(sw)
+    if action == "off":
+        print(f"\n🔌 [{sw['name']}] 關閉 PoE port: {fmt_ports(ports)}")
+        conn.send_config_set(build_power_cmds(ports, "never"))
+        conn.disconnect()
+        print(f"✅ [{sw['name']}] 完成，PoE 已關閉 (要用時請再執行「開啟 PoE」)")
+        return
+    if action == "on":
+        print(f"\n🔌 [{sw['name']}] 開啟 PoE port: {fmt_ports(ports)}")
+        conn = power_on_with_retry(sw, conn, ports, dry_run)
+        conn.disconnect()
+        print(f"✅ [{sw['name']}] 完成，PoE 已開啟")
+        return
+    # restart
     print(f"\n🔌 [{sw['name']}] 斷電 port: {fmt_ports(ports)}")
     conn.send_config_set(build_power_cmds(ports, "never"))
     if dry_run:
@@ -232,41 +250,75 @@ def restart_on_switch(sw, ports, dry_run):
 # ============================================================
 # 互動流程
 # ============================================================
-def choose(prompt, valid):
+def choose(prompt, valid, default=None):
+    """選擇提示; default 非 None 時直接按 Enter = 預設值。"""
     while True:
         ans = input(prompt).strip()
+        if ans == "" and default is not None:
+            return default
         if ans in valid:
             return ans
-        print(f"  請輸入 {' 或 '.join(sorted(valid))}")
+        if default is not None:
+            print(f"  ❌ 請輸入 {' 或 '.join(sorted(valid))}（直接 Enter = {default}）\n")
+        else:
+            print(f"  ❌ 請輸入 {' 或 '.join(sorted(valid))}\n")
 
 
 def ask_ports():
     while True:
-        raw = input(f"輸入要重啟的 port（例: 3,5,10-15，範圍 1-{MAX_PORT}）: ")
+        raw = input("輸入要操作的 port（例: 3,5,10-15，範圍 1-{}）: ".format(MAX_PORT))
         try:
             return parse_ports(raw)
         except ValueError as e:
-            print(f"  格式不對: {e}，請再輸入一次")
+            print(f"  ❌ 格式不對: {e}，請再輸入一次\n")
+
+
+ACTION_INFO = {
+    "1": ("重啟", f"斷電 {OFF_DELAY} 秒後恢復供電"),
+    "2": ("關閉 PoE", "只斷電，不恢復（處理完嘢再執行「開啟 PoE」）"),
+    "3": ("開啟 PoE", "只恢復供電"),
+}
+ACTION_MODE = {"1": "restart", "2": "off", "3": "on"}
 
 
 def main():
     dry_run = "--dry-run" in sys.argv
-    print("=" * 52)
-    print("  🔌 Cisco 3560 PoE Port 重啟工具" + ("  [DRY-RUN 模擬模式]" if dry_run else ""))
-    print("=" * 52)
+    print()
+    print("=" * 60)
+    print("  🔌 Cisco 3560 PoE Port 電源工具" + ("   [DRY-RUN 模擬模式]" if dry_run else ""))
+    print("=" * 60)
     if not dry_run:
         ensure_netmiko()
+        print()
 
-    sw_choice = choose(
-        "選擇交換器  1) Light-SW-01  2) Light-SW-02  3) 兩台都要 : ",
-        {"1", "2", "3"},
-    )
+    # ── 動作 ──
+    print("─" * 56)
+    print("  動作")
+    print("    1. 重啟       斷電 → 等待 {}s → 恢復供電".format(OFF_DELAY))
+    print("    2. 關閉 PoE   只斷電（處理完嘢再開返）")
+    print("    3. 開啟 PoE   只恢復供電")
+    print("─" * 56)
+    action = choose("👉 請選擇 [Enter=1]: ", {"1", "2", "3"}, default="1")
+
+    # ── 交換器 ──
+    print()
+    print("─" * 56)
+    print("  交換器")
+    for k, s in SWITCHES.items():
+        print("    {}. {}   ({})".format(k, s["name"], s["host"]))
+    print("    3. 兩台都要")
+    print("─" * 56)
+    sw_choice = choose("👉 請選擇 [Enter=3]: ", {"1", "2", "3"}, default="3")
     targets = list(SWITCHES.values()) if sw_choice == "3" else [SWITCHES[sw_choice]]
 
-    scope = choose(
-        f"重啟全部還是部分 port?  1) 全部 ({CONTROL_MIN}-{CONTROL_MAX})  2) 部分 : ",
-        {"1", "2"},
-    )
+    # ── Port 範圍 ──
+    print()
+    print("─" * 56)
+    print("  Port 範圍")
+    print("    1. 全部 ({}-{})".format(CONTROL_MIN, CONTROL_MAX))
+    print("    2. 部分（自訂, 例: 3,5,10-15）")
+    print("─" * 56)
+    scope = choose("👉 請選擇 [Enter=1]: ", {"1", "2"}, default="1")
     ports = (
         set(range(CONTROL_MIN, CONTROL_MAX + 1)) if scope == "1" else ask_ports()
     )
@@ -278,18 +330,21 @@ def main():
         print("剔除受保護 port 之後沒有剩下任何 port，不執行。")
         sys.exit(0)
 
+    action_name, action_detail = ACTION_INFO[action]
     print()
-    print("=" * 26 + " 請確認 " + "=" * 26)
-    print(f"目標:   {' + '.join(s['name'] + ' (' + s['host'] + ')' for s in targets)}")
-    print(f"動作:   重啟（斷電 {OFF_DELAY} 秒後恢復供電）")
-    print(f"Port:   {fmt_ports(allowed)}")
-    print("=" * 60)
+    print("=" * 56)
+    print("  請確認")
+    print("─" * 56)
+    print("  目標: {}".format(" + ".join(s['name'] + ' (' + s['host'] + ')' for s in targets)))
+    print("  動作: {}（{}）".format(action_name, action_detail))
+    print("  Port: {}".format(fmt_ports(allowed)))
+    print("=" * 56)
     if input("確定執行? 輸入 yes 才會執行: ").strip().lower() != "yes":
         print("已取消，什麼都沒做。")
         sys.exit(0)
 
     for sw in targets:
-        restart_on_switch(sw, allowed, dry_run)
+        run_switch_action(sw, allowed, ACTION_MODE[action], dry_run)
     print("\n全部完成。")
 
 

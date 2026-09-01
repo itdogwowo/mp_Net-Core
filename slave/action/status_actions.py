@@ -75,10 +75,16 @@ def register(app):
 
     bus.register_provider("frame_interval_ms", _frame_interval_ms_provider)
 
-    # 🔧 掃描忙碌旗標: 供 PC 端在「掃描 → 下載 manifest → 比對」前輪詢,
-    #    確認 root flash 重掃已完成 (bus.shared["fs_scan_requested"] 歸零)。
+    # 🔧 掃描忙碌旗標: 供 PC 端在「掃描 → 下載 manifest → 比對」前輪詢。
+    #    覆蓋兩種掃描:
+    #      - root flash 背景重掃 (bus.shared["fs_scan_requested"], core1 FsScanTask)
+    #      - SD 主動掃描 (bus.shared["fs_scan_sd_busy"], 0x200B target=1)
     def _fs_scan_busy_provider():
-        return 1 if bus.shared.get("fs_scan_requested", False) else 0
+        if bus.shared.get("fs_scan_requested", False):
+            return 1
+        if bus.shared.get("fs_scan_sd_busy", False):
+            return 1
+        return 0
 
     bus.register_provider("fs_scan_busy", _fs_scan_busy_provider)
     print("✅ [Action] Status & Health actions integrated")

@@ -1232,35 +1232,49 @@ class FileSystemManager:
             return 0
 
     def scan_sd(self):
-        """FILE_SCAN(target=1): 同步掃描 /sd, 重算 sha256, 更新 SD manifest。"""
-        ignore = {".manifest.json", ".delta.json"}
-        found = {}
+        """FILE_SCAN(target=1): 同步掃描 /sd, 重算 sha256, 更新 SD manifest。
 
-        def _walk(d):
-            try:
-                for name, ftype, *_ in os.ilistdir(d):
-                    full = (d.rstrip("/") + "/" + name) if d != "/" else "/" + name
-                    if name in ignore:
-                        continue
-                    if ftype == 0x4000:  # directory
-                        _walk(full)
-                    else:
-                        sha = self.calc_sha256(full)
-                        if sha is None:
+        🔧 busy 旗標: 期間 bus.shared["fs_scan_sd_busy"]=1, STATUS_GET 嘅
+        fs_scan_busy provider 會報 1, master 靠佢確認「開始咗 / 做完未」。
+        設計原則: SD manifest 平時係 delta 維護 (協議上傳/下載先紀錄),
+        唔主動掃描; 只有 0x200B(target=1) 主動掃描先重建自己張表。
+        """
+        from lib.sys.sys_bus import bus
+        from lib.sys.log_service import get_log
+        bus.shared["fs_scan_sd_busy"] = True
+        get_log().info("[FileScan] SD 主動掃描開始 (重建全表)")
+        try:
+            ignore = {".manifest.json", ".delta.json"}
+            found = {}
+
+            def _walk(d):
+                try:
+                    for name, ftype, *_ in os.ilistdir(d):
+                        full = (d.rstrip("/") + "/" + name) if d != "/" else "/" + name
+                        if name in ignore:
                             continue
-                        try:
-                            size = os.stat(full)[6]
-                        except Exception:
-                            size = 0
-                        found[full] = {"s": size, "h": sha}
-            except Exception as e:
-                print(f"⚠️ [FS] SD scan walk error {d}: {e}")
+                        if ftype == 0x4000:  # directory
+                            _walk(full)
+                        else:
+                            sha = self.calc_sha256(full)
+                            if sha is None:
+                                continue
+                            try:
+                                size = os.stat(full)[6]
+                            except Exception:
+                                size = 0
+                            found[full] = {"s": size, "h": sha}
+                            time.sleep_ms(0)   # 🔧 每檔讓步: render 等 core1 任務唔會被霸死
+                except Exception as e:
+                    get_log().error("[FileScan] SD scan walk error {}: {}".format(d, e))
 
-        _walk("/sd")
-        self.manifest_sd = found
-        self._write_manifest(MANIFEST_FILE_SD, self.manifest_sd)
-        print(f"📦 [FS] SD scan done: {len(found)} files")
-        return len(found)
+            _walk("/sd")
+            self.manifest_sd = found
+            self._write_manifest(MANIFEST_FILE_SD, self.manifest_sd)
+            get_log().info("[FileScan] SD 掃描完成: {} 個檔案".format(len(found)))
+            return len(found)
+        finally:
+            bus.shared["fs_scan_sd_busy"] = False
 
     def scan_all(self):
         """
@@ -1269,8 +1283,21 @@ class FileSystemManager:
         if self.scanning: return
         from lib.sys.sys_bus import bus
         from lib.sys.log_service import get_log
-        get_log().info("FS Scan requested (Queued for Core 1)")
+        # 🔧 先設旗標、再重新武裝 fs_scan 任務: 避免任務一重啟的 phase 0
+        #    讀到「無請求」又把自己關掉 (start/stop 競態)。
         bus.shared["fs_scan_requested"] = True
+        # 🔧 重新武裝: FsScanTask 完成一次掃描後會把自己的 affinity 設成
+        #    (0,0) (one-shot, 見 tasks/fs_scan_task.py _shutdown), 之後收到
+        #    0x200B「重建文件索引」時若只設旗標, 任務已停 → 旗標無人消費,
+        #    重掃永遠不會跑。把 affinity 拉回 core1, TaskManager 會重新啟動
+        #    任務, 其 loop phase 0 看到旗標後開掃。
+        #    開機路徑 (manifest 缺失 → scan_all) 時 task_manager 可能尚未
+        #    註冊/啟動 → 拿不到 service 就跳過, 反正註冊預設 affinity 就是
+        #    core1, 任務一起動就會看到旗標。
+        tm = bus.get_service("task_manager")
+        if tm:
+            tm.set_affinity("fs_scan", (0, 1))
+        get_log().info("FS Scan requested (Queued for Core 1)")
 
     def scan_init(self):
         """

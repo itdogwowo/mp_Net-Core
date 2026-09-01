@@ -14,16 +14,16 @@
     </div>
     <div class="topbar-right">
       <span id="deviceBadge" class="badge off">未選設備</span>
-      <button id="btnSettings" class="btn ghost" title="開啟設定" disabled>⚙</button>
+      <button id="btnOpenDeviceTab" class="btn ghost" title="開啟設備維護" disabled>⚙</button>
       <span id="connState" class="conn-state off">未連線</span>
       <button id="themeToggle" class="btn ghost" title="切換主題">🌓</button>
     </div>
   </header>
 
   <div class="layout">
-    <!-- 左側：設備概況 -->
+    <!-- 左側導航：發現/敲門 + 上線 slave 清單 -->
     <aside class="sidebar" id="sidebar">
-      <div class="side-head"><h3>設備概況</h3></div>
+      <div class="side-head"><h3>設備導航</h3></div>
       <div class="side-tools">
         <button id="btnDiscover" class="btn block">🔍 發現（廣播）</button>
         <div class="connect-row">
@@ -39,17 +39,60 @@
       </div>
     </aside>
 
-    <!-- 右側：分頁面板 -->
+    <!-- 右側：按功能分組嘅 tabs -->
     <main class="content" id="content">
       <nav class="tabs">
-        <button class="tab active" data-tab="control">🎛 控制</button>
+        <button class="tab" data-tab="device">⚙ 設備</button>
+        <button class="tab active" data-tab="control">🎛 播放</button>
         <button class="tab" data-tab="files">📁 檔案</button>
         <button class="tab" data-tab="firmware">🔥 固件</button>
+        <button class="tab" data-tab="poe">🔌 PoE</button>
         <button class="tab" data-tab="console">⌨ Console</button>
         <button class="tab" data-tab="log">📋 終端</button>
       </nav>
 
-      <!-- 控制 -->
+      <!-- ⚙ 設備 (per-slave profile: config / delta / manifest + 設備操作) -->
+      <section id="tab-device" class="tab-panel">
+        <div class="card">
+          <div class="card-head"><h2>設備概況</h2><span id="devSummary" class="muted">尚未選擇設備</span></div>
+          <div class="grid-3">
+            <div class="field"><label>PlayID</label><input id="devPlayId" class="input" readonly></div>
+            <div class="field"><label>IP / 上線</label><input id="devAddr" class="input" readonly></div>
+            <div class="field"><label>狀態</label><input id="devStatus" class="input" readonly></div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-head"><h2>config.json</h2>
+            <div class="btn-row">
+              <button id="btnCfgDownload" class="btn">下載</button>
+              <button id="btnCfgUpload" class="btn primary">上傳</button>
+            </div>
+          </div>
+          <textarea id="cfgText" class="cfg-text" placeholder="按「下載」取得設備 config，編輯後按「上傳」"></textarea>
+        </div>
+        <div class="card">
+          <div class="card-head"><h2>delta / manifest</h2>
+            <div class="btn-row">
+              <button id="btnCfgDelta" class="btn">📄 讀 delta</button>
+              <button id="btnCfgManifest" class="btn">📄 讀 manifest</button>
+              <button id="btnCfgManifestSd" class="btn">📄 讀 SD manifest</button>
+            </div>
+          </div>
+          <pre id="devDocBlock" class="result-block">(按上面按鈕讀取設備嘅 delta / manifest)</pre>
+        </div>
+        <div class="card">
+          <div class="card-head"><h2>設備操作</h2></div>
+          <div class="btn-row">
+            <button id="btnOpReboot" class="btn danger">軟重啟</button>
+            <button id="btnOpScan" class="btn">重掃檔案 (0x200B)</button>
+            <button id="btnOpRebuildLocal" class="btn">重建索引 · 本地 (剷 manifest+重啟)</button>
+            <button id="btnOpRebuildSd" class="btn">重建索引 · SD (0x200B)</button>
+            <button id="btnOpListDelta" class="btn">列出待確認 (delta)</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- 🎛 播放 -->
       <section id="tab-control" class="tab-panel active">
         <div class="card">
           <div class="card-head"><h2>播放控制</h2><span id="activeSlave" class="muted">尚未選擇設備</span></div>
@@ -84,7 +127,7 @@
         </div>
       </section>
 
-      <!-- 檔案 -->
+      <!-- 📁 檔案 -->
       <section id="tab-files" class="tab-panel">
         <div class="card">
           <div class="card-head"><h2>上傳檔案</h2>
@@ -113,7 +156,7 @@
         </div>
       </section>
 
-      <!-- 固件 -->
+      <!-- 🔥 固件 -->
       <section id="tab-firmware" class="tab-panel">
         <div class="card">
           <div class="card-head"><h2>固件更新</h2><span class="muted">比對本地 <code>slave/</code> 與設備 manifest，只上傳差異檔</span></div>
@@ -127,7 +170,37 @@
         </div>
       </section>
 
-      <!-- Console -->
+      <!-- 🔌 PoE -->
+      <section id="tab-poe" class="tab-panel">
+        <div class="card">
+          <div class="card-head"><h2>交換器 PoE 電源控制</h2><span class="muted">Cisco 3560</span></div>
+          <div class="grid-3">
+            <div class="field"><label>動作</label>
+              <select id="poeAction" class="select">
+                <option value="restart">重啟（斷電 → 等待 → 恢復）</option>
+                <option value="off">關閉 PoE（只斷電）</option>
+                <option value="on">開啟 PoE（只供電）</option>
+              </select>
+            </div>
+            <div class="field"><label>交換器</label>
+              <select id="poeSwitch" class="select" multiple size="2">
+                <option value="Light-SW-01">Light-SW-01 (192.168.8.254)</option>
+                <option value="Light-SW-02">Light-SW-02 (192.168.8.253)</option>
+              </select>
+            </div>
+            <div class="field"><label>Port（空 = 全部 1-45；例: 3,5,10-15）</label>
+              <input id="poePort" type="text" class="input mono" placeholder="全部 / 3,5,10-15">
+            </div>
+          </div>
+          <div class="ctrl-row">
+            <label class="chk"><input type="checkbox" id="poeDryRun" checked> Dry-run（只預覽指令，唔會真斷電）</label>
+            <button id="btnPoeRun" class="btn primary">執行</button>
+          </div>
+          <pre id="poeResult" class="result-block">(尚未執行)</pre>
+        </div>
+      </section>
+
+      <!-- ⌨ Console -->
       <section id="tab-console" class="tab-panel">
         <div class="card">
           <div class="card-head"><h2>命令 Console</h2><span class="muted">送任意 NC4 命令</span></div>
@@ -147,7 +220,7 @@
         </div>
       </section>
 
-      <!-- 終端 -->
+      <!-- 📋 終端 -->
       <section id="tab-log" class="tab-panel">
         <div class="card">
           <div class="card-head"><h2>終端 / 日誌</h2><button id="btnClearLog" class="btn ghost">清除</button></div>
@@ -155,35 +228,6 @@
         </div>
       </section>
     </main>
-  </div>
-
-  <!-- 設定 Modal -->
-  <div id="settingsModal" class="modal-overlay hidden">
-    <div class="modal">
-      <div class="modal-head">
-        <h2 id="settingsTitle">設定</h2>
-        <button id="btnCloseSettings" class="btn ghost">✕</button>
-      </div>
-      <div class="modal-body">
-        <div class="card">
-          <div class="card-head"><h2>config.json</h2>
-            <div class="btn-row">
-              <button id="btnCfgDownload" class="btn">下載</button>
-              <button id="btnCfgUpload" class="btn primary">上傳</button>
-            </div>
-          </div>
-          <textarea id="cfgText" class="cfg-text" placeholder="按「下載」取得設備 config，編輯後按「上傳」"></textarea>
-        </div>
-        <div class="card">
-          <div class="card-head"><h2>設備操作</h2></div>
-          <div class="btn-row">
-            <button id="btnOpReboot" class="btn danger">軟重啟</button>
-            <button id="btnOpScan" class="btn">重掃檔案</button>
-            <button id="btnOpListDelta" class="btn">列出待確認</button>
-          </div>
-        </div>
-      </div>
-    </div>
   </div>
 
   <script src="/static/app.js"></script>

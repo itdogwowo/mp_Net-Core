@@ -23,6 +23,7 @@ from fastapi.staticfiles import StaticFiles
 from protocol import protocol
 from device_manager import manager, Device
 import transfer, stream, audio, firmware
+import poe
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
 log = logging.getLogger("webmaster")
@@ -243,6 +244,26 @@ async def api_knock(request: Request):
         udp.close()
     log.info("knock → targets=%s (ws_url=%s)", targets, ws_url)
     return JSONResponse({"ok": True, "sent": sent, "targets": targets, "ws_url": ws_url})
+
+
+@app.post("/api/poe")
+async def api_poe(action: str = "restart", dry_run: str = "1", switches: str = "", ports: str = ""):
+    """交換器 PoE 電源控制 (重用 tools/PC/poe_restart.py)。
+
+    query 參數:
+      action    = restart / off / on
+      dry_run   = 1 預覽指令唔真做 (預設 1)
+      switches  = 逗號分隔交換器名 (空 = 兩台都要)
+      ports     = "3,5,10-15" (空 = 全部 1-45)
+    回傳 {ok, output}。
+    """
+    dry = dry_run in ("1", "true", "yes")
+    sw = [s.strip() for s in switches.split(",") if s.strip()] if switches else []
+    try:
+        out, ok = poe.run_poe(action, sw, ports, dry)
+        return JSONResponse({"ok": ok, "output": out})
+    except Exception as e:
+        return JSONResponse({"ok": False, "err": str(e)}, status_code=500)
 
 
 @app.post("/api/firmware/{slave_id}")

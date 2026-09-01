@@ -714,3 +714,82 @@ python -B test/pixel/test_pixel_math.py   # 27 pass
 python -B test/pixel/test_pixel_color.py  # 18 pass
 python -B slave/lib/sw/pixel_layout.py    # 自檢
 ```
+
+---
+
+## 27) master 移除自動重連：離線只標記，重連一律人手發起（2026-09-02）
+
+> 背景：設備端出現 `ECONNABORTED → LAN 連接成功 → DISCOVER` 抖動循環（非重啟）。
+> 追查發現 master 的健康檢查在「離線/無響應」判定後會週期自動敲門
+> （unicast DISCOVER 0x1001）叫設備連回——離線期間每 10s 一直發，slave 端
+> `on_connect_request` 的 `ws_stale_ms` 防抖門檻又會自我斷線重連，兩邊形成
+> 「敲門 → 重連 → 再敲門」的循環（詳見 `doc/03_notes/12_upload_wdt_diagnosis.md`）。
+>
+> 使用者要求：**master 不應該主動自動發起重連，重連應由人手發起。**
+
+- `tools/PC/NetBusMaster.py`：
+  - 刪除健康檢查自動敲門：`_knock_offline_devices()`、`_knock_ip()` 及
+    `_knock_last`/`_offline_knocked` 狀態、config `reconnect_knock_interval_s`。
+  - 刪除 `main_loop` 啟動時依紀錄自動敲門（原本每次開 master 都會叫設備上線），
+    改印提示「設備未上線時，用選單 1 手動掃描/敲門」。
+  - 手動叫回路徑不變：選單 1 = 廣播掃描 / 定向 IP / 依紀錄敲門（`_knock_recorded_devices`）。
+- `tools/PC/slave_map.json`：移除過時的 `reconnect_knock_interval_s` key。
+- 待真機驗證：離線後 master 不再發 DISCOVER、手動敲門能正常叫回、大檔部署
+  不再抖動（見 12 號筆記 §5 接手清單）。
+
+---
+
+## 28) 連線存活判斷改走 WS 通道本身：移除 master 全部定時 health 檢查 + 修 Scan 重啟（2026-09-02）
+
+> 使用者原則：「判斷 ws 自己通道的連接狀態（佢本身就有連接判斷），冇乜
+> 回應唔回應，唔需要頻繁發起 health 檢查——檢查連線係我手動執行的動作，
+> 或者播放途中的動作」。半開連線的歷史：兩端都以為連住 → slave 唔放新連線；
+> 之後 slave 加咗防抖門檻（`ws_stale_ms`）允許斷線重連，所以另一端先會見到
+> 不斷重新連接 WS。master 停止自動敲門後，門檻只會喺手動敲門時行到。
+
+### 28.1 NetBusMaster：刪除整個主動健康檢查
+
+- 移除 `_health_check_loop` / `_probe_device` / health 執行緒 / `stop()`；
+  移除 `DeviceMonitor.last_probe_at` 與 `transfer_active` 旗標（連帶
+  `_transfer_begin`/`_transfer_end`/`step_3_deploy` 設旗標位置）。
+- 離線判定 = WS 通道事件：
+  - `handle_client` recv 收到 FIN/RST/錯誤 → finally → `unregister_connection`
+    → 標離線 + panel log「📴 離線 (WS 連線中斷)」。
+  - `send_pkt` 發送失敗（RST/EPIPE/半開重傳超時）→ 關 socket 觸發同一清理路徑。
+- `handle_client` TCP keepalive 補 Windows 分支：`SIO_KEEPALIVE_VALS`
+  （idle 10s / 每 3s 探）→ 半開連線由通道本身 ~20s 內偵測到。
+- `_scan_files`（Step 0 → 4 重建文件索引）：送 `0x2009` 剷 `/manifest.json`
+  → 等 WS 斷線（= slave 已剷除並 self-reset）→ 等回線 → 輪詢 `fs_scan_busy`
+  歸零逐台回報（唔加新指令，重用舊指令 + 通道斷線做確認）。
+
+### 28.2 WebMaster：移除定時保活/逾時判定
+
+- `heartbeat_loop` 不再每 2s 送 0x1101 STATUS_GET、不再「30s 無回應標離線」，
+  只保留 device_list UI 廣播。離線 = `/ws/{slave_id}` finally → unregister。
+
+### 28.3 slave：修「4. 重建文件索引 (Scan)」——唔加新指令，剷除→重啟→開機重掃
+
+- 根因：FsScanTask 係 one-shot——掃完 `_shutdown()` 把 affinity 設 `(0,0)`
+  停咗自己；之後 0x200B 只設 `fs_scan_requested` 旗標，冇人消費。
+- 修正 1：`fs_manager.scan_all()` 設旗標後 `tm.set_affinity("fs_scan", (0,1))`
+  重新武裝 → TaskManager 重啟任務 → 開掃（0x200B console 手動重掃用）。
+- 修正 2（最終方案，重用舊指令 0x2009、唔加新指令）：
+  - master `_scan_files()`（Step 0 → 4）送 `0x2009 FILE_DELETE /manifest.json`；
+  - slave `on_file_delete` 特例：剷走 manifest 後**唔回覆**、`[FileScan]` log、
+    `machine.reset()`；
+  - master 以 **WS 斷線 = 已執行** 做確認（0x2004 係 chunk ACK、0x2006 係
+    查詢回覆，語意都唔啱呢個場境）；設備回線後輪詢 `fs_scan_busy` 歸零 →
+    「✅ 文件索引重建完成」。
+  - 重啟同時天然避開 one-shot 問題：boot 重新註冊 fs_scan 任務 affinity (0,1)。
+- SD（/sd/.manifest.json）——delta 維護 + 主動掃描重建：
+  - 設計原則：SD manifest **平時 delta 維護**（協議上傳/下載先紀錄），
+    唔主動掃；只有 0x200B(target=1) 主動掃描先重建自己張表。
+  - `fs_manager.scan_sd()`：置 `fs_scan_sd_busy` 旗標（finally 清零）+
+    `[FileScan]` log + 每檔 `sleep_ms(0)` 讓步（render 同喺 core1）。
+  - `status_actions` `fs_scan_busy` provider 覆蓋 local/SD 兩種掃描。
+  - master `_scan_files` 拆三個範圍：1=本地（剷除+重啟）/ 2=SD
+    （0x200B target=1 → busy=1 確認開始 → busy=0 確認完成）/ 3=兩樣。
+- 看門狗分析：`fs_scan` 跑 **core1**（`default_affinity=(0,1)`）、每次 loop 只
+  hash 一檔、每 256KB 讓步；WDT 由 core0 餵 → 掃描唔會觸發 WDT。
+- 後備 workaround（舊韌體）：手動刪 `/manifest.json` → 軟重啟 → 開機自動重建
+  （詳見 `doc/03_notes/12_upload_wdt_diagnosis.md` §6）。
