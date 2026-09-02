@@ -597,24 +597,40 @@ class ActionTask1(Task):
 
     def _check_mode_audio(self):
         """
-        根據當前模式播放 SD 卡音頻 (每段播一次)。
-        映射: bus.shared["_mode_audio_map"] = {mode: track, ...}
-        若未設定映射表, 預設 track = mode (mode 0=standby 不播音)
+        根據當前模式播放音效（每段播一次）。雙路徑路由（M5 貫通）：
+          - bus 上有 audio_dac（新 WAV 音訊模組）→ 走 audio_cmd 播 WAV：
+            映射 bus.shared["_mode_audio_map"] = {mode: <檔名 str>, ...}；
+            int 值 = DFPlayer 曲目編號語意，新模組無法對應 → 警告並停。
+          - 否則走舊 DFPlayer（MP3-TF-16P）路徑（track = 曲目編號，原語意）。
         """
-        if self._mp3 is None or self._mp3_state != 2:
-            return
         raw_mode = self._display_mode & MODE_VALUE
         audio_map = bus.shared.get("_mode_audio_map", None)
         if isinstance(audio_map, dict):
             track = audio_map.get(raw_mode)
-            if track is None:
-                self._mp3.stop()
-                return
         else:
-            if raw_mode == 0:          # mode 0 = standby, 不播音
-                self._mp3.stop()
+            track = None if raw_mode == 0 else raw_mode   # mode 0 = standby 不播音
+
+        # ── 新音訊模組路徑（WAV 串流）──
+        if bus.get_service("audio_dac") is not None:
+            if track is None:
+                bus.shared["audio_cmd_stop"] = True
                 return
-            track = raw_mode           # mode 1 → track 1, mode 2 → track 2, ...
+            if isinstance(track, int):
+                get_log().warn("[Audio] int track {} = DFPlayer 語意，新模組略過".format(track))
+                bus.shared["audio_cmd_stop"] = True
+                return
+            bus.shared["audio_cmd_set"] = {
+                "file_name": str(track), "play_mode": 0, "volume": 0}
+            bus.shared["audio_cmd_play"] = {"start_ms": 0}
+            get_log().info("[Audio] mode={} file={}".format(raw_mode, track))
+            return
+
+        # ── 舊 DFPlayer 路徑（原語意）──
+        if self._mp3 is None or self._mp3_state != 2:
+            return
+        if track is None:
+            self._mp3.stop()
+            return
         self._mp3.stop()
         time.sleep_ms(30)
         self._mp3.play_track(track)

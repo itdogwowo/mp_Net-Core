@@ -98,6 +98,15 @@ def launcher():
     tm.register_task("pixel", PixelTask, default_affinity=(1, 0), layer=1)
     tm.register_task("render", RenderTask, default_affinity=(0, 1), layer=1)
 
+    # ── 音訊子系統（兩任務：合成端 dj + 播放端 audio_player，對稱 pixel）──
+    #   dj（主線程 core0）= 合成端：playlist + 讀檔 + 混音 → audio_stream hub
+    #   audio_player（_thread core1）= 播放端：hub → audio_dac.write（I2S DMA 節拍）
+    #   無 audio_dac（I2S/PCM5102 未啟用）時兩者 on_start 自行停用（disabled）。
+    from tasks.dj_task import DjTask
+    from tasks.audio_player_task import AudioPlayerTask
+    tm.register_task("dj", DjTask, default_affinity=(1, 0), layer=1)
+    tm.register_task("audio_player", AudioPlayerTask, default_affinity=(0, 1), layer=1)
+
     # ── Layer 1: LVGL UI（依賴 TFT/LCD，沒 LCD 整段跳過）──
     # affinity=(1,0)=CPU0: LVGL 完整 UI 不能在 _thread(CPU1)裡跑
     # (MicroPython threading 限制:完整 UI 的 widget 操作在 thread 裡會崩潰)。
@@ -123,15 +132,12 @@ def launcher():
 
     tm.finalize()
 
-    # ── 看門狗（config System.watchdog）──
-    #   enable=0（預設）或開機按住 btn_bypass_gpio → 不建立（None）；測試模式
-    #   下自動重新武裝的倒數由 TaskManager.runner_loop(0) 每圈 poll_rearm()
-    #   檢查（大循環的一步，無獨立任務）。
-    #   enable=1 → 建立 WDT，由 core0 runner 主線程直接餵狗（無額外執行緒/跨核心）。
+    # ── 看門狗（config System.watchdog）—— lazy-arm：全部 on_start 運行完才建狗 ──
+    #   看門狗只在「第一輪全部運行完（各 task 的 on_start 級聯完成）」之後才建立：
+    #   TaskManager.runner_loop(0) 偵測 boot 完成（_boot_done 首次 True）那一圈才
+    #   呼叫 init_watchdog()，之後每圈餵狗。因此不在此建狗。
     #   Ctrl+C → auto_disable_on_interrupt()：存 enable=0 + 立即重啟一次
     #   （硬食一次，可預測；不讓 WDT timeout 後偷襲打斷 REPL），之後測試模式無狗。
-    from lib.sys.watchdog import init_watchdog
-    init_watchdog()
 
     try:
         log.info("✨ Starting Core 1 Runner...")

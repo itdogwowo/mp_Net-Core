@@ -44,6 +44,8 @@
 | [10_file_update.md](02_guides/10_file_update.md) | 檔案更新流程：上傳/下載/兩段式 commit/斷點續傳/delta journal |
 | [11_developing_effects.md](02_guides/11_developing_effects.md) | **開發燈效指南**：效果介面 / 三種寫法 / 雙核播放 / 四層設定 / 效能踩坑 |
 | [12_network_switch_setup.md](02_guides/12_network_switch_setup.md) | 交換器設置與連線排障：DHCP snooping trust / half-open / 拿不到 IP / 上傳循環 / SOP |
+| [13_audio_wav_module.md](02_guides/13_audio_wav_module.md) | **音訊模組（WAV 串流）**：硬體接線 / config 兩層 / 檔名自述契約 / playlist.json / 0x32xx 指令 / 多軌混音 / gmode 燈效綁定 / 測試 |
+| [14_audio_bringup.md](02_guides/14_audio_bringup.md) | **音訊上板教學**：挑腳（S3 Octal-SPIRAM 33–37 不可用）/ 接線 / 出聲回歸 / irq 探針 / block vs irq A/B |
 
 ## 03_notes — 筆記
 

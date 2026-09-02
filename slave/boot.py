@@ -43,6 +43,7 @@ from driver.i2c_drv      import init_i2c,      gpios as g_i2c
 from driver.uart_drv     import init_uart,     gpios as g_uart
 from driver.pwm_drv      import init_pwm,      gpios as g_pwm
 from driver.i2s_drv      import init_i2s,      gpios as g_i2s
+from driver.pcm5102_drv  import init_pcm5102,  gpios as g_pcm5102
 from driver.sd_drv       import init_sd,       gpios as g_sd
 from driver.tft_drv      import init_tft,      gpios as g_tft
 from driver.enc_drv      import init_enc,      gpios as g_enc
@@ -66,6 +67,7 @@ DRIVERS = [
     ("uart", g_uart),
     ("pwm",  g_pwm),
     ("i2s",  g_i2s),
+    ("pcm5102",  g_pcm5102),
     ("sd",   g_sd),
     ("tft",  g_tft),
     ("enc",  g_enc),
@@ -116,7 +118,8 @@ _init("pin",     init_pin)
 _init("i2c",     init_i2c)
 _init("uart",    init_uart)
 # _init("pwm",   init_pwm)
-# _init("i2s",   init_i2s)
+_init("i2s",     init_i2s)
+_init("pcm5102", init_pcm5102)
 _init("sd",      init_sd)
 _init("tft",     init_tft)
 _init("enc",     init_enc)

@@ -123,6 +123,7 @@ def gpios(sysbus=None):
 
     電位語意：接低電位（GND）= bypass（WDT 不建立）；浮空/高電位 = 正常
     （開機時設 PULL_UP，未接時被拉高）。
+    btn_bypass_gpio 未設定/None/<=0（慣例 -1 = 不設定）→ 不 claim。
     """
     from lib.sys.sys_bus import bus as _bus
     sysbus = sysbus or _bus
@@ -130,7 +131,13 @@ def gpios(sysbus=None):
     gpio = cfg.get("btn_bypass_gpio")
     if gpio is None:
         return {}
-    return {int(gpio): "wdt_bypass"}
+    try:
+        gpio = int(gpio)
+    except (TypeError, ValueError):
+        return {}
+    if gpio <= 0:
+        return {}
+    return {gpio: "wdt_bypass"}
 
 
 def init_watchdog():
@@ -153,12 +160,16 @@ def init_watchdog():
             get_log().info("[WDT] disabled (config enable=0)")
         return None
 
-    # 逃生門 2：開機按住指定 GPIO → 不建立 WDT
+    # 逃生門 2：開機按住指定 GPIO → 不建立 WDT（None/<=0 = 不設定，跳過）
     gpio = cfg.get("btn_bypass_gpio")
-    if gpio is not None:
+    try:
+        gpio = int(gpio) if gpio is not None else 0
+    except (TypeError, ValueError):
+        gpio = 0
+    if gpio > 0:
         try:
             from machine import Pin
-            if Pin(int(gpio), Pin.IN, Pin.PULL_UP).value() == 0:
+            if Pin(gpio, Pin.IN, Pin.PULL_UP).value() == 0:
                 get_log().info("[WDT] bypass — GPIO{} held at boot".format(gpio))
                 return None
         except Exception as e:

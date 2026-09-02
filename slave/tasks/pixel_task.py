@@ -284,6 +284,9 @@ class PixelTask(Task):
             "play_interval": max(0, int(d.get("play_interval", 0) or 0)),
             "maxF": max(0, int(d.get("maxF", 0) or 0)),   # 每次播放最大幀數；0=不限制
             "entries": entries,
+            # 燈效綁定音效（M5）：原樣攜帶 audio 段（gmode 解析後扇出給 DjTask；
+            # PixelTask 自己不碰播放邏輯）。無此段 = 純燈效。
+            "audio": d.get("audio"),
         }
 
     @staticmethod
