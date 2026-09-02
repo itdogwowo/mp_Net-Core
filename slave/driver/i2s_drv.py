@@ -1,12 +1,22 @@
 """
-i2s_drv.py — I2S 音訊管理
+i2s_drv.py — I2S 匯流排管理（TX/RX 雙模式）
 
 設定來源: bus.shared["I2S"]  ({enable, list})
+          list item: {"GPIO": {sck, ws, sd},
+                      "config": {mode("tx"/"rx"), bits, format("stereo"/"mono"),
+                                 rate, ibuf}}
 產物:    bus.register_service("i2s_list", [I2S_obj, ...])
+
+模組層（PCM5102 等）以 {"i2s": <index>} 引用本匯流排（同 PCA9685→{"i2c":0}、
+APA102→{"spi":0} 慣例）；模組自己的腳位（如 PCM5102 的 XSMT）不歸本 driver 管。
+ESP32-S3 只有一個 I2S 週邊（id=0），列表索引只是邏輯編號。
 """
 from machine import Pin, I2S
 from lib.sys.sys_bus import bus
 from lib.sys.log_service import get_log
+
+_MODE_MAP = {"tx": I2S.TX, "rx": I2S.RX}
+_FMT_MAP = {"mono": I2S.MONO, "stereo": I2S.STEREO}
 
 
 def init_i2s(sysbus=None):
@@ -19,17 +29,26 @@ def init_i2s(sysbus=None):
     for item in cfg.get("list", []):
         gpio = item.get("GPIO", {})
         icfg = item.get("config", {})
-        audio_i2s = I2S(
-            0,
-            sck=Pin(gpio["sck"]),
-            ws=Pin(gpio["ws"]),
-            sd=Pin(gpio["sd"]),
-            mode=I2S.RX,
-            bits=icfg.get("bits", 16),
-            format=I2S.STEREO,
-            rate=icfg.get("rate", 16000),
-            ibuf=icfg.get("rate", 16000) * 4 * 2,
-        )
+        mode = _MODE_MAP.get(str(icfg.get("mode", "rx")).lower(), I2S.RX)
+        fmt = _FMT_MAP.get(str(icfg.get("format", "stereo")).lower(), I2S.STEREO)
+        rate = int(icfg.get("rate", 16000) or 16000)
+        bits = int(icfg.get("bits", 16) or 16)
+        ibuf = int(icfg.get("ibuf", 0) or rate * 4 * 2)
+        try:
+            audio_i2s = I2S(
+                0,
+                sck=Pin(gpio["sck"]),
+                ws=Pin(gpio["ws"]),
+                sd=Pin(gpio["sd"]),
+                mode=mode,
+                bits=bits,
+                format=fmt,
+                rate=rate,
+                ibuf=ibuf,
+            )
+        except Exception as e:
+            get_log().error("I2S init error: {}".format(e))
+            continue
         i2s_list.append(audio_i2s)
 
     sysbus.register_service("i2s_list", i2s_list)

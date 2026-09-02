@@ -38,31 +38,37 @@ def _send(ctx, rsp_cmd, fields):
 
 
 def on_mode_list_query(ctx, args):
-    """0x3101: 回報本地燈效清單。
+    """0x3101: 回報模式清單（gmode 合併池：pixel + audio）。
 
+    mode_type: 0=全部、1=LED、2=SERVO、3=AUDIO（16-bit id 高 byte 過濾）。
     entries = 依 id 排序的 u16 串（每筆 2 bytes, little-endian, 對齊
     SchemaCodec 的 <H 習慣）= 內部 16-bit 模式識別碼 (mode_type<<8 | mode_id)。
     """
-    mode_type = args.get("mode_type", 0)
-    modes = bus.shared.get("pixel_maps", {})
-    ids = sorted(modes.keys())
+    mode_type = int(args.get("mode_type", 0) or 0)
+    gmode = bus.get_service("gmode")
+    if gmode is not None:
+        pool = gmode.mode_pool()
+        ids = gmode.filter_ids(pool, mode_type)
+    else:
+        # 無 gmode（舊行為）：只有 pixel 池、不過濾
+        pool = bus.shared.get("pixel_maps", {})
+        ids = sorted(int(i) for i in pool.keys())
     entries = b"".join(struct.pack("<H", i) for i in ids)
     _send(ctx, 0x3102, {
         "mode_type": mode_type,
-        "count": len(ids),
+        "count": min(255, len(ids)),
         "entries": entries,
     })
     print("[Pixel] MODE_LIST type={} count={}".format(mode_type, len(ids)))
 
 
 def on_mode_set(ctx, args):
-    """0x3105: 播放指定本地模式 (配對用, 一個一個播)。
+    """0x3105: 播放指定模式（gmode 貫通：燈效 + 綁定音效同步起播）。
 
-    先強制退出串流 (stream_active=False / is_streaming=False), 避免 data.bin
-    供給鏈 (NetworkTask.handle_supply_chain) 與本地燈效搶 pixel_stream hub。
-    (mode_type, mode_id) 分開讀取 → 合併成單一 16-bit id 進系統。
-    start_delay_ms 不在此阻塞等待（舊版 time.sleep_ms 會卡死 core0 通訊鏈），
-    改記時間戳由 PixelTask 延遲播放。
+    先強制退出串流（stream_active=False / is_streaming=False），避免 data.bin
+    供給鏈與本地燈效搶 pixel_stream hub。
+    (mode_type, mode_id) 分開讀取 → 合併成單一 16-bit id 進 gmode。
+    start_delay_ms：pixel 與 audio 都用同一個延遲起播（同步）。
     """
     mode_type = args.get("mode_type", 0)
     mode_id = args.get("mode_id", 0)
@@ -79,30 +85,44 @@ def on_mode_set(ctx, args):
         "is_paused": False,
         "is_ready": False,
     })
-    bus.shared["pixel_remote_set"] = _combine(mode_type, mode_id)
-    bus.shared["pixel_remote_start_at"] = time.ticks_ms() + start_delay_ms
+    gmode = bus.get_service("gmode")
+    if gmode is not None:
+        gmode.set_mode(_combine(mode_type, mode_id), start_delay_ms=start_delay_ms)
+    else:
+        # 無 gmode（舊行為）：直接單獨播燈效
+        bus.shared["pixel_remote_set"] = _combine(mode_type, mode_id)
+        bus.shared["pixel_remote_start_at"] = time.ticks_ms() + start_delay_ms
     print("[Pixel] MODE_SET type={} id={} bri={} delay={}ms".format(
         mode_type, mode_id, brightness, start_delay_ms))
 
 
 def on_mode_stop(ctx, args):
-    """0x3106: 停止本地模式 (熄燈)。"""
+    """0x3106: 停止模式（gmode 貫通：燈滅 + 音停）。"""
+    action = int(args.get("action", 0) or 0)
     bus.shared.update({
         "stream_active": False,
         "is_streaming": False,
         "is_paused": False,
         "is_ready": False,
     })
-    bus.shared["pixel_remote_stop"] = 1
-    print("[Pixel] MODE_STOP")
+    gmode = bus.get_service("gmode")
+    if gmode is not None:
+        gmode.stop_mode(action)
+    else:
+        bus.shared["pixel_remote_stop"] = 1
+    print("[Pixel] MODE_STOP action={}".format(action))
 
 
 def on_mode_detail_query(ctx, args):
     """0x3107: 回報單一模式細節 (名稱; total_ms 目前無資料=0)。"""
     mode_type = args.get("mode_type", 0)
     mode_id = args.get("mode_id", 0)
-    modes = bus.shared.get("pixel_maps", {})
-    m = modes.get(_combine(mode_type, mode_id))
+    gmode = bus.get_service("gmode")
+    if gmode is not None:
+        m = gmode.resolve(_combine(mode_type, mode_id))
+    else:
+        modes = bus.shared.get("pixel_maps", {})
+        m = modes.get(_combine(mode_type, mode_id))
     name = m.get("name", "") if m else ""
     _send(ctx, 0x3108, {
         "mode_type": mode_type,

@@ -314,9 +314,21 @@ class TaskManager:
         _perf_interval_ms = 1000
         _engine_run = True
         _engine_refresh_ms = 0
+        _wdt_armed = False    # lazy-arm：全部 on_start 運行完才建狗
 
         while True:
             now_ms = time.ticks_ms()
+
+            # ── WDT lazy-arm：全部 task 的 on_start 運行完（_boot_done）才建狗 ──
+            #   看門狗只在「第一輪全部運行完」之後才上線；boot 級聯期間不受 8s 限制。
+            #   建狗後每圈餵狗（下方）；service 已存在（其他路徑先建過）→ 跳過。
+            if core_id == 0 and not _wdt_armed and self._boot_done:
+                _wdt_armed = True
+                try:
+                    if bus.get_service("wdt") is None:
+                        _wd.init_watchdog()
+                except Exception as e:
+                    log.error("[WDT] lazy-arm init failed: {}".format(e))
 
             # ── WDT：主線程（core0）直接餵狗 + 測試模式 re-arm 檢查 ──
             # 同執行緒建立/餵（lib/sys/watchdog.py），無跨核心、無額外執行緒、

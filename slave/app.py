@@ -28,6 +28,14 @@ class App:
         # 3. 註冊行為
         register_all(self)
 
+        # 4. 全局模式貫通層（gmode）：MODE_SET/STOP 的單一事實來源。
+        #    模式池 = pixel_maps（PixelTask 載入）+ /audio/modes（惰性合併）。
+        try:
+            from lib.sys.global_mode import GlobalMode
+            bus.register_service("gmode", GlobalMode())
+        except Exception:
+            pass
+
     def create_parser(self):
         # 協議負載上限統一由 lib.proto.MAX_PAYLOAD 決定 (純 payload, 不含 header/CRC)。
         # StreamParser 內部會自動加 9B header + 4B CRC 建立緩衝, 這裡不需再乘 2。
