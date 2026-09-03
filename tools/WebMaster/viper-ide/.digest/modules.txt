@@ -1,0 +1,619 @@
+# src\app_worker.js lines=97 bytes=2589
+9:CONST:cacheName
+10:CONST:offlineReadyMessage
+12:CONST:log
+14:CONST:contentToCache
+34:CONST:cache
+38:CONST:clients
+64:FUNC:normalizeUrl
+65:CONST:url
+74:CONST:cache
+75:CONST:url
+76:CONST:r
+83:CONST:rsp
+# src\connection_uid.js lines=61 bytes=1809
+9:CLASS:ConnectionUID
+29:CONST:hexString
+34:CONST:rnd
+35:CONST:num
+47:CONST:base
+# src\control_client.js lines=373 bytes=14372
+17:I:import { splitPath, Mutex, escapeCSS } from './utils.js'
+19:CONST:utf8Decoder
+21:FUNC:initControlClient
+22:CONST:wsUrl
+33:FUNC:connect
+63:CONST:result
+71:FUNC:send
+77:FUNC:pushEvent
+83:CONST:dialogMutex
+84:FUNC:withDialogOverrides
+85:CONST:release
+86:CONST:origPrompt
+87:CONST:origConfirm
+99:FUNC:readTerminalBuffer
+100:CONST:term
+102:CONST:buf
+103:CONST:lines
+105:CONST:line
+114:FUNC:withRawMode
+115:CONST:port
+117:CONST:raw
+125:FUNC:dispatch
+128:CONST:port
+133:CONST:isConnected
+153:CONST:port
+157:CONST:overrides
+162:CONST:connType
+182:CONST:tree
+183:CONST:stats
+184:CONST:files
+185:FUNC:walk
+203:CONST:content
+204:CONST:text
+211:CONST:result
+251:CONST:editor
+261:CONST:editor
+312:CONST:port
+342:CONST:tab
+# src\editor_tabs.js lines=243 bytes=7886
+1:I:import { escapeHTML, escapeCSS } from './utils.js'
+2:I:import { QSA, QS, QID } from './utils_browser.js'
+15:FUNC:displayOpenFile
+16:CONST:openTab
+31:FUNC:createTab
+32:CONST:tabContainer
+33:CONST:terminal
+54:CONST:editorTabElement
+58:CONST:closeButton
+60:FUNC:close_tab
+67:CONST:editorTabTitle
+71:CONST:editorElement
+83:FUNC:getTabFileName
+84:CONST:pane
+86:CONST:tab
+98:FUNC:getTabEditorElement
+99:CONST:tab
+108:CONST:tab
+125:CONST:fn
+170:FUNC:_tabTitle
+175:FUNC:_closeTab
+176:CONST:tabElement
+177:CONST:titleElement
+178:CONST:tabSelected
+179:CONST:editorElement
+180:CONST:fn
+211:FUNC:_activateTab
+213:CONST:tabElement
+214:CONST:editorElement
+218:CONST:fn
+224:FUNC:_deactivateTabs
+234:FUNC:_addNewFileButton
+237:CONST:editorTabs
+238:CONST:newFileButton
+# src\editor.js lines=507 bytes=17062
+9:I:import { basicSetup } from 'codemirror'
+10:I:import { EditorView, ViewPlugin, keymap, Decoration } from '@codemirror/view'
+11:I:import { EditorState, RangeSetBuilder, Prec, StateEffect } from '@codemirror/state'
+12:I:import { StreamLanguage, indentUnit, syntaxTree, language } from '@codemirror/language'
+13:I:import { indentWithTab } from '@codemirror/commands'
+14:I:import { python } from '@codemirror/lang-python'
+15:I:import { json as modeJSON, jsonParseLinter } from '@codemirror/lang-json'
+16:I:import { markdown as modeMD } from '@codemirror/lang-markdown'
+17:I:import { simpleMode } from '@codemirror/legacy-modes/mode/simple-mode'
+18:I:import { toml } from '@codemirror/legacy-modes/mode/toml'
+19:I:import { monokaiInit } from '@uiw/codemirror-theme-monokai'
+20:I:import { tags } from '@lezer/highlight'
+21:I:import { linter } from '@codemirror/lint'
+22:I:import { highlightSelectionMatches } from '@codemirror/search'
+24:I:import { validatePython, getRuffWorkspace } from './python_utils.js'
+30:FUNC:isInComment
+41:FUNC:commentDecorator
+57:CONST:builder
+81:CONST:linkDecorator
+84:CONST:linkClickPlugin
+86:CONST:target
+88:CONST:url
+95:CONST:linkCommentExtensions
+114:CONST:specialCommentDecorator
+118:CONST:specialCommentExtensions
+131:CONST:modePEM
+167:CONST:iniLineStart
+169:CONST:iniComment
+171:CONST:modeINI
+222:CONST:mpyDisLineStart
+235:CONST:modeMPY_DIS
+296:CONST:modeTOML
+304:CONST:mpyCrossLinter
+305:CONST:content
+306:CONST:backtrace
+308:CONST:diagnostics
+310:CONST:frame
+311:CONST:line
+326:FUNC:ruffLinter
+328:CONST:doc
+329:CONST:res
+331:CONST:diagnostics
+349:FUNC:svg
+353:FUNC:underline
+358:CONST:extraTheme
+405:FUNC:createNewEditor
+409:CONST:ruff
+450:CONST:view
+495:FUNC:getEditorFromElement
+505:FUNC:addUpdateHandler
+# src\emulator.js lines=62 bytes=1970
+9:I:import { MicroPythonWASM, SYSTEM_DIRS } from './transports/vm.js'
+10:I:import { loadVFS } from './python_utils.js'
+11:I:import { loadMicroPython } from '@micropython/micropython-webassembly-pyscript/micropython.mjs'
+12:I:import i18next from 'i18next'
+14:E:export { MicroPythonWASM, SYSTEM_DIRS }
+16:CONST:T
+18:FUNC:getDefaultMainPy
+54:FUNC:createBrowserVM
+# src\fs_cache.js lines=551 bytes=20662
+58:CONST:DRAFT_PREFIX
+60:CONST:encoder
+62:FUNC:parentOf
+63:CONST:i
+67:FUNC:toBytes
+75:FUNC:deviceKeyFor
+79:CONST:parts
+87:CLASS:FsCache
+112:CONST:entry
+145:CONST:entry
+147:CONST:known
+155:CONST:stored
+177:CONST:files
+206:CONST:unbound
+207:CONST:carried
+211:CONST:stored
+213:CONST:file
+267:CONST:previous
+270:CONST:walk
+272:CONST:isDir
+283:CONST:armed
+289:CONST:exempt
+292:CONST:changed
+297:CONST:now
+299:CONST:was
+314:CONST:entry
+319:CONST:prefix
+333:CONST:hit
+336:CONST:gen
+337:CONST:bytes
+347:CONST:bytes
+348:CONST:gen
+363:CONST:body
+365:CONST:known
+376:CONST:hit
+392:CONST:moved
+407:CONST:to
+415:CONST:to
+431:CONST:prefix
+432:CONST:inside
+494:CONST:view
+510:CONST:view
+520:CONST:view
+525:CONST:view
+530:CONST:view
+535:CONST:view
+545:CONST:list
+# src\markdown.js lines=81 bytes=3649
+9:I:import { marked, Renderer as MarkedRenderer } from 'marked'
+10:I:import { rewriteDocUrl } from './package_mgr.js'
+26:CONST:INERT_HTML_DROP
+41:FUNC:inertHTML
+43:CONST:doc
+51:CONST:attr
+61:CONST:span
+78:FUNC:renderMarkdown
+79:CONST:html
+# src\package_mgr.js lines=319 bytes=11840
+9:I:import { fetchJSON, fetchText, fetchArrayBuffer, splitPath } from './utils.js'
+10:I:import { compilePython } from './python_utils.js'
+12:CONST:MIP_INDEXES
+20:FUNC:splitPkgName
+25:FUNC:expandVars
+29:FUNC:rewriteUrl
+36:CONST:githubRegex
+37:CONST:match
+47:CONST:gitlabRegex
+48:CONST:match
+87:FUNC:rewriteDocUrl
+97:FUNC:getPkgIndexes
+112:FUNC:findPkg
+123:FUNC:loadPkgInfo
+125:CONST:pkg_info
+136:CONST:pkg_json
+137:CONST:pkg_info
+149:FUNC:getPkgInfo
+174:FUNC:fetchPkgReadme
+182:CONST:url
+191:FUNC:rawInstallPkg
+193:CONST:lib_path
+206:CONST:version_spec
+214:CONST:mpy_majour
+235:CONST:dev_abi
+257:CONST:content
+269:CONST:vars
+# src\python_utils.js lines=390 bytes=12378
+1:I:import { splitPath } from './utils.js'
+2:I:import { TarReader } from '@gera2ld/tarjs'
+3:I:import { loadMicroPython } from '@micropython/micropython-webassembly-pyscript/micropython.mjs'
+4:I:import { compile as mpyCross, abiVersions, defaultAbi, wasmFileName } from '@vshymanskyy/mpy-cross-wasm'
+5:I:import __wbg_init, { PositionEncoding, Workspace as RuffWorkspace } from '@astral-sh/ruff-wasm-web'
+7:FUNC:parseStackTrace
+9:CONST:lines
+10:CONST:result
+28:CONST:fileMatch
+36:CONST:errorMatch
+46:CONST:f
+60:FUNC:boardMpyAbi
+62:CONST:abi
+66:FUNC:mpyCrossWasmUrl
+70:FUNC:validatePython
+75:CONST:abi
+80:CONST:result
+82:CONST:stderr
+83:CONST:stdout
+84:CONST:bt
+96:FUNC:compilePython
+98:CONST:codec
+116:CONST:result
+118:CONST:stderr
+119:CONST:stdout
+125:FUNC:detectIndentStyle
+126:CONST:lines
+128:CONST:indentCounts
+137:CONST:leadingWhitespace
+157:CONST:sortedIndentCounts
+158:CONST:mostCommonIndent
+170:FUNC:loadVFS
+172:CONST:response
+176:CONST:decompressedStream
+177:CONST:decompressedBuffer
+179:CONST:tar
+193:FUNC:getToolsVM
+208:FUNC:getRuffWorkspace
+242:FUNC:minifyPython
+243:CONST:vm
+262:FUNC:prettifyPython
+263:CONST:ruff
+267:FUNC:disassembleMPY
+268:CONST:vm
+294:FUNC:reprStr
+299:CONST:NONPRINTABLE
+308:CONST:cp
+319:FUNC:reprFloat
+324:CONST:sign
+328:CONST:digits
+329:CONST:exp
+332:CONST:mant
+333:CONST:esign
+337:CONST:int
+338:CONST:frac
+342:FUNC:repr
+343:CONST:seen
+345:CONST:go
+374:CONST:proto
+# src\rawmode.js lines=520 bytes=18178
+9:I:import { sleep } from './utils.js'
+10:I:import { reprStr as pyStr } from './python_utils.js'
+22:CONST:SOFT_RESET_BANNER
+32:CONST:REPL_PROMPTS
+36:CONST:RAW_REPL_BANNER
+46:FUNC:getActivePrompt
+57:FUNC:looksLikePrompt
+61:CLASS:MpRawMode
+67:CONST:res
+74:CONST:rsp
+76:CONST:prompt
+98:CONST:release
+99:CONST:wasEmitting
+103:CONST:endTime
+109:CONST:showFrom
+126:CONST:tail
+159:CONST:banner
+170:CONST:release
+172:CONST:endTime
+198:CONST:seen
+215:CONST:status
+223:CONST:res
+224:CONST:err
+234:CONST:rsp
+257:CONST:encoder
+260:FUNC:hexlify
+265:FUNC:repr
+282:CONST:dest
+297:CONST:chunk
+298:CONST:cmdHex
+299:CONST:cmdRepr
+319:CONST:rsp
+422:CONST:rsp
+434:CONST:rsp
+468:CONST:prev
+# src\repl_monitor.js lines=88 bytes=2977
+9:I:import { SOFT_RESET_BANNER, REPL_PROMPTS } from './rawmode.js'
+19:CLASS:ReplMonitor
+# src\settings.js lines=123 bytes=3939
+1:I:import { QID } from './utils_browser.js'
+4:CONST:settingsElement
+13:FUNC:getSetting
+23:FUNC:updateSetting
+25:CONST:settingElement
+50:FUNC:onSettingChange
+64:FUNC:_loadSettings
+72:FUNC:_setLoadedValue
+99:FUNC:_persistSettings
+116:FUNC:_notify
+# src\tree_view.js lines=494 bytes=18755
+9:I:import { escapeHTML, escapeCSS } from './utils.js'
+44:CONST:TREE_DRAG_TYPE
+46:FUNC:parentDir
+47:CONST:i
+51:CLASS:TreeView
+82:CONST:knownPaths
+104:CONST:walk
+112:CONST:node
+120:CONST:parent
+156:CONST:out
+176:CONST:collapsed
+190:CONST:path
+192:CONST:icon
+193:CONST:label
+195:CONST:classes
+196:CONST:data
+198:CONST:action
+200:CONST:title
+201:CONST:name
+205:CONST:meta
+206:CONST:actions
+224:CONST:target
+230:CONST:path
+231:CONST:action
+232:CONST:node
+233:CONST:renamable
+237:CONST:now
+238:CONST:prev
+267:CONST:node
+271:CONST:row
+272:CONST:nameEl
+278:CONST:wrap
+283:CONST:icon
+290:CONST:input
+316:CONST:dot
+317:CONST:selEnd
+324:CONST:node
+325:CONST:newName
+346:CONST:container
+370:CONST:row
+372:CONST:node
+390:CONST:node
+391:CONST:missed
+399:CONST:target
+420:CONST:target
+421:CONST:src
+438:CONST:types
+439:CONST:internal
+440:CONST:external
+445:CONST:dir
+449:CONST:src
+464:CONST:row
+465:CONST:rowNode
+469:CONST:block
+# src\utils_browser.js lines=320 bytes=10241
+14:I:import toastr from 'toastr'
+16:I:import { report, setErrorReporter } from './utils.js'
+18:FUNC:getUserUID
+19:CONST:localStorageKey
+28:FUNC:generateUUIDv4
+30:CONST:r
+42:FUNC:getScreenInfo
+43:FUNC:getScreenOrientation
+52:FUNC:snapToGrid
+54:CONST:grid
+58:CONST:closest
+62:CONST:dpr
+71:CLASS:IdleMonitor
+144:CONST:addCss
+145:CONST:getCssPropertyValue
+147:CONST:QSA
+148:CONST:QS
+149:CONST:QID
+151:CONST:iOS
+153:E:export { addCss, getCssPropertyValue, QSA, QS, QID, iOS }
+155:FUNC:sanitizeHTML
+160:FUNC:shouldIgnoreDroppedPath
+161:CONST:parts
+162:CONST:base
+178:FUNC:readDroppedFiles
+179:CONST:entries
+180:CONST:collected
+184:CONST:entry
+188:CONST:file
+214:FUNC:walkFileEntry
+215:CONST:path
+222:CONST:reader
+223:CONST:children
+227:CONST:batch
+240:FUNC:indicateActivity
+259:FUNC:setupTabs
+260:CONST:tabs
+261:CONST:tabContents
+267:CONST:targetId
+# src\utils.js lines=121 bytes=4088
+14:FUNC:sleep
+18:CLASS:Mutex
+25:CONST:lock
+26:CONST:acquire
+32:FUNC:fetchJSON
+33:CONST:response
+38:FUNC:fetchText
+39:CONST:response
+44:FUNC:fetchArrayBuffer
+45:CONST:response
+50:FUNC:splitPath
+51:CONST:parts
+52:CONST:filename
+53:CONST:directoryPath
+59:FUNC:joinPath
+68:FUNC:escapeHTML
+81:FUNC:escapeCSS
+87:FUNC:sizeFmt
+89:CONST:suffixes
+114:FUNC:setErrorReporter
+118:FUNC:report
+# src\viper_lib.js lines=33 bytes=1180
+9:I:import 'toastr/build/toastr.css'
+10:I:import './app_common.css'
+12:I:import toastr from 'toastr'
+13:E:export { toastr }
+15:E:export { serial as webSerialPolyfill } from 'web-serial-polyfill'
+16:E:export { WebSerial, WebBluetooth, WebSocketREPL, WebRTCTransport } from './transports/index.js'
+17:E:export { MpRawMode } from './rawmode.js'
+18:E:export { createBrowserVM } from './emulator.js'
+19:E:export { ConnectionUID } from './connection_uid.js'
+20:E:export { splitPath, sleep, sizeFmt, report } from './utils.js'
+21:E:export { getUserUID, getCssPropertyValue, QSA, QS, QID, iOS, sanitizeHTML,
+24:I:import { library, dom } from '@fortawesome/fontawesome-svg-core'
+25:I:import { faLink } from '@fortawesome/free-solid-svg-icons'
+26:I:import { faUsb, faBluetoothB } from '@fortawesome/free-brands-svg-icons'
+# src\webrepl_content.js lines=15 bytes=395
+# src\zip.js lines=107 bytes=4425
+19:CONST:encoder
+21:CONST:LOCAL_SIG
+22:CONST:CENTRAL_SIG
+23:CONST:EOCD_SIG
+24:CONST:STORED
+25:CONST:UTF8_NAMES
+26:CONST:VERSION
+27:CONST:DOS_DIR
+29:CONST:MAX_ENTRIES
+30:CONST:MAX_SIZE
+34:FUNC:crc32
+53:FUNC:createZipSync
+56:CONST:names
+57:CONST:datas
+65:CONST:out
+66:CONST:view
+68:CONST:u16
+69:CONST:u32
+70:CONST:raw
+73:CONST:time
+74:CONST:date
+76:CONST:offsets
+77:CONST:crcs
+79:CONST:name
+89:CONST:centralAt
+91:CONST:name
+92:CONST:isDir
+102:CONST:centralSize
+# src\transports\base.js lines=204 bytes=6691
+9:I:import { sleep, Mutex, report } from '../utils.js'
+11:CLASS:Transport
+77:CONST:encoder
+78:CONST:value
+82:CONST:chunk
+111:CONST:release
+156:CONST:res
+160:CONST:prev_avail
+186:CONST:at
+192:CONST:res
+196:CONST:prev_avail
+# src\transports\bluetooth.js lines=242 bytes=9445
+6:I:import { sleep, report } from '../utils.js'
+7:I:import { Transport } from './base.js'
+9:CONST:NUS_SERVICE
+10:CONST:NUS_TX
+11:CONST:NUS_RX
+12:CONST:NUS_TX_LIMIT
+13:CONST:NUS_TX_LIMIT_FAST
+15:CONST:ADA_NUS_SERVICE
+16:CONST:ADA_NUS_TX
+17:CONST:ADA_NUS_RX
+18:CONST:ADA_VER
+19:CONST:ADA_FT
+20:CONST:ADA_NUS_TX_LIMIT
+22:CONST:CH9143_SERVICE
+23:CONST:CH9143_TX
+24:CONST:CH9143_RX
+25:CONST:CH9143_CTRL
+26:CONST:CH9143_TX_LIMIT
+28:FUNC:isFastNusDevice
+29:CONST:id
+37:FUNC:isGattDisconnectedError
+42:CLASS:WebBluetooth
+111:CONST:services
+126:CONST:ada_fts
+127:CONST:versionChar
+128:CONST:version
+134:CONST:ft
+146:CONST:ctrl
+156:CONST:decoderStream
+157:CONST:reader
+158:CONST:writer
+166:CONST:onRxValue
+176:CONST:processStream
+# src\transports\index.js lines=5 bytes=221
+1:E:export { Transport } from './base.js'
+2:E:export { WebSerial } from './web_serial.js'
+3:E:export { WebBluetooth } from './bluetooth.js'
+4:E:export { WebSocketREPL } from './websocket.js'
+5:E:export { WebRTCTransport } from './webrtc.js'
+# src\transports\vm.js lines=189 bytes=5481
+10:I:import { Transport } from './base.js'
+12:CONST:PYEXEC_FORCED_EXIT
+13:CONST:SYSTEM_DIRS
+15:CONST:MACHINE_MODULE
+26:FUNC:snapshotFS
+27:CONST:dirs
+28:CONST:files
+30:FUNC:walk
+40:CONST:full
+64:FUNC:restoreFS
+82:CLASS:MicroPythonWASM
+101:CONST:mpOpts
+142:CONST:wasRaw
+144:CONST:snapshot
+176:CONST:byte
+181:CONST:ret
+# src\transports\web_serial.js lines=146 bytes=5676
+6:I:import { report } from '../utils.js'
+7:I:import { Transport } from './base.js'
+9:CLASS:WebSerial
+29:CONST:pi
+42:CONST:decoderStream
+43:CONST:streamClosed
+48:CONST:reader
+49:CONST:writer
+61:CONST:processStream
+115:CONST:granted
+123:CONST:ports
+128:CONST:matches
+129:CONST:pi
+# src\transports\webrtc.js lines=150 bytes=4606
+6:I:import { Peer } from 'peerjs'
+7:I:import { sleep } from '../utils.js'
+8:I:import { Transport } from './base.js'
+10:CLASS:WebRTCTransport
+40:CONST:controller
+41:CONST:timeout
+46:CONST:ice
+96:CONST:decoder
+111:CONST:onPeerError
+114:CONST:conn
+142:CONST:encoder
+143:CONST:value
+# src\transports\websocket.js lines=155 bytes=4764
+6:I:import { sleep, report } from '../utils.js'
+7:I:import { Transport } from './base.js'
+9:CLASS:WebSocketREPL
+34:FUNC:_conn
+36:CONST:ws
+60:CONST:now
+67:CONST:decoder
+87:CONST:release
+95:CONST:pass
+101:CONST:rsp
+142:CONST:chunk

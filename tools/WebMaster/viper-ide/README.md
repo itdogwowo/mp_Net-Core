@@ -1,6 +1,5 @@
 # ViperIDE
 
-[![StandWithUkraine](https://raw.githubusercontent.com/vshymanskyy/StandWithUkraine/main/badges/StandWithUkraine.svg)](https://github.com/vshymanskyy/StandWithUkraine/blob/main/docs/README.md) 
 [![GitHub Repo stars](https://img.shields.io/github/stars/vshymanskyy/ViperIDE?style=flat-square&color=green)](https://github.com/vshymanskyy/ViperIDE/stargazers) 
 [![GitHub issues](https://img.shields.io/github/issues-raw/vshymanskyy/ViperIDE?style=flat-square&label=issues&color=green)](https://github.com/vshymanskyy/ViperIDE/issues) 
 [![Build status](https://img.shields.io/github/actions/workflow/status/vshymanskyy/ViperIDE/static.yml?branch=main&style=flat-square&logo=github&label=build)](https://github.com/vshymanskyy/ViperIDE/actions) 
