@@ -1,0 +1,8 @@
+__pycache__/
+build/
+fw/
+node_modules/
+.parcel-cache/
+extra/
+src/tools_vfs/lib/python_minifier/
+bun.lock

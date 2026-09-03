@@ -17,6 +17,11 @@ class PixelController:
         self.pixel_io = pixel_io_cfg
         self.hw = pixel_io_cfg['pixel_IO']
         self.num_pixels = pixel_io_cfg['Q']
+
+        # 中性值（停止/熄燈/暫停時回填）＝ config 的 dStay（12-bit 0-4095，
+        # >>4 = 8-bit 通道值），由 config 動態帶入、可隨時改；沒輸入才用預設 0。
+        # 例：燈 0（熄滅）、電機 2048（=0x80 死區停）、PWM 可設任意停留亮度。
+        self.neutral_value = (int(pixel_io_cfg.get("dStay", 0) or 0) >> 4) & 0xFF
         
         # 內部映射: 1:WS2812, 2:APA102, 3:i2c_pixel
         type_map = {'WS2812': 1, 'APA102': 2, 'i2c_pixel': 3}

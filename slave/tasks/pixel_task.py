@@ -72,9 +72,20 @@ class PixelTask(Task):
         self._cur_frames = 0    # 本次播放已 commit 幀數（maxF 用）
         self._appears = {}      # mode id → 已出現次數（play_loop 總次數用）
 
+        # ── 共用模式狀態（bus.shared mode_id/mode_seq/mode_start_at）──
+        # 指令只改狀態；本任務是其中一個消費方：
+        #   seq 沒變 → 現在播什麼就繼續播；seq 變了 → 到 start_at 就套用：
+        #     不同 mode → 立即切換；相同 mode → 由頭 restart；
+        #     mode_id==0（MODE_STOP）→ 停；無 entries（純音效等）→ 熄燈停。
+        self._mode_seq = -1     # 已消費到第幾個指令（-1 = 從未收過指令）
+        self._cmd_active = False  # 收過指令後 auto 永久讓位（不回 auto）
+
     # ── 啟動：依序初始化 ──────────────────────────
     def on_start(self):
         super().on_start()
+        # 🔧 初始化前先 GC 整理 heap，降低「與其他任務同時起步造成 alloc 失敗」的偶發機率
+        import gc
+        gc.collect()
         try:
             self._init_hw()
             self._init_effects()
@@ -402,37 +413,58 @@ class PixelTask(Task):
                 # 同步給播放核（RenderTask）：暫停時電機填中性值歸位（is_paused 分支）
                 bus.shared["is_paused"] = self._paused
             get_log().info("[Pixel] ⏸ paused={}".format(self._paused))
-        # 遠端停止本地模式 (0x3106 MODE_STOP) → 熄燈並還原 show list。
-        # 先處理：可以取消尚未到期的延遲 MODE_SET（清掉 pending）。
-        if bus.shared.pop("pixel_remote_stop", None) is not None:
-            bus.shared.pop("pixel_remote_set", None)
-            bus.shared.pop("pixel_remote_start_at", None)
-            if self._orig_show_list is not None:
-                self._show_list = self._orig_show_list
-                self._orig_show_list = None
+        # ── 共用模式狀態：seq 有變 → 到期即套用（指令只改狀態，播放器跟狀態）──
+        self._poll_mode_target()
+
+    # ── 共用模式狀態消費（指令只改狀態；不同 ID 即切、同 ID restart、0=停）──
+    def _poll_mode_target(self):
+        """每圈讀 bus.shared 的 mode_id/mode_seq/mode_start_at。
+
+        seq 與上次消費相同 → 沒新指令（現在播什麼繼續播）。
+        seq 變了：
+          - start_at 未到 → 保持現況（auto 繼續播），下一圈再檢查；
+          - 到期 → 消費該 seq 並套用（auto 從此讓位，不再回 auto）。
+        """
+        seq = bus.shared.get("mode_seq")
+        if seq is None:
+            return
+        try:
+            seq = int(seq)
+        except (TypeError, ValueError):
+            return
+        if seq == self._mode_seq:
+            return
+        start_at = bus.shared.get("mode_start_at") or 0
+        if start_at and time.ticks_diff(time.ticks_ms(), int(start_at)) < 0:
+            return                      # 未到延遲起播時間
+        self._mode_seq = seq            # 消費（套用）
+        mid = bus.shared.get("mode_id", 0)
+        try:
+            mid = int(mid)
+        except (TypeError, ValueError):
+            mid = 0
+        self._cmd_active = True         # auto 讓位（指令大曬）
+        self._apply_target(mid)
+
+    def _apply_target(self, mid):
+        """套用目標模式 id：0=停；有 entries=播放（同/異模式都從頭起）；
+        無 entries（純音效等）＝pixel 熄燈停。"""
+        if mid == 0:
             self._stop()
-            get_log().info("[Pixel] ■ remote stop (show list restored)")
-        # 遠端指定播放單一本地模式 (0x3105 MODE_SET → pixel_actions 寫入)
-        rid = bus.shared.pop("pixel_remote_set", None)
-        if rid is not None:
-            at = bus.shared.pop("pixel_remote_start_at", 0)
-            if at and time.ticks_diff(time.ticks_ms(), at) < 0:
-                # start_delay_ms 未到 → 放回，下一輪再檢查（非阻塞延遲播放）
-                bus.shared["pixel_remote_set"] = rid
-                bus.shared["pixel_remote_start_at"] = at
-                return
-            try:
-                mode = self._modes.get(int(rid))
-            except (TypeError, ValueError):
-                mode = None
-            if mode:
-                if self._orig_show_list is None:
-                    self._orig_show_list = self._show_list
-                self._show_list = [mode]
-                self._start()
-                get_log().info("[Pixel] ▶ remote play mode {}".format(rid))
+            get_log().info("[Pixel] ■ mode_id=0 → 停止")
+            return
+        mode = self._modes.get(mid)
+        if mode is None or not mode.get("entries"):
+            self._stop()
+            if mode is None:
+                get_log().warn("[Pixel] mode {} 不存在 → 熄燈停".format(mid))
             else:
-                get_log().warn("[Pixel] remote mode {} 不存在".format(rid))
+                get_log().info("[Pixel] mode {} 無燈效 entries（純音效）→ 熄燈停".format(mid))
+            return
+        self._show_list = [mode]        # 目標模式（同 ID 重設 = restart；異 ID = 切換）
+        self._orig_show_list = None
+        self._start()
+        get_log().info("[Pixel] ▶ target mode {} ({})".format(mid, mode.get("name", "")))
 
     def _should_play(self, mode):
         """這一輪（循環）這個 mode 是否要播。
@@ -597,7 +629,7 @@ class PixelTask(Task):
         if bus.shared.get("stream_active"):
             return
         # 串流結束自動恢復：本地模式還在播、但渲染旗標被串流清掉 → 重新宣告，
-        # 讓 RenderTask 恢復取幀（配合 _consume_cmds 的 pixel_remote_set 流程）。
+        # 讓 RenderTask 恢復取幀（配合 _poll_mode_target 的 mode_id 流程）。
         if (self._playing and not self._paused
                 and bus.shared.get("is_streaming") is not True):
             bus.shared["is_streaming"] = True
@@ -609,6 +641,11 @@ class PixelTask(Task):
         if self._cur is None:
             self._find_next()
             if self._cur is None:
+                # 開機 auto 只播一次（循環請在模式內用 play_count/play_loop 參數）；
+                # 收過指令（_cmd_active）後由目標模式自己決定要不要續播。
+                if (not self._cmd_active and self._playing and self._pass > 1):
+                    get_log().info("[Pixel] auto 清單已播完一次 → 停止（等指令/重開機）")
+                    self._stop()
                 return
         if not self._tick_player(self._cur):
             # 本次循環結束 → play_count 未滿（或 -1 無限）則重播，否則找下一個

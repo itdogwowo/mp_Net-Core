@@ -1,0 +1,51 @@
+{
+    "translation": {
+        "example": {
+            "hello": "こんにちは",
+            "comment-colors": "各文字を異なる色で印刷する",
+            "comment-count": "1から10まで数える"
+        },
+        "tool": {
+            "run": "ファイルを実行",
+            "save": "ファイルを保存",
+            "fullscreen": "全画面表示",
+            "clear": "クリア",
+            "conn": {
+                "ws": "WebREPLを接続",
+                "ble": "Bluetoothを接続",
+                "usb": "USB/シリアルを接続"
+            },
+            "terminal": "ターミナル"
+        },
+        "menu": {
+            "package-mgr": "パッケージマネージャー",
+            "file-mgr": "ファイルマネージャー",
+            "settings": "設定"
+        },
+        "files": {
+            "no-files": "ファイルなし",
+            "connect": "接続",
+            "used": "使用中"
+        },
+        "settings": {
+            "conn": "接続",
+            "editor": "エディター",
+            "other": "その他",
+            "interrupt-running-code": "実行を中断",
+            "force-serial-poly": "WebSerial の代わりに WebUSB を使用する",
+            "expand-minify-json": "JSONの自動圧縮",
+            "use-word-wrap": "ワードラップ",
+            "render-markdown": "Markdownビューア",
+            "refresh-after-run": "実行後にファイルを更新",
+            "auto-soft-reset": "実行前にSoft Reset",
+            "use-natural-sort": "自然な並び替え",
+            "lang": "言語",
+            "zoom": "ズーム",
+            "install-package-source": ".py → .mpy のコンパイルをスキップ"
+        },
+        "about": {
+            "cta": "ViperIDEが気に入ったら、<a id='gh-star'>GitHubでスターを付けてください</a> ⭐ そして、ソーシャルメディアで広めてください 📢",
+            "report-bug": "また、<a id='gh-issues'>バグを報告する</a> 🐞こともできます"
+        }
+    }
+}

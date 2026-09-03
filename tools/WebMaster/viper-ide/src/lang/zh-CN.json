@@ -1,0 +1,51 @@
+{
+    "translation": {
+        "example": {
+            "hello": "你好",
+            "comment-colors": "用不同颜色打印每个字母",
+            "comment-count": "数到10"
+        },
+        "tool": {
+            "run": "运行文件",
+            "save": "保存文件",
+            "fullscreen": "全屏",
+            "clear": "清除",
+            "conn": {
+                "ws": "连接 WebREPL",
+                "ble": "连接蓝牙",
+                "usb": "连接 USB/串行"
+            },
+            "terminal": "终端"
+        },
+        "menu": {
+            "package-mgr": "包管理器",
+            "file-mgr": "文件管理器",
+            "settings": "设置"
+        },
+        "files": {
+            "no-files": "没有文件",
+            "connect": "连接",
+            "used": "已使用"
+        },
+        "settings": {
+            "conn": "连接",
+            "editor": "编辑器",
+            "other": "其他",
+            "interrupt-running-code": "中断执行",
+            "force-serial-poly": "使用 WebUSB 而不是 WebSerial",
+            "expand-minify-json": "JSON 自动缩小",
+            "use-word-wrap": "自动换行",
+            "render-markdown": "Markdown 查看器",
+            "refresh-after-run": "运行后刷新文件",
+            "auto-soft-reset": "运行前 Soft Reset",
+            "use-natural-sort": "自然排序",
+            "lang": "语言",
+            "zoom": "缩放",
+            "install-package-source": "跳过 .py → .mpy 编译"
+        },
+        "about": {
+            "cta": "如果您喜欢 ViperIDE，请<a id='gh-star'>在 GitHub 上给它一颗星</a> ⭐ 并在社交媒体上传播信息 📢",
+            "report-bug": "您还可以<a id='gh-issues'>报告错误</a> 🐞"
+        }
+    }
+}

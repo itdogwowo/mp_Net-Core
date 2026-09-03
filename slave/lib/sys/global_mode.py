@@ -12,6 +12,8 @@
 #   燈+音   entries + audio            → 兩邊同步扇出
 #
 # 狀態: bus.shared["gmode"] = {"mode_id": int, "started_at": ticks_ms}
+# 共用目標狀態（各模組消費同一把 key，名稱不綁 pixel）:
+#   bus.shared["mode_id"] / ["mode_seq"] / ["mode_start_at"]
 # 服務: bus.register_service("gmode", GlobalMode())（app.py 建立）
 import json
 import os
@@ -37,6 +39,7 @@ class GlobalMode:
         self._audio_modes = None     # 惰性載入（首次 resolve 才掃目錄）
         self._cur_id = 0
         self._started_at = 0
+        self._seq = 0                # 每次 MODE_SET/MODE_STOP +1（消費端靠它偵測「新指令」）
 
     # ── 模式池 ──────────────────────────────
     def _load_audio_modes(self):
@@ -94,10 +97,13 @@ class GlobalMode:
     def set_mode(self, mode_id, start_delay_ms=0):
         """解析並起播模式。回 True=已扇出；False=模式不存在。
 
-        pixel 段：pixel_remote_set + pixel_remote_start_at（PixelTask 延遲起播）。
-        audio 段：audio_cmd_program（每軌 start_ms += start_delay_ms，相對 PLAY
-        起播時刻）+ audio_cmd_play —— 與燈效同一時刻出聲。
-        缺段（純燈/純音）→ 對另一邊發停止，模式是原子表演單元。
+        共用狀態（bus.shared，全系統消費方共用同一把 key，與 pixel 名稱無關）：
+          mode_id       : 16-bit 組合 id（(mode_type<<8)|mode_id）
+          mode_seq      : 每次 set/stop +1 —— 消費端比對「有無新指令」
+          mode_start_at : 起播時間點（ticks_ms；延遲 0 = 現在）
+        pixel 消費：PixelTask 讀 mode_id/seq/start_at，有 entries 就播、無 entries
+        （純音效）就熄燈停。
+        audio 消費：audio_cmd_program/play（DjTask/MP3，與燈效同一時刻）。
         """
         m = self.resolve(mode_id)
         if m is None:
@@ -106,12 +112,10 @@ class GlobalMode:
         self._cur_id = int(mode_id)
         self._started_at = time.ticks_ms()
         delay = max(0, int(start_delay_ms or 0))
-
-        if m.get("entries"):
-            bus.shared["pixel_remote_set"] = int(mode_id)
-            bus.shared["pixel_remote_start_at"] = time.ticks_ms() + delay
-        else:
-            bus.shared["pixel_remote_stop"] = 1    # 純音效 → 熄燈
+        self._seq += 1
+        bus.shared["mode_id"] = int(mode_id)
+        bus.shared["mode_seq"] = self._seq
+        bus.shared["mode_start_at"] = self._started_at + delay
 
         audio = m.get("audio")
         if audio and audio.get("tracks"):
@@ -126,21 +130,24 @@ class GlobalMode:
             })}
             bus.shared["audio_cmd_play"] = {"start_ms": 0}
         else:
-            bus.shared["audio_cmd_stop"] = True    # 純燈效 → 停音
+            bus.shared["audio_cmd_stop"] = True    # 無音效段 → 停音
 
         bus.shared["gmode"] = self.state()
-        get_log().info("[GMode] ▶ mode {} ({}) delay={}ms".format(
-            mode_id, m.get("name", ""), delay))
+        get_log().info("[GMode] ▶ mode {} ({}) delay={}ms seq={}".format(
+            mode_id, m.get("name", ""), delay, self._seq))
         return True
 
     def stop_mode(self, action=0):
-        """停模式：兩邊都停（action 語意同 0x3106：0=暫停 1=全關）。"""
-        bus.shared["pixel_remote_stop"] = 1
+        """停模式：共用狀態清空（mode_id=0），audio 也停（action 語意同 0x3106）。"""
+        self._seq += 1
+        bus.shared["mode_id"] = 0
+        bus.shared["mode_seq"] = self._seq
+        bus.shared["mode_start_at"] = 0
         bus.shared["audio_cmd_stop"] = True
         self._cur_id = 0
         self._started_at = 0
         bus.shared["gmode"] = self.state()
-        get_log().info("[GMode] ■ stop action={}".format(action))
+        get_log().info("[GMode] ■ stop action={} seq={}".format(action, self._seq))
         return True
 
     @staticmethod

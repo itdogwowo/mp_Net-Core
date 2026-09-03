@@ -1,0 +1,51 @@
+{
+    "translation": {
+        "example": {
+            "hello": "Halo",
+            "comment-colors": "Cetak setiap huruf dengan warna yang berbeda",
+            "comment-count": "Hitung dari 1 hingga 10"
+        },
+        "tool": {
+            "run": "Jalankan File",
+            "save": "Simpan File",
+            "fullscreen": "Layar Penuh",
+            "clear": "Bersihkan",
+            "conn": {
+                "ws": "Hubungkan WebREPL",
+                "ble": "Hubungkan Bluetooth",
+                "usb": "Hubungkan USB/Serial"
+            },
+            "terminal": "Terminal"
+        },
+        "menu": {
+            "package-mgr": "Manajer Paket",
+            "file-mgr": "Manajer File",
+            "settings": "Pengaturan"
+        },
+        "files": {
+            "no-files": "tidak ada file",
+            "connect": "hubungkan",
+            "used": "digunakan"
+        },
+        "settings": {
+            "conn": "koneksi",
+            "editor": "editor",
+            "other": "lainnya",
+            "interrupt-running-code": "Hentikan eksekusi",
+            "force-serial-poly": "Gunakan WebUSB sebagai pengganti WebSerial",
+            "expand-minify-json": "Minifikasi otomatis JSON",
+            "use-word-wrap": "Bungkus kata",
+            "render-markdown": "Penampil Markdown",
+            "refresh-after-run": "Segarkan file setelah dijalankan",
+            "auto-soft-reset": "Soft Reset sebelum dijalankan",
+            "use-natural-sort": "Penyortiran alami",
+            "lang": "Bahasa",
+            "zoom": "Zoom",
+            "install-package-source": "Lewati kompilasi .py → .mpy"
+        },
+        "about": {
+            "cta": "Jika Anda menyukai ViperIDE, silakan <a id='gh-star'>beri bintang di GitHub</a> ⭐ dan sebarkan berita di media sosial 📢",
+            "report-bug": "Anda juga dapat <a id='gh-issues'>melaporkan bug</a> 🐞"
+        }
+    }
+}

@@ -26,6 +26,31 @@
     if (tabBtn) tabBtn.classList.add("active");
     const panel = $("#tab-" + tab);
     if (panel) panel.classList.add("active");
+    if (tab === "viper") ensureViper();   // 首次開啟才載入 iframe
+  }
+
+  // ── ViperIDE 分頁（lazy 載入 / 未 build 提示）──────────────
+  async function ensureViper() {
+    const frame = $("#viperFrame");
+    const notice = $("#viperNotice");
+    if (!frame || frame.dataset.loaded) return;
+    let st = null;
+    try { st = await (await fetch("/api/viper")).json(); } catch (e) { /* server 無回應 */ }
+    if (!st || !st.ok || !st.built) {
+      if (notice) {
+        const ver = st && st.version ? `（vendored v${st.version}）` : "";
+        notice.classList.remove("hidden");
+        notice.textContent =
+          `🐍 ViperIDE${ver} 尚未建置 — 本機缺少 viper-ide/build（WebMaster 子目錄）。\n` +
+          `先執行一次：cd tools/WebMaster/viper-ide && rebuild.bat（Windows）\n` +
+          `       或：cd tools/WebMaster/viper-ide && python3 -B build.py --skip-tests\n` +
+          `完成後重新整理本頁，即可用「USB 燒錄 bin / 上傳項目檔案 / REPL」。`;
+      }
+      return;
+    }
+    if (notice) notice.classList.add("hidden");
+    frame.dataset.loaded = "1";
+    frame.src = st.base || "/viper/";
   }
 
   // ── terminal ────────────────────────────────────────────────
@@ -157,12 +182,7 @@
   // ── tabs / sidebar ───────────────────────────────────────────
   function bindTabs() {
     $$(".tab").forEach((tab) => {
-      tab.onclick = () => {
-        $$(".tab").forEach((t) => t.classList.remove("active"));
-        $$(".tab-panel").forEach((p) => p.classList.remove("active"));
-        tab.classList.add("active");
-        $("#tab-" + tab.dataset.tab).classList.add("active");
-      };
+      tab.onclick = () => switchTab(tab.dataset.tab);
     });
   }
 

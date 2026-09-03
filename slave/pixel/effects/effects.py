@@ -168,6 +168,134 @@ class pearl_chain(Effect):
 register(pearl_chain)
 
 
+# ── UART 電機正弦波效果（uart_motor_sine）────────────────────
+# 設定方法：program 段序列在 effects.json 手寫，段 type：
+#   {"type":"uart_motor_sine","direction":"B","speed_percent":100,
+#    "speed_curve":"Sine","end_Time":500}
+#   {"type":"uart_motor_stop","end_Time":750}
+# 波形不在這裡計算：即时速度 bell 由框架 PixelMathMethod（整數正弦）
+# __init__ 時預計算成 raw 表，frame() 只查表。
+# 輸出走 write:"w"：全像素同值 = raw << 4；0x00 全速收 / 0x80 停 /
+# 0xFF 全速伸都是有效命令（render 原樣收）。
+
+from lib.sw.PixelMathMethod import mt as _mt
+
+_STOP_RAW = 128
+
+
+def _sine_bell_raws(frames, max_speed):
+    """単方向正弦 bell 的整數速度%表（框架正弦，無浮點）。"""
+    frames = max(1, int(frames))
+    comp = _mt.compile([{
+        'type': 'math_now', 'F': 5, 'l_max': 4095, 'l_lim': 0, 'phi': 0,
+        'end_Time': frames,
+    }])
+    out = []
+    for p in range(frames):
+        v = _mt.value_at(comp, p)           # wave01: 2048..4095 升降 bell
+        percent = (v - 2048) * 100 // 2047  # ~ 100*sin(pi*p/frames)
+        if percent < 0:
+            percent = 0
+        elif percent > 100:
+            percent = 100
+        out.append((percent * max_speed + 50) // 100)
+    return out
+
+
+def _motor_value(direction, speed_percent):
+    """direction A/B + 力出 0..100 → raw byte（A: 收，B: 伸）。"""
+    speed = max(0, min(int(speed_percent), 100))
+    if speed <= 0:
+        return _STOP_RAW
+    if str(direction).upper() == 'B':
+        return 128 + ((127 * speed + 50) // 100)
+    return 128 - ((128 * speed + 50) // 100)
+
+
+class uart_motor_sine:
+    """正弦波設定方法：json 段序列 + write:"w" raw<<4。
+
+    __init__ 把整段 program 預計算成 raw 表（框架整數正弦），
+    frame(t) 只查表 + raw<<4；決定性、無狀態。
+    """
+
+    def __init__(self, name, params=None):
+        params = params or {}
+        self.name = name
+        self.id = params.get('id')
+        self.pixel_n = max(1, int(params.get('pixel_n', 1)))
+        self.program = params.get('program') or []
+        self.cycles = int(params.get('cycles', 1))
+        self.hold_raw = max(0, min(int(params.get('hold_raw', 128)), 255))
+        self._t = 0
+        from array import array as _array
+        self._buf = _array('H', [self.hold_raw << 4] * self.pixel_n)
+
+        segs = []
+        prev = 0
+        for seg in self.program:
+            end = int(seg.get('end_Time', 0))
+            if end <= prev:
+                raise ValueError('uart_motor_sine: end_Time 必須递增')
+            kind = str(seg.get('type', 'uart_motor_stop'))
+            if kind == 'uart_motor_sine':
+                direction = str(seg.get('direction', '')).upper()
+                if direction not in ('A', 'B'):
+                    raise ValueError('uart_motor_sine: direction 必須 A/B')
+                speed = max(0, min(int(seg.get('speed_percent', 100)), 100))
+                curve = str(seg.get('speed_curve', 'Sine')).lower()
+            else:
+                direction, speed, curve = '', 0, 'linear'
+            segs.append((prev, end, kind, direction, speed, curve))
+            prev = end
+        self._total = prev
+
+        # 預計 raw 表（stop 段 = 0x80；sine 段 = 框架正弦 bell → raw）
+        table = [self.hold_raw << 4] * self._total
+        for start, end, kind, direction, maximum, curve in segs:
+            L = end - start
+            if kind != 'uart_motor_sine':
+                for p in range(start, end):
+                    table[p] = _STOP_RAW << 4
+                continue
+            if curve == 'linear':
+                prof = [p * 100 // L for p in range(L)]
+            else:
+                prof = _sine_bell_raws(L, maximum)
+            for p in range(L):
+                raw = _motor_value(direction, prof[p])
+                table[start + p] = raw << 4
+        self._table = _array('H', table)
+
+    def frame(self, t):
+        absolute = int(t)
+        if self._total > 0 and (self.cycles < 0 or absolute < self._total * self.cycles):
+            v12 = self._table[absolute % self._total]
+        else:
+            v12 = self.hold_raw << 4
+        buf = self._buf
+        for i in range(self.pixel_n):
+            buf[i] = v12
+        return buf
+
+    def release(self):
+        pass
+
+    def restart(self):
+        self._t = 0
+
+    def seek(self, t):
+        self._t = int(t)
+
+    def __next__(self):
+        buf = self.frame(self._t)
+        self._t += 1
+        return buf
+
+
+register(uart_motor_sine)
+
+
 if __name__ == "__main__":
     # ── PC 快速自檢（不依賴硬體）：讀取真實 effects.json ──
     import os

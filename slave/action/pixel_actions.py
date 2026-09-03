@@ -10,9 +10,9 @@
 #   回應 (Slave→Master, 只送出):
 #     0x3102 MODE_LIST_RSP / 0x3108 MODE_DETAIL_RSP
 #
-# 播放端 = PixelTask (Core1, pixel_task.py): 本模組只把指令寫進 bus.shared
-# ("pixel_remote_set"/"pixel_remote_stop"), PixelTask._consume_cmds 消費後
-# 以本地 registry/show 機制播放該單一模式, 不需 PC 串流 data.bin。
+# 播放端 = PixelTask（pixel_task.py）等多個消費方：本模組只把指令經 gmode 寫進
+# 共用狀態 bus.shared（mode_id / mode_seq / mode_start_at），消費方跟狀態執行；
+# 不需 PC 串流 data.bin。mode id 是全系統共用參數（MP3/audio 等同樣消費）。
 
 import time
 import struct
@@ -89,9 +89,10 @@ def on_mode_set(ctx, args):
     if gmode is not None:
         gmode.set_mode(_combine(mode_type, mode_id), start_delay_ms=start_delay_ms)
     else:
-        # 無 gmode（舊行為）：直接單獨播燈效
-        bus.shared["pixel_remote_set"] = _combine(mode_type, mode_id)
-        bus.shared["pixel_remote_start_at"] = time.ticks_ms() + start_delay_ms
+        # 無 gmode（舊行為）：直接寫共用狀態 key（與 gmode 同一語義）
+        bus.shared["mode_id"] = _combine(mode_type, mode_id)
+        bus.shared["mode_seq"] = int(bus.shared.get("mode_seq", 0) or 0) + 1
+        bus.shared["mode_start_at"] = time.ticks_ms() + start_delay_ms
     print("[Pixel] MODE_SET type={} id={} bri={} delay={}ms".format(
         mode_type, mode_id, brightness, start_delay_ms))
 
@@ -109,7 +110,9 @@ def on_mode_stop(ctx, args):
     if gmode is not None:
         gmode.stop_mode(action)
     else:
-        bus.shared["pixel_remote_stop"] = 1
+        bus.shared["mode_id"] = 0
+        bus.shared["mode_seq"] = int(bus.shared.get("mode_seq", 0) or 0) + 1
+        bus.shared["mode_start_at"] = 0
     print("[Pixel] MODE_STOP action={}".format(action))
 
 

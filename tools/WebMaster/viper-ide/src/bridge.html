@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="en" translate="no">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="${VIPER_IDE_DESCR}">
+    <meta property="og:description" content="${VIPER_IDE_DESCR}">
+    <title>ViperIDE P2P Bridge</title>
+    <link rel="icon" type="image/png" sizes="512x512" href="${VIPER_IDE_BASE_URL}/assets/favicon.png"/>
+    <link rel="apple-touch-icon" sizes="512x512" href="${VIPER_IDE_BASE_URL}/assets/favicon.png"/>
+
+    <link rel="stylesheet" href="./viper_lib.css">
+    <style>
+    #bridge-id {
+        font-size: 1.5rem;
+    }
+    </style>
+</head>
+<body class="page">
+    <h1>ViperIDE P2P Bridge</h1>
+
+    <p>The bridge allows creating a secure, peer-to-peer connection between the device and ViperIDE <b>across the internet</b>.</p>
+
+    <ol>
+        <li>
+            Connect your device:
+            <span class="button-row">
+                <button title="Connect WebREPL"       onclick="connectDevice('ws')"  id="btn-conn-ws" ><i class="fa-solid fa-link"></i></button>
+                <button title="Connect Bluetooth"     onclick="connectDevice('ble')" id="btn-conn-ble"><i class="fa-brands fa-bluetooth-b"></i></button>
+                <button title="Connect USB/Serial"    onclick="connectDevice('usb')" id="btn-conn-usb"><i class="fa-brands fa-usb"></i></button>
+            </span>
+        </li>
+        <li>Grab a Bridge P2P ID:<br>
+            <span class="highlight monospace" id="bridge-id"></span>
+        </li>
+        <li>In <a class="link" href="${VIPER_IDE_BASE_URL}" target="_blank">Viper IDE</a>, click <span class="highlight"><i class="fa-solid fa-link"></i> Connect WebREPL</span> button and insert your Bridge P2P ID.<br>
+            You can also use a direct link: <span class="highlight monospace" id="ide-link"></span>
+        </li>
+    </ol>
+
+    <p>⚠️ Keep this page open for the connection to remain active</p>
+
+    <script src="./viper_lib.js"></script>
+    <script>
+    Object.assign(window, viper_lib)
+
+const my_p2p_id = ConnectionUID.random().value();
+let rtc = null;
+let port = null;
+let wakeLock = null;
+
+async function disconnectDevice() {
+    QID('bridge-id').textContent = '---'
+    QID('ide-link').textContent = '${VIPER_IDE_BASE_URL}?rtc=YOUR-BRIDGE-ID'
+
+    for (const t of ["ws", "ble", "usb"]) {
+        QID(`btn-conn-${t}`).classList.remove('connected')
+    }
+
+    try {
+        await rtc.disconnect()
+    } catch(err) {}
+
+    try {
+        await port.disconnect()
+    } catch(err) {}
+
+    try {
+        await wakeLock.release()
+    } catch(err) {}
+
+    rtc = null
+    port = null
+    wakeLock = null
+}
+
+let defaultWsURL = 'ws://192.168.1.123:8266'
+let defaultWsPass = ''
+
+async function prepareNewPort(type) {
+    let new_port;
+    analytics.track('Device Start Connection', { connection: type })
+
+    if (type === 'ws') {
+        let url
+        if (typeof window.webrepl_url === 'undefined' || window.webrepl_url == '') {
+            url = prompt('Enter WebREPL device address.\nSupported protocols: ws wss rtc', defaultWsURL)
+            if (!url) { return }
+            defaultWsURL = url
+
+            if (url.startsWith('http://')) { url = url.slice(7) }
+            if (url.startsWith('https://')) { url = url.slice(8) }
+            if (!url.includes('://')) { url = 'ws://' + url }
+
+            if (window.location.protocol === 'https:' && url.startsWith('ws://')) {
+                toastr.error('Connection to an unsecure WebSocket is blocked on a secure website')
+                return
+            }
+        } else {
+            url = window.webrepl_url
+            defaultWsURL = url
+            window.webrepl_url = ''
+        }
+
+        if (url.startsWith('ws://') || url.startsWith('wss://')) {
+            new_port = new WebSocketREPL(url)
+            new_port.onPasswordRequest(async () => {
+                const pass = prompt('WebREPL password:', defaultWsPass)
+                if (pass == null) { return }
+                if (pass.length < 4) {
+                    toastr.error('Password is too short')
+                    return
+                }
+                defaultWsPass = pass
+                return pass
+            })
+        } else if (url.startsWith('rtc://')) {
+            const id = ConnectionUID.parse(url.replace('rtc://', ''))
+            new_port = new WebRTCTransport(id.value())
+        } else if (url.startsWith('vm://')) {
+            new_port = createBrowserVM()
+        } else {
+            toastr.error('Unknown link type')
+        }
+    } else if (type === 'ble') {
+        if (iOS) {
+            toastr.error('WebBluetooth is not available on iOS')
+            return
+        }
+        if (!window.isSecureContext) {
+            toastr.error('WebBluetooth cannot be accessed with unsecure connection')
+            return
+        }
+        if (typeof navigator.bluetooth === 'undefined') {
+            toastr.error('Try Chrome, Edge, Opera, Brave', 'WebBluetooth is not supported')
+            return
+        }
+        new_port = new WebBluetooth()
+    } else if (type === 'usb') {
+        if (iOS) {
+            toastr.error('WebSerial is not available on iOS')
+            return
+        }
+        if (!window.isSecureContext) {
+            toastr.error('WebSerial cannot be accessed with unsecure connection')
+            return
+        }
+        if (typeof navigator.serial === 'undefined' && typeof navigator.usb === 'undefined') {
+            toastr.error('Try Chrome, Edge, Opera, Brave', 'WebSerial and WebUSB are not supported')
+            return
+        }
+        if (typeof navigator.serial === 'undefined') {
+            console.log('Using WebUSB instead of WebSerial')
+            new_port = new WebSerial(webSerialPolyfill)
+        } else {
+            new_port = new WebSerial()
+        }
+    } else {
+        toastr.error('Unknown connection type')
+        return
+    }
+
+    try {
+        await new_port.requestAccess()
+    } catch (err) {
+        return
+    }
+    return new_port
+}
+
+async function connectDevice(type) {
+    if (port) {
+        if (!confirm('Disconnect current device?')) { return }
+        await disconnectDevice()
+        return
+    }
+
+    const new_port = await prepareNewPort(type)
+    if (!new_port) { return }
+    // Connect new port
+    try {
+        await new_port.connect()
+    } catch (err) {
+        report('Cannot connect', err)
+        return
+    }
+
+    port = new_port
+
+    QID(`btn-conn-${type}`).classList.add('connected')
+
+    rtc = new WebRTCTransport(null, my_p2p_id)
+
+    await rtc.requestAccess()
+
+    QID('bridge-id').textContent = "rtc://" + rtc.info.id
+    QID('ide-link').textContent = '${VIPER_IDE_BASE_URL}?rtc=' + rtc.info.id
+
+    rtc.onConnect(() => {
+        toastr.info('ViperIDE connected')
+    })
+
+    rtc.onReceive(async (data) => {
+        await port.write(data)
+    })
+
+    port.onActivity(indicateActivity)
+
+    port.onReceive(async (data) => {
+        await rtc.write(data)
+    })
+
+    rtc.onDisconnect(() => {
+        toastr.warning('ViperIDE disconnected')
+    })
+
+    port.onDisconnect(() => {
+        toastr.warning('Device disconnected')
+        disconnectDevice()
+    })
+
+    try {
+        wakeLock = await navigator.wakeLock.request('screen')
+    } catch (err) {}
+
+    toastr.success('Bridge created')
+}
+
+disconnectDevice()
+
+    </script>
+</body>
+</html>

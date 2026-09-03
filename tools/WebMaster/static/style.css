@@ -219,6 +219,35 @@ body.sidebar-collapsed .content { flex: 1; }
 .terminal .t-warn { color: #fcd34d; }
 .terminal .t-err { color: #fca5a5; }
 
+/* ── ViperIDE 分頁 ── */
+.hidden { display: none !important; }
+.viper-frame {
+  width: 100%;
+  height: calc(100vh - 208px);
+  min-height: 460px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg-2);
+}
+.viper-notice {
+  border: 1px dashed var(--warning);
+  background: var(--bg);
+  color: var(--text);
+  padding: 16px 18px;
+  border-radius: 12px;
+  font-size: 13px;
+  line-height: 1.8;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+.viper-notice code {
+  font-family: var(--mono);
+  background: var(--bg-2);
+  padding: 1px 6px;
+  border-radius: 5px;
+  font-size: 12px;
+}
+
 /* ── modal ── */
 .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.62); display: flex; align-items: center; justify-content: center; z-index: 200; }
 .modal-overlay.hidden { display: none; }
@@ -234,4 +263,5 @@ body.sidebar-collapsed .content { flex: 1; }
   .layout { flex-direction: column; }
   .sidebar { width: 100%; border-right: none; border-bottom: 1px solid var(--border); }
   .grid-2, .grid-3 { grid-template-columns: 1fr; }
+  .viper-frame { height: 72vh; min-height: 0; }
 }

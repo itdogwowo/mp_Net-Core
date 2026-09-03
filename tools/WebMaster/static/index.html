@@ -46,6 +46,7 @@
         <button class="tab active" data-tab="control">🎛 播放</button>
         <button class="tab" data-tab="files">📁 檔案</button>
         <button class="tab" data-tab="firmware">🔥 固件</button>
+        <button class="tab" data-tab="viper">🐍 ViperIDE</button>
         <button class="tab" data-tab="poe">🔌 PoE</button>
         <button class="tab" data-tab="console">⌨ Console</button>
         <button class="tab" data-tab="log">📋 終端</button>
@@ -168,6 +169,13 @@
           </div>
           <pre id="fwResult" class="result-block">(尚未執行)</pre>
         </div>
+      </section>
+
+      <!-- 🐍 ViperIDE（內嵌 MicroPython IDE：USB 燒錄 bin / 編輯上傳專案檔案 / REPL） -->
+      <section id="tab-viper" class="tab-panel">
+        <div id="viperNotice" class="viper-notice hidden"></div>
+        <iframe id="viperFrame" class="viper-frame" title="ViperIDE"
+                allow="serial; usb; fullscreen; clipboard-read; clipboard-write"></iframe>
       </section>
 
       <!-- 🔌 PoE -->

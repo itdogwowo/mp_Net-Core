@@ -34,6 +34,30 @@ STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
 os.makedirs(STATIC_DIR, exist_ok=True)
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
+# ═══════════════════════ ViperIDE（分頁: USB 燒錄 bin / 上傳項目檔案）═══
+# source: viper-ide/（vendored 在 WebMaster 底下，可魔改）；build 產物: viper-ide/build。
+# build 用 VIPER_IDE_BASE_URL=. 產出相對路徑版，才能掛在 /viper/ 子路徑
+# （同源 iframe → WebSerial 可用）。缺 build 時 server 照常啟動，前端會提示。
+VIPER_SRC_DIR = os.path.join(os.path.dirname(__file__), "viper-ide")
+VIPER_BUILD_DIR = os.path.join(VIPER_SRC_DIR, "build")
+VIPER_INDEX = os.path.join(VIPER_BUILD_DIR, "index.html")
+
+
+def _viper_version():
+    try:
+        with open(os.path.join(VIPER_SRC_DIR, "package.json"), "r", encoding="utf-8") as f:
+            return json.load(f).get("version")
+    except Exception:
+        return None
+
+
+VIPER_BUILT = os.path.isfile(VIPER_INDEX)
+if VIPER_BUILT:
+    app.mount("/viper", StaticFiles(directory=VIPER_BUILD_DIR, html=True), name="viper")
+    log.info("ViperIDE build 就緒 → /viper/（version=%s）", _viper_version())
+else:
+    log.warning("ViperIDE 未建置（缺 %s）— /viper/ 不掛載", VIPER_INDEX)
+
 
 # ═══════════════════════ 靜態 / 頁面 ═══════════════════════
 @app.get("/", response_class=HTMLResponse)
@@ -45,6 +69,17 @@ async def index():
 
 
 # ═══════════════════════ REST API ═══════════════════════
+@app.get("/api/viper")
+async def api_viper():
+    """ViperIDE 分頁狀態：build 是否就緒 + vendored 版本（供前端 lazy 載入/提示）。"""
+    return JSONResponse({
+        "ok": True,
+        "built": os.path.isfile(VIPER_INDEX),
+        "version": _viper_version(),
+        "base": "/viper/",
+    })
+
+
 @app.get("/api/devices")
 async def api_devices():
     return JSONResponse({"ok": True, "data": manager.list_devices()})

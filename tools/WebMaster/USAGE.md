@@ -146,6 +146,27 @@ manifest（`/manifest.json` 本地 + `/sd/.manifest.json` SD），喺「⚙ 設�
 
 適用於試任何協議功能、偵錯。
 
+### 🐍 ViperIDE（燒錄 bin / 上傳項目檔案）
+
+內嵌官方 ViperIDE（MicroPython IDE，vendored 在 `tools/WebMaster/viper-ide/`，MIT）：
+直接跟板子 USB 對話，適合 **開發/維修期** 的板端操作（不經 NC4 網路協議）。
+
+- **連線**：板子用 USB 插在「開瀏覽器的電腦」→ 點 ViperIDE 工具列 USB 圖示選 port。
+  - 一定要用 `http://127.0.0.1:<port>`（或 https）開啟 WebMaster —— WebSerial/WebUSB
+    需要 secure context，`http://<LAN IP>` 不行。
+  - 瀏覽器限 Chrome / Edge（Chromium）。
+- **燒錄 bin**：USB 連上後，檔案樹/工具列進入 Flash 流程，選官方或**自訂 `.bin`** 直接燒
+  （含 erase flash 選項；燒錄中別斷電）。
+- **上傳項目檔案**：連上後直接把整包專案/資料夾拖進檔案樹即上傳（也可逐一編輯 `.py`、
+  跑 REPL、用 package manager 裝 micropython-lib）。
+
+> 這分頁跟本機 NC4 網路通道無關 — 它是板子的**另一條開發通道**。板子量產後走
+> 「📁 檔案 / 🔥 固件」分頁的 NC4 更新；要重新燒錄/救磚才需要 USB + 本分頁。
+
+**魔改**：ViperIDE source 就在 `tools/WebMaster/viper-ide/src/`（含中文可改翻譯、UI、連接層）。
+改完執行 `tools/WebMaster/viper-ide/rebuild.bat`，重新整理 WebMaster 頁面即生效。
+`build/` 不存在時 `/viper/` 不掛載，分頁內會顯示建置提示。
+
 ### 📋 終端
 
 即時日誌：連線狀態、指令結果、錯誤等。可清除。
@@ -180,6 +201,8 @@ Console 分頁：cmd_id=`0x1101`，args=`{"query_type":0}`，expect=`0x1102`。
 | 方法 | 路徑 | 說明 |
 |---|---|---|
 | GET | `/` | SPA 頁面 |
+| GET | `/viper/` | 🐍 ViperIDE（`tools/WebMaster/viper-ide/build` 存在時） |
+| GET | `/api/viper` | ViperIDE 分頁狀態（built / version） |
 | GET | `/api/devices` | 所有已知設備概況（依 id 排序，含 online 狀態） |
 | GET | `/api/commands` | 所有 NC4 命令（cmd_id + 名稱 + 參數） |
 | POST | `/api/upload/{sid}?remote_path=..&chunk_size=..` | raw body 上傳 |

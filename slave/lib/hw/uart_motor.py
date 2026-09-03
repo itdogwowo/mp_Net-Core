@@ -329,9 +329,9 @@ class UartMotor:
     # ── 硬體輸出（統一發送）──
 
     # 死區（停）值：UART-412 的 updateMotor 中 value=0 → PWM 254（全速正轉！），
-    # value=128(0x80) → 兩腳 PWM 都 0（死區停）。所以「歸零」絕不能填 0，
-    # 必須填 0x80 才是停。pixel 系統 big_buffer 初始全 0，故 st_load_and_convert
-    # 讀到 0 時要映射成停值（除非效果明確想全速正轉）。
+    # value=128(0x80) → 兩腳 PWM 都 0（死區停）。所以「停/歸零」用 0x80（中性值），
+    # 由 render 的 clear_all()/stop_motors() 明確寫入再推幀；效果寫 "w" 時 0x00
+    # 是有效命令（全速收），st_load_and_convert 原樣收下、不改寫。
     # dStay（default Stay，12-bit，config 可覆寫）：停止/歸零時回到的數值。
     DEFAULT_DSTAY = 2048   # = 0x80 死區（12-bit 語義，>>4 = 0x80）
 
@@ -561,17 +561,16 @@ class UartMotor:
         """PixelStreamer.init() 呼叫；motor 不需額外初始化（UartMotor 建構已設 STOP）。"""
 
     def st_load_and_convert(self, source_buffer, offset):
-        """從 big_buffer 提取 W 通道（每顆第 4 byte，8-bit 速度）填進 motor buffer。
+        """從 big_buffer 提取 W 通道（每顆第 4 byte）填進 motor buffer —— 原樣 raw byte。
 
-        歸零保護：W 通道是 0（big_buffer 初始值 / 效果熄燈）時，UART-412 會把它
-        當「全速正轉」（updateMotor: value=0 → IN1 PWM 254）。這極危險（電機暴走）。
-        故 0 → 映射成死區值 0x80（停）。要讓 motor 全速正轉，效果輸出值
-        0x01..0x7F（或寫入端直接給非 0 值）。
+        motor 效果（如 uart_motor_sine）走 write:"w"，直接在 W 通道給 8-bit raw：
+        0x00 全速收 … 0x80 停 … 0xFF 全速伸，0 也是有效命令 → 不作保護改寫。
+        停止/熄燈不靠「W=0」表達：render 的 clear_all() / stop_motors() 會把 W
+        明確填成 neutral_value（0x80 死區停）再推一幀。
         """
         n = self.num_devices
         for i in range(n):
-            v = source_buffer[offset + (i << 2) + 3]
-            self.buffer[i] = v if v != 0 else self.neutral_value
+            self.buffer[i] = source_buffer[offset + (i << 2) + 3]
 
     def st_show(self):
         """組廣播 frame（FF 00 V1..VN FE）一次過 uart.write。"""

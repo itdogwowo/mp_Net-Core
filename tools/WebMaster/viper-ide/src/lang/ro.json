@@ -1,0 +1,51 @@
+{
+    "translation": {
+        "example": {
+            "hello": "Bună",
+            "comment-colors": "Tipărește fiecare literă cu o culoare diferită",
+            "comment-count": "Numără de la 1 la 10"
+        },
+        "tool": {
+            "run": "Rulează fișierul",
+            "save": "Salvează fișierul",
+            "fullscreen": "Ecran complet",
+            "clear": "Curățați",
+            "conn": {
+                "ws": "Conectare WebREPL",
+                "ble": "Conectare Bluetooth",
+                "usb": "Conectare USB/Serial"
+            },
+            "terminal": "Terminal"
+        },
+        "menu": {
+            "package-mgr": "Manager de pachete",
+            "file-mgr": "Manager de fișiere",
+            "settings": "Setări"
+        },
+        "files": {
+            "no-files": "fără fișiere",
+            "connect": "conectare",
+            "used": "folosit"
+        },
+        "settings": {
+            "conn": "conexiune",
+            "editor": "editor",
+            "other": "alte",
+            "interrupt-running-code": "Întrerupe execuția",
+            "force-serial-poly": "Utilizează WebUSB în loc de WebSerial",
+            "expand-minify-json": "Minificarea automată a JSON",
+            "use-word-wrap": "Împachetarea cuvintelor",
+            "render-markdown": "Vizualizator Markdown",
+            "refresh-after-run": "Reîmprospătează fișierele după rulare",
+            "auto-soft-reset": "Soft Reset înainte de rulare",
+            "use-natural-sort": "Sortare naturală",
+            "lang": "Limbă",
+            "zoom": "Zoom",
+            "install-package-source": "Omite compilarea .py → .mpy"
+        },
+        "about": {
+            "cta": "Dacă vă place ViperIDE, vă rugăm <a id='gh-star'>dați-i o stea pe GitHub</a> ⭐ și răspândiți vestea pe rețelele sociale 📢",
+            "report-bug": "Puteți de asemenea să <a id='gh-issues'>raportați o eroare</a> 🐞"
+        }
+    }
+}

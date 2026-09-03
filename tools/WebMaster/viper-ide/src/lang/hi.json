@@ -1,0 +1,51 @@
+{
+    "translation": {
+        "example": {
+            "hello": "नमस्ते",
+            "comment-colors": "प्रत्येक अक्षर को अलग रंग में प्रिंट करें",
+            "comment-count": "1 से 10 तक गिनें"
+        },
+        "tool": {
+            "run": "फाइल चलाएं",
+            "save": "फाइल सेव करें",
+            "fullscreen": "पूर्ण स्क्रीन",
+            "clear": "साफ करें",
+            "conn": {
+                "ws": "WebREPL कनेक्ट करें",
+                "ble": "Bluetooth कनेक्ट करें",
+                "usb": "USB/सीरियल कनेक्ट करें"
+            },
+            "terminal": "टर्मिनल"
+        },
+        "menu": {
+            "package-mgr": "पैकेज मैनेजर",
+            "file-mgr": "फाइल मैनेजर",
+            "settings": "सेटिंग्स"
+        },
+        "files": {
+            "no-files": "कोई फाइल नहीं",
+            "connect": "कनेक्ट करें",
+            "used": "प्रयुक्त"
+        },
+        "settings": {
+            "conn": "कनेक्शन",
+            "editor": "संपादक",
+            "other": "अन्य",
+            "interrupt-running-code": "प्रोग्राम रुकावट",
+            "force-serial-poly": "WebSerial के बजाय WebUSB का उपयोग करें",
+            "expand-minify-json": "JSON का स्वचालित-संपीड़न",
+            "use-word-wrap": "शब्द आवरण",
+            "render-markdown": "Markdown दर्शक",
+            "refresh-after-run": "चलाने के बाद फ़ाइलें ताज़ा करें",
+            "auto-soft-reset": "चलाने से पहले Soft Reset",
+            "use-natural-sort": "प्राकृतिक छंटाई",
+            "lang": "भाषा",
+            "zoom": "ज़ूम",
+            "install-package-source": ".py → .mpy संकलन छोड़ें"
+        },
+        "about": {
+            "cta": "यदि आपको ViperIDE पसंद है, कृपया <a id='gh-star'>GitHub पर इसे एक स्टार दें</a> ⭐ और इसे सोशल मीडिया पर फैलाएं 📢",
+            "report-bug": "आप <a id='gh-issues'>एक बग भी रिपोर्ट कर सकते हैं</a> 🐞"
+        }
+    }
+}

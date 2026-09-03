@@ -130,6 +130,12 @@ def launcher():
     # tm.register_task("motor", ActionTask1, default_affinity=(1, 0), layer=0)
     # tm.register_task("action", ActionTask, default_affinity=(1, 0), layer=0)
 
+    # ── 定時指令排程 Schedule：任務自行找 /schedule.json，無 config 開關 ──
+    #   找到就依時間軸把 NC4 指令寫進 vBus（內部虛擬總線）→ 走解碼/執行鏈路；
+    #   檔案不存在時第一次啟動自動產生空範本，之後 idle。
+    from tasks.schedule import ScheduleTask
+    tm.register_task("schedule", ScheduleTask, default_affinity=(1, 0), layer=1)
+
     tm.finalize()
 
     # ── 看門狗（config System.watchdog）—— lazy-arm：全部 on_start 運行完才建狗 ──
