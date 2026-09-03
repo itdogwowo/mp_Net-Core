@@ -2,7 +2,7 @@
 
 import './style.css'
 
-import { inspectImage } from './flash/image.ts'
+import { inspectImage, looksLikeFactoryImage } from './flash/image.ts'
 import {
     suggestAddress, parseHexAddress, formatHexAddress, FALLBACK_APP_OFFSET,
 } from './flash/addresses.ts'
@@ -99,7 +99,15 @@ async function loadFile(file: File): Promise<void> {
             fileInfo.className = 'file-info ok'
         }
         fileInfo.textContent = text
-        applyAddress()
+
+        // 自動判斷：似 MicroPython 官方整包 → 直接帶 0x0（可改）
+        if (looksLikeFactoryImage(file.name, data.byteLength)) {
+            if (currentAddressKind() === 'app') { addressKind.value = 'merged' }
+            addressNote.textContent =
+                '🔎 自動判斷：似 MicroPython 官方整包 → 位址 0x0（可改其他類型）'
+        } else {
+            applyAddress()
+        }
         syncBusyState()
         setStatus('')
     } catch (err) {
@@ -150,7 +158,9 @@ function applyAddress(): void {
     } else if (kind === 'merged') {
         addressInput.value = formatHexAddress(0)
         addressInput.readOnly = true
-        addressNote.textContent = '整包韌體（含 bootloader 等）固定寫在 0x0'
+        addressNote.textContent =
+            'MicroPython 官方 bin（ESP32-S3/C3 等新 build）都係寫 0x0；' +
+            '舊 ESP32 經典版若需 0x1000 請用「自訂位址」'
     } else {
         addressInput.readOnly = false
         addressNote.textContent = '進階：請確認位址正確'
@@ -263,6 +273,24 @@ async function onFlash(): Promise<void> {
     flashBtn.textContent = '燒錄中…'
     setStatus('')
 
+    // 防呆：整片清除會連 bootloader 一齊擦走；若 bin 唔含 bootloader 會開唔到機
+    if (eraseAll.checked && address !== 0) {
+        const ok = window.confirm(
+            '⚠️ 你㨂咗「燒錄前整片清除」。\n\n' +
+            '整片清除會連 bootloader／分割區一齊擦走。\n' +
+            `如果呢個 .bin（${fmtSize(data.byteLength)}）唔包含 bootloader，` +
+            '燒完之後塊板會開唔到機（ROM 會顯示 invalid header: 0xffffffff）。\n\n' +
+            '確定要繼續？',
+        )
+        if (!ok) {
+            busy = false
+            progressWrap.classList.add('hidden')
+            syncBusyState()
+            setStatus('已取消（防止擦走 bootloader）', 'info')
+            return
+        }
+    }
+
     let succeeded = false
     try {
         await session.flash(
@@ -294,6 +322,13 @@ async function onFlash(): Promise<void> {
         chipName = null
         applyAddress()
         if (s) { void s.close() }
+        if (succeeded) {
+            setStatus(
+                (statusLine.textContent ?? '') +
+                '（序列埠已釋放，Python 等其他程式可以連 COM 埠了）',
+                'ok',
+            )
+        }
     }
 }
 

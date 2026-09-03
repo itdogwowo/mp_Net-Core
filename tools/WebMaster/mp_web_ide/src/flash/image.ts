@@ -15,11 +15,25 @@ export interface ImageInspection {
     note: string
 }
 
+/**
+ * 粗略判斷「似唔似 MicroPython 官方整包 .bin」（bootloader+app 合埋，寫 0x0）：
+ * - 檔名含 ESP32_GENERIC / micropython，或
+ * - 檔名係 ESP32 vX.Y.Z.bin 格式，或
+ * - 檔案 >= 1.4MB（官方整包通常 1.5MB 以上）
+ * 只係「建議用」，永遠可以人手改；app-only 大檔會誤判，UI 有顯示可改。
+ */
+export function looksLikeFactoryImage(fileName: string, size: number): boolean {
+    const n = fileName.toLowerCase()
+    if (/micropython/.test(n)) { return true }
+    if (n.includes('esp32') && /generic/.test(n)) { return true }
+    if (n.includes('esp32') && /v\d+\.\d+(\.\d+)?\.bin/.test(n)) { return true }
+    return size >= 1_400_000
+}
+
 export function inspectImage(data: Uint8Array): ImageInspection {
     const size = data.byteLength
     const magic = size > 0 ? data[0] ?? null : null
     const espImage = magic === ESP_IMAGE_MAGIC
-
     let note: string
     if (!espImage) {
         note = size === 0
