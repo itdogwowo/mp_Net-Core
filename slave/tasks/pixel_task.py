@@ -298,6 +298,8 @@ class PixelTask(Task):
             # 燈效綁定音效（M5）：原樣攜帶 audio 段（gmode 解析後扇出給 DjTask；
             # PixelTask 自己不碰播放邏輯）。無此段 = 純燈效。
             "audio": d.get("audio"),
+            # 模式內建延遲(ms)：gmode 起播時與命令 start_delay_ms 疊加。
+            "delay_ms": max(0, int(d.get("delay_ms", 0) or 0)),
         }
 
     @staticmethod

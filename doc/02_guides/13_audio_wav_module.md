@@ -252,6 +252,9 @@ python -B -m unittest discover -s test/sys -p "test_watchdog.py"  # 18 項 WDT �
 | XSMT | 必須由 driver 拉高；接線懸空 = 完全無聲 |
 | WDT | 任何任務不得 >8s 卡住核心；dj 掃描分批、播放每圈一 slot（見計劃書 §3.5） |
 | 格式不符 | 掃描標 compat=0、SET 回 ok=0；不即時轉換（規範化留 PC 端） |
+| **I2S 寫入不可放 core1** | ⚠️ `audio_player`（I2S write）必須在 **core0（主線程）**，`dj` 合成端放 core1——放反會 DMA 餵資料失步 → **播放超快/拆聲**（與 LCD/SPI 同為 core0-only 週邊）。預設已在 `Core_Manager.py` 設對：`dj(0,1)` / `audio_player(1,0)` |
+| **irq 補格粒度 vs SLOT** | `Audio.mode="irq"` 時，handler 由 I2S 內部 DMA 緩衝（`ibuf=40000`≈227ms）驅動，但每次只 pop 一格 **8192B(46ms)**——節拍對不上 → hub 被過快掏空 → underrun → 卡頓/拆聲。**單檔純音效用 `"block"` 最穩**（write 被 DMA 牽著走，消耗=真實速率）；irq 若要上，需讓 SLOT 對齊 ibuf 粒度（待解） |
+
 
 ## 相關文件
 

@@ -1,0 +1,204 @@
+{
+  "scan_ignore": [
+    "/sd"
+  ],
+  "System": {
+    "dual_core_mode": "0",
+    "boot_strict": 0,
+    "c_lum": 1.0,
+    "hostname": "",
+    "cID": "",
+    "refresh_rate_ms": 1,
+    "debug_level": 1,
+    "master_IP": "",
+    "master_port": 0,
+    "discovery_port": 9000,
+    "heartbeat_interval": 10000,
+    "frame_interval_ms": 33,
+    "num_pixels": 676,
+    "buffer_frames": 1,
+    "log_interval_ms": 1000,
+    "watchdog": {
+      "enable": 0,
+      "timeout_ms": 8000,
+      "btn_bypass_gpio": null,
+      "auto_rearm_ms": 60000
+    }
+  },
+  "Buffer": {
+    "rx_hub_buffers": 16,
+    "drop_on_full": 0,
+    "drain_reads": 1,
+    "fb_mode": "auto",
+    "u8_rx_slots": 8
+  },
+  "Network": {
+    "priority": [
+      "lan",
+      "wifi"
+    ],
+    "lan": {
+      "enable": 1,
+      "active_mode": 1,
+      "driver": "RMII",
+      "phy_addr": 1,
+      "phy_type": "IP101",
+      "GPIO": {
+          "mdc": 31, "mdio": 52, "ref_clk": 50,
+          "spi": -1, "cs": -1, "rst": -1, "int": -1
+      }
+    },
+    "wifi": {
+      "enable": 0,
+      "active_mode": 2,
+      "timeout": 300,
+      "ssid": "Home_WiFi",
+      "ssid_pw": "",
+      "mdns_name": "esp32-led-"
+    },
+    "ESP_now": {"enable": 0,"channel": 6}
+  },
+  "CircuitDecode": {
+    "enable": 0,
+    "list": [
+      {
+        "GPIO": {"uart": 0}
+      }
+    ]
+  },
+  "SPI": {
+    "enable": 0,
+    "force_machine": 0,
+    "list": [
+      {
+        "id": 1,
+        "baudrate": 8000000,
+        "phase": 1,
+        "polarity": 1,
+        "GPIO": {"sck": 8,"mosi": 7,"miso": null},
+        "data_pins": []
+      }
+    ]
+  },
+  "I2C": {
+    "enable": 0,
+    "list": [
+      {
+        "id": 1,
+        "freq": 100000,
+        "GPIO": {"scl": 20,"sda": 21}
+      }
+    ]
+  },
+  "UART": {
+    "enable": 1,
+    "list": [
+      {
+        "id": 1,
+        "baudrate": 115200,
+        "GPIO": {"tx": 6,"rx": 5}
+      }
+    ]
+  },
+  "PWM": {
+    "enable": 0,
+    "list": [
+      {"GPIO": 0,"dStay": 0,"type": 0}
+    ]
+  },
+  "I2S": {
+    "enable": 1,
+    "list": [
+      {
+        "GPIO": {"sck": 15, "ws": 17, "sd": 16},
+        "config": {"mode": "tx", "bits": 16, "format": "stereo", "rate": 44100, "ibuf": 40000}
+      }
+    ]
+  },
+  "PCM5102": {
+    "enable": 1,
+    "list": [
+      {"GPIO": {"i2s": 0, "xsmt": 18}}
+    ]
+  },
+  "Audio": {
+    "mode": "block"
+  },
+  "SDcard": {
+    "enable": 1,
+    "phat": "/sd",
+    "config": {"slot": 0,"width": 4,"freq": 40000000},
+    "GPIO": {
+      "_comment": "sck=CLK/SCK, cmd=CMD/MOSI, [D0/MISO, D1/IRQ, D2/NC, D3/CS]",
+      "sck": 43,"cmd": 44,"data": [39, 40, 41, 42]
+    }
+  },
+  "PIN": {
+    "enable": 0,
+    "list": [
+      {"GPIO": 11, "label": "tft_cs", "mode": "OUT", "initial": 1 },
+      {"GPIO": 12, "label": "tft_dc", "mode": "OUT", "initial": 0 },
+      {"GPIO": 13, "label": "tft_rst","mode": "OUT", "initial": 1 },
+      {"GPIO": 10, "label": "tft_bl", "mode": "OUT", "initial": 0 },
+      {"GPIO": 17, "label": "encC",   "mode": "IN",  "initial": 0, "pull": "UP" },
+      {"GPIO": 42, "label": "btn",    "mode": "IN",  "initial": 0, "pull": "UP" }
+    ]
+  },
+  "ENC": {
+    "enable": 0,
+    "list": [
+      {"id": 0, "GPIO": { "a": 18, "b": 8 }}
+    ]
+  },
+  "TFT": {
+    "enable": 0,
+    "driver": "ST7789",
+    "width": 240,
+    "height": 320,
+    "rotation": 0,
+    "color_order": "RGB",
+    "invert": 0,
+    "spi_id": 1,
+    "pixel_format": "RGB565_BE",
+    "variant": 0,
+    "pins": { "dc": "tft_dc", "cs": "tft_cs", "rst": "tft_rst", "bl": "tft_bl"}
+  },
+  "HUSB238": {
+    "enable": 0,
+    "addr": "0x08",
+    "default_voltage": null,
+    "GPIO": {
+      "i2c": 0
+    }
+  },
+  "WS2812": {
+    "enable": 0,
+    "list": [
+      {"GPIO": 15, "Q": 310, "order": "GRB"},
+      {"GPIO": 16, "Q": 10,  "order": "GRB"},
+      {"GPIO": 17, "Q": 50,  "order": "GRB"}
+    ]
+  },
+  "APA102": {
+    "enable": 0,
+    "list": [
+      {"GPIO": {"spi": 0},"Q": 290,"order": "RGBW"}
+    ]
+  },
+  "PCA9685": {
+    "enable": 0,
+    "list": [
+      {
+        "GPIO": {"i2c": 0,"type": 0},"address": ["0xFF"],"dStay": 0
+      }
+    ]
+  },
+  "uartMotor": {
+    "enable": 0,
+    "list": [
+      {"GPIO": {"uart": 0},"address": ["51"],"version": 1},
+      {"GPIO": {"uart": 0},"address": ["66"],"version": 1}
+      
+    ]
+  }
+}

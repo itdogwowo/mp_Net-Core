@@ -1,0 +1,11 @@
+{
+  "repeat": 0,
+  "schedule": [
+    {
+      "addr": "0xFFFF",
+      "ms": 1000,
+      "bus": "vBus",
+      "cmds": {"cmd": "0x3105", "payload": "00 03 00 00 FF"}
+    }
+  ]
+}

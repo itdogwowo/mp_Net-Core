@@ -64,6 +64,7 @@ class GlobalMode:
                 "name": d.get("name", ""),
                 "index": d.get("index", mid),
                 "audio": d.get("audio"),
+                "delay_ms": max(0, int(d.get("delay_ms", 0) or 0)),   # 模式內建延遲(ms)
                 "entries": [],          # 純音效：無燈效 entries
                 "source": "audio",
             }
@@ -111,7 +112,10 @@ class GlobalMode:
             return False
         self._cur_id = int(mode_id)
         self._started_at = time.ticks_ms()
-        delay = max(0, int(start_delay_ms or 0))
+        # 延遲 = 模式內建 delay_ms + 命令 start_delay_ms（可疊加；皆為 ms）
+        mode_delay = max(0, int(m.get("delay_ms") or 0))
+        cmd_delay = max(0, int(start_delay_ms or 0))
+        delay = mode_delay + cmd_delay
         self._seq += 1
         bus.shared["mode_id"] = int(mode_id)
         bus.shared["mode_seq"] = self._seq

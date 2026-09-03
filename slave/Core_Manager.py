@@ -99,13 +99,15 @@ def launcher():
     tm.register_task("render", RenderTask, default_affinity=(0, 1), layer=1)
 
     # ── 音訊子系統（兩任務：合成端 dj + 播放端 audio_player，對稱 pixel）──
-    #   dj（主線程 core0）= 合成端：playlist + 讀檔 + 混音 → audio_stream hub
-    #   audio_player（_thread core1）= 播放端：hub → audio_dac.write（I2S DMA 節拍）
+    #   dj（_thread core1）= 合成端：playlist + 讀檔 + 混音 → audio_stream hub
+    #   audio_player（主線程 core0）= 播放端：hub → audio_dac.write（I2S DMA 節拍）
+    #   ⚠️ I2S write 必須在 core0（主線程）：放 core1 會 DMA 餵資料失步 → 播放
+    #      超快/拆聲（與 LCD/SPI 同為 core0-only 週邊）。實測交換核心後修復。
     #   無 audio_dac（I2S/PCM5102 未啟用）時兩者 on_start 自行停用（disabled）。
     from tasks.dj_task import DjTask
     from tasks.audio_player_task import AudioPlayerTask
-    tm.register_task("dj", DjTask, default_affinity=(1, 0), layer=1)
-    tm.register_task("audio_player", AudioPlayerTask, default_affinity=(0, 1), layer=1)
+    tm.register_task("dj", DjTask, default_affinity=(0, 1), layer=1)
+    tm.register_task("audio_player", AudioPlayerTask, default_affinity=(1, 0), layer=1)
 
     # ── Layer 1: LVGL UI（依賴 TFT/LCD，沒 LCD 整段跳過）──
     # affinity=(1,0)=CPU0: LVGL 完整 UI 不能在 _thread(CPU1)裡跑
