@@ -21,10 +21,12 @@ import { WebLinksAddon } from '@xterm/addon-web-links'
 import { FitAddon } from '@xterm/addon-fit'
 
 import { isStandalonePWA } from 'is-standalone-pwa';
+import { hexLineParts } from './ui/hexfmt.js'
 import { addUpdateHandler, createNewEditor, getEditorFromElement } from './editor.js'
 import { displayOpenFile, createTab, getTabFileName, getTabEditorElement } from './editor_tabs.js'
 import { serial as webSerialPolyfill } from 'web-serial-polyfill'
 import { WebSerial, WebBluetooth, WebSocketREPL, WebRTCTransport } from './transports/index.js'
+import { createSessionCore } from './device/session.js'
 import { MpRawMode, getActivePrompt } from './rawmode.js'
 import { ReplMonitor } from './repl_monitor.js'
 import { getPkgIndexes, rawInstallPkg, fetchPkgReadme } from './package_mgr.js'
@@ -121,6 +123,13 @@ const isBusyState = () => deviceState === 'busy-initial' || deviceState === 'bus
 const portReady = () => !!port && deviceState === 'ready'
 
 /*
+ * B2b (session extraction): the session core is now the single authority for
+ * device state and run mode; setDeviceState()/setRunMode() keep the module
+ * variables below in sync as a mirror while readers migrate batch by batch.
+ */
+const session = createSessionCore()
+
+/*
  * The only place that turns device state into UI: connection buttons, panel
  * availability, the Run/Stop button and the resets.
  *
@@ -159,7 +168,8 @@ function updateDeviceUI() {
 
 function setDeviceState(newState) {
     const prev = deviceState
-    deviceState = newState
+    session.setState(newState)
+    deviceState = session.state   // mirror for not-yet-migrated readers
     updateDeviceUI()
 
     if (newState === 'busy-initial' && prev !== 'busy-initial') {
@@ -174,7 +184,8 @@ function setDeviceState(newState) {
 }
 
 function setRunMode(on) {
-    isInRunMode = on
+    session.setRunMode(on)
+    isInRunMode = session.runMode   // mirror for not-yet-migrated readers
     updateDeviceUI()
 }
 
@@ -2073,47 +2084,25 @@ function hexViewer(arrayBuffer, targetElement) {
     const containerDiv = document.createElement('div')
     containerDiv.className = 'hexed-viewer monospace'
 
-    const dataView = new DataView(arrayBuffer)
-    const numBytes = dataView.byteLength
+    const bytes = new Uint8Array(arrayBuffer)
 
-    function toHex(n) {
-        return ('00' + n.toString(16)).slice(-2)
-    }
+    for (let offset = 0; offset < bytes.length; offset += 16) {
+        const parts = hexLineParts(bytes, offset)
 
-    function toPrintableAscii(n) {
-        return (n >= 32 && n <= 126) ? String.fromCharCode(n) : '.'
-    }
-
-    for (let offset = 0; offset < numBytes; offset += 16) {
         const hexLine = document.createElement('div')
         hexLine.className = 'hexed-line'
 
         const addressSpan = document.createElement('span')
         addressSpan.className = 'hexed-address'
-        addressSpan.textContent = offset.toString(16).padStart(8, '0')
+        addressSpan.textContent = parts.address
 
         const hexPartSpan = document.createElement('span')
         hexPartSpan.className = 'hexed-hex-part'
-        let hexPart = ''
-        let asciiPart = ''
-
-        for (let i = 0; i < 16; i++) {
-            if (offset + i < numBytes) {
-                const byte = dataView.getUint8(offset + i)
-                hexPart += toHex(byte) + ' '
-                asciiPart += toPrintableAscii(byte)
-            } else {
-                hexPart += '   '
-                asciiPart += ' '
-            }
-            if (i === 7) hexPart += ' '
-        }
-
-        hexPartSpan.textContent = hexPart.slice(0, -1)
+        hexPartSpan.textContent = parts.hex
 
         const asciiPartSpan = document.createElement('span')
         asciiPartSpan.className = 'hexed-ascii-part'
-        asciiPartSpan.textContent = asciiPart
+        asciiPartSpan.textContent = parts.ascii
 
         hexLine.appendChild(addressSpan)
         hexLine.appendChild(hexPartSpan)

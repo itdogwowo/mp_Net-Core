@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>mp_web_ide — 韌體燒錄</title>
+</head>
+<body>
+  <main class="card">
+    <header>
+      <h1>韌體燒錄</h1>
+      <p class="sub">選檔 → 連線（自動偵測晶片）→ 開始燒錄</p>
+    </header>
+
+    <div id="envNotice" class="notice hidden"></div>
+
+    <!-- ① 選檔 -->
+    <section class="step" id="stepFile">
+      <div class="step-head"><span class="badge">1</span><h2>選擇韌體 (.bin)</h2></div>
+      <div id="dropZone" class="dropzone" tabindex="0">
+        <p>把 .bin 拖到這裡，或</p>
+        <button type="button" id="pickBtn" class="btn">選擇檔案…</button>
+        <input type="file" id="fileInput" accept=".bin,application/octet-stream" hidden />
+      </div>
+      <p id="fileInfo" class="file-info"></p>
+    </section>
+
+    <!-- ② 連線 -->
+    <section class="step" id="stepConnect">
+      <div class="step-head"><span class="badge">2</span><h2>連線到裝置</h2></div>
+      <div class="row">
+        <button type="button" id="connectBtn" class="btn primary">選擇裝置並連線</button>
+        <button type="button" id="releaseBtn" class="btn">釋放序列埠</button>
+      </div>
+      <dl id="deviceInfo" class="device-info hidden">
+        <div><dt>晶片</dt><dd id="devChip"></dd></div>
+        <div><dt>描述</dt><dd id="devDesc"></dd></div>
+        <div><dt>MAC</dt><dd id="devMac"></dd></div>
+        <div><dt>Flash</dt><dd id="devFlash"></dd></div>
+      </dl>
+      <p id="connectHint" class="hint"></p>
+    </section>
+
+    <!-- ③ 燒錄 -->
+    <section class="step" id="stepFlash">
+      <div class="step-head"><span class="badge">3</span><h2>開始燒錄</h2></div>
+
+      <div class="row">
+        <label for="addressKind">韌體類型</label>
+        <select id="addressKind">
+          <option value="app" selected>單一 app 映像（位址依晶片自動帶入）</option>
+          <option value="merged">整包 merged（含 bootloader，位址 0x0）</option>
+          <option value="custom">自訂位址</option>
+        </select>
+      </div>
+      <div class="row">
+        <label for="addressInput">燒錄位址</label>
+        <input id="addressInput" type="text" value="0x10000" spellcheck="false" />
+        <span id="addressNote" class="hint"></span>
+      </div>
+      <label class="check"><input type="checkbox" id="eraseAll" /> 燒錄前整片清除（較慢，較乾淨）</label>
+
+      <button type="button" id="flashBtn" class="btn danger" disabled>開始燒錄</button>
+
+      <div id="progressWrap" class="progress-wrap hidden">
+        <div class="progress"><div id="progressBar"></div></div>
+        <p id="progressText" class="progress-text"></p>
+      </div>
+      <p id="statusLine" class="status" role="status"></p>
+    </section>
+
+    <section id="logSection" class="hidden">
+      <h2>記錄</h2>
+      <pre id="logBox" class="log" tabindex="0"></pre>
+    </section>
+  </main>
+
+  <script type="module" src="/src/main.ts"></script>
+</body>
+</html>

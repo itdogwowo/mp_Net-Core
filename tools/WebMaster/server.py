@@ -59,6 +59,20 @@ else:
     log.warning("ViperIDE 未建置（缺 %s）— /viper/ 不掛載", VIPER_INDEX)
 
 
+# ═══════════════════════ mp_web_ide 燒錄頁（/flash/）═══════════════
+# source: mp_web_ide/（白室重建第一步：esptool-js 燒錄 .bin UI）；
+# build: cd mp_web_ide && npm run build → dist/（vite base='./'，可掛子路徑）
+MP_IDE_DIR = os.path.join(os.path.dirname(__file__), "mp_web_ide")
+MP_DIST_DIR = os.path.join(MP_IDE_DIR, "dist")
+MP_INDEX = os.path.join(MP_DIST_DIR, "index.html")
+
+if os.path.isfile(MP_INDEX):
+    app.mount("/flash", StaticFiles(directory=MP_DIST_DIR, html=True), name="mp-flash")
+    log.info("mp_web_ide 就緒 → /flash/（同源 → WebSerial 可用）")
+else:
+    log.warning("mp_web_ide 未建置（缺 %s）— /flash/ 不掛載", MP_INDEX)
+
+
 # ═══════════════════════ 靜態 / 頁面 ═══════════════════════
 @app.get("/", response_class=HTMLResponse)
 async def index():

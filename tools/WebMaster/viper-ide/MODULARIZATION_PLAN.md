@@ -142,6 +142,78 @@ src/
 
 ---
 
+## 10. B2b 設計：`device/session.js`（2026-09-03 盤點定稿）
+
+### 10.1 從 app.js 移入 session 的狀態（單一來源）
+
+| 變數 | 初始 | 意義 |
+|---|---|---|
+| `port` | null | 目前 Transport |
+| `deviceState` | 'disconnected' | disconnected / busy-initial / busy-running / ready / reconnecting |
+| `connType` | null | 目前連線種類（ws/ble/usb/…） |
+| `devInfo` | null | 板子 getDeviceInfo 結果 |
+| `sessionInitialized` | false | 是否完成過首次初始化（跨瞬斷存活） |
+| `probeInFlight` | false | REPL probe 進行中 |
+| `reconnectToken` | number | 重連迴圈世代（stop＝++） |
+| `intentionalDisconnect` | false | 使用者主動斷線中（防誤判瞬斷） |
+| `defaultWsURL` / `defaultWsPass` | 'ws://192.168.1.123:8266' / '' | WebREPL 預設值 |
+| `isInRunMode` | false | 由 Run 流程控制（與 session 狀態正交） |
+| `draftsRestored` | false | 草稿復原旗標 |
+
+### 10.2 移入的函數（依賴群）
+
+狀態機與連線：`setDeviceState`、`teardownSession`、`handleTransientDrop`、`handlePortDisconnect`、`disconnectDevice`、`startReconnectLoop`、`stopReconnectLoop`、`onSoftResetDetected`、`onPromptSettled`、`prepareNewPort`、`wirePort`、`connectDevice`、`initDeviceSession`、`completeDeviceInit`（連同對應的 `busy-initial` 歡迎流程）
+UI/附屬：`setRunMode`（由 Run 動作呼叫）、`updateDeviceUI` 改由 bus 事件驅動（`device:state`），toast 系列
+外部依賴注入：`replMonitor`（ReplMonitor）、`fsCache`、`MpRawMode`、term（僅 focus/寫入）、toastr/i18n T、`analytics`、`getSetting('force-serial-poly')`、`webSerialPolyfill`、`iOS`、prompt/confirm（保留在 UI 層）
+
+### 10.3 API 草案
+
+```js
+// device/session.js —— 由 app.js bootstrap 建立
+export function createSession({ bus, ui, fs, repl, term, log, analytics, t }) {
+    // ui: { setBusyInert(panels), toastInfo(), focusTerminal(), dispatchCustomEvent() }
+    // 內部狀態如上表；回傳：
+    return {
+        connect(type),          // 對外：connectDevice(type) 的替身（含 busy 詢問→disconnect）
+        disconnect(),           // 對外 disconnectDevice()
+        reconnectIfTransient(), // handleTransientDrop 的公開版
+        state,                  // getter deviceState
+        port, devInfo, connType, isInRunMode,
+        on(fn),                 // bus 封裝：device:state / device:connected / device:disconnected
+        runMode(on),
+    }
+}
+```
+
+### 10.4 切割順序（cut-over，全部在 app.js 內原地進行、每步綠燈）
+
+1. 新增 session.js（內容＝現函數 verbatim＋狀態收攏），**先不接線**，僅 lint/test
+2. app.js 把模組級變數改為指向 session 狀態（唯讀 proxy，行為不變）
+3. 逐函數替身化：connectDevice/disconnectDevice/teardown… 改為呼叫 session（保留同名 export 給 control_client 與 HTML）
+4. 事件化：updateDeviceUI 訂閱 `device:state`；toast/confirm/prompt 回調注入
+5. app.js 刪除已搬函數；檢查殘留引用（grep 驗證）；綠燈＋最後總驗收
+
+風險註記：本批涉及 ~500 行搬遷與全域狀態收攏，是全部批次中最需要「使用者實機冒煙」的一批；務必在 B2a 里程碑測試通過後才動工。
+
+### 10.5 已完成的小步拆解（低風險前導）
+
+- `src/ui/hexfmt.js`：hexViewer 純函數（toHex/toPrintableAscii/hexLineParts）自 app.js 抽出＋單元測試（2026-09-03）
+- `src/core/`（bus/registry/config/brand）與 `src/device/catalog.js`：見 §9
+
+### 10.6 執行進度（2026-09-03）
+
+- ✅ B2a 里程碑：使用者實測通過（連線成功、終端輸出正常、語系 3 項；判定基本可用）
+- ✅ B2b Chunk 1：`src/device/session.js` — session 核心狀態機（五態＋runMode＋reconnect token＋probe 互斥＋旗標），純模組＋9 單元測試；測試總數 248 通過
+- ✅ B2b Chunk 2-1：app.js 狀態收攏第一步 —— `session = createSessionCore()` 成為單一權威；`setDeviceState`/`setRunMode` 改寫 core 並鏡像回模組變數（讀者尚未遷移前的暫時鏡像）；lint 0／測試 248／build 全綠
+- ⏳ B2b Chunk 2-2+：讀者逐步遷移至 `session.state`/`session.runMode`；teardown/connect/disconnect/重連迴圈整簇搬入 session 模組；事件化 updateDeviceUI
+- 已補讀：connectDevice 全段（373–520）、initDeviceSession/completeDeviceInit（528–616）
+
+### 10.7 已知問題（使用者實測發現，早於本次拆解存在）
+
+- **連線後重整檔案樹偶發逾時**：`src/transports/base.js:202` `readUntil()` 預設 5 秒（每段資料重置）；使用者板子開機 log 長（FAT/SD manifest/自訂 boot），連線後首次 listing 若撞上板子自身 `soft reboot` 即逾時。候選解法：busy-initial 狀態下的首次 listing 放寬 readUntil 逾時（待與 B2b init 流程搬遷一併評估，勿單獨亂改）。
+
+---
+
 ## 9. 決議與修訂紀錄 v2.1（2026-09-03，由成員拍板）
 
 | 決議 | 內容 | 影響 |
