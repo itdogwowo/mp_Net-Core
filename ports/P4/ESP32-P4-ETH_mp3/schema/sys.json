@@ -1,0 +1,76 @@
+{
+  "group": "sys",
+  "cmds": [
+    {"cmd": "0x1001", "name": "DISCOVER", "payload": [{"name": "server_ip", "type": "str_u16len"}, {"name": "ws_url", "type": "str_u16len"}]},
+    {"cmd": "0x1002", "name": "SLAVE_ANNOUNCE", "payload": [{"name": "slave_id", "type": "str_u16len"}, {"name": "pixel_count", "type": "u16"}, {"name": "hw_version", "type": "str_u16len"}]},
+    {"cmd": "0x1004", "name": "SYS_CTRL", "payload": [
+      {"name": "wifi_enable", "type": "u8"},
+      {"name": "core_control", "type": "u8"}
+    ]},
+    {"cmd": "0x1008", "name": "WIFI_CTRL", "payload": [
+      {"name": "wifi_enable", "type": "u8"}
+    ]},
+    {"cmd": "0x1009", "name": "WEB_CTRL", "payload": [
+      {"name": "web_enable", "type": "u8"}
+    ]},
+    {"cmd": "0x1005", "name": "SYS_TASK_QUERY", "payload": []},
+    {"cmd": "0x1006", "name": "SYS_TASK_RSP", "payload": [
+      {"name": "tasks_json", "type": "str_u16len"}
+    ]},
+    {"cmd": "0x1007", "name": "SYS_TASK_SET", "payload": [
+      {"name": "task_name", "type": "str_u16len"},
+      {"name": "affinity_c0", "type": "u8"},
+      {"name": "affinity_c1", "type": "u8"}
+    ]},
+    {"cmd": "0x100A", "name": "TIME_SYNC", "payload": [
+      {"name": "master_time_ms", "type": "u32"}
+    ]},
+    {"cmd": "0x100B", "name": "TIME_SYNC_RSP", "payload": [
+      {"name": "received_at_ms", "type": "u32"}
+    ]},
+    {"cmd": "0x100C", "name": "TIME_OFFSET_APPLY", "payload": [
+      {"name": "offset_sign", "type": "u8"},
+      {"name": "offset_ms", "type": "u32"}
+    ]},
+    {"cmd": "0x100D", "name": "IDENTIFY_REQ", "payload": [
+      {"name": "reply_addr", "type": "u16"}
+    ]},
+    {"cmd": "0x100E", "name": "IDENTIFY_RSP", "payload": [
+      {"name": "cid", "type": "u16"},
+      {"name": "slave_id", "type": "str_u16len"},
+      {"name": "ip", "type": "str_u16len"}
+    ]},
+    {"cmd": "0x100F", "name": "REBOOT", "payload": [
+      {"name": "delay_ms", "type": "u32"}
+    ]},
+    {"cmd": "0x1010", "name": "WREPL_CTRL", "payload": [
+      {"name": "action", "type": "u8"}
+    ]},
+    {"cmd": "0x1011", "name": "WREPL_RSP", "payload": [
+      {"name": "enabled", "type": "u8"},
+      {"name": "info", "type": "str_u16len"}
+    ]},
+    {"cmd": "0x1012", "name": "NET_START", "payload": [
+      {"name": "iface_type", "type": "u8"}
+    ]},
+    {"cmd": "0x1013", "name": "NET_START_RSP", "payload": [
+      {"name": "ok", "type": "u8"},
+      {"name": "iface", "type": "str_u16len"},
+      {"name": "ip", "type": "str_u16len"}
+    ]},
+    {"cmd": "0x1014", "name": "GET_IP", "payload": []},
+    {"cmd": "0x1015", "name": "IP_RSP", "payload": [
+      {"name": "ip", "type": "str_u16len"}
+    ]},
+    {"cmd": "0x1016", "name": "SET_MASTER", "payload": [
+      {"name": "master_cid", "type": "u16"}
+    ]},
+    {"cmd": "0x1017", "name": "WEBUI_CTRL", "payload": [
+      {"name": "action", "type": "u8"}
+    ]},
+    {"cmd": "0x1018", "name": "WEBUI_RSP", "payload": [
+      {"name": "enabled", "type": "u8"},
+      {"name": "info", "type": "str_u16len"}
+    ]}
+  ]
+}

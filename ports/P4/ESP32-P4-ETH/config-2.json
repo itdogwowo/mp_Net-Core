@@ -15,7 +15,7 @@
     "discovery_port": 9000,
     "heartbeat_interval": 10000,
     "frame_interval_ms": 33,
-    "num_pixels": 1200,
+    "num_pixels": 1072,
     "buffer_frames": 1,
     "log_interval_ms": 1000,
     "watchdog": {
@@ -168,7 +168,7 @@
   "APA102": {
     "enable": 1,
     "list": [
-      {"GPIO": {"spi": 0},"Q": 1200,"order": "RGBW"}
+      {"GPIO": {"spi": 0},"Q": 1072,"order": "RGBW"}
     ]
   },
   "PCA9685": {

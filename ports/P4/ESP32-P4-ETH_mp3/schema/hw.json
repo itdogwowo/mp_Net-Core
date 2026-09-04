@@ -1,0 +1,80 @@
+{
+  "group": "hw",
+  "cmds": [
+    {
+      "cmd": "0x1401",
+      "name": "HW_CTL",
+      "payload": [
+        {"name": "type", "type": "u8"},
+        {"name": "id", "type": "u8"},
+        {"name": "label", "type": "str_u16len"},
+        {"name": "value", "type": "u16"}
+      ]
+    },
+    {
+      "cmd": "0x1402",
+      "name": "HW_QUERY",
+      "payload": [
+        {"name": "type", "type": "u8"},
+        {"name": "id", "type": "u8"}
+      ]
+    },
+    {
+      "cmd": "0x1403",
+      "name": "SPEED_SET",
+      "payload": [
+        {"name": "bus_type", "type": "u8"},
+        {"name": "bus_id", "type": "u8"},
+        {"name": "speed", "type": "u32"},
+        {"name": "timeout_ms", "type": "u32"}
+      ]
+    },
+    {
+      "cmd": "0x1404",
+      "name": "SPEED_ACK",
+      "payload": [
+        {"name": "ok", "type": "u8"},
+        {"name": "bus_type", "type": "u8"},
+        {"name": "bus_id", "type": "u8"},
+        {"name": "cur_speed", "type": "u32"},
+        {"name": "target_speed", "type": "u32"}
+      ]
+    },
+    {
+      "cmd": "0x1405",
+      "name": "SPEED_COMMIT",
+      "payload": [
+        {"name": "bus_type", "type": "u8"},
+        {"name": "bus_id", "type": "u8"}
+      ]
+    },
+    {
+      "cmd": "0x1406",
+      "name": "SPEED_REVERT",
+      "payload": [
+        {"name": "bus_type", "type": "u8"},
+        {"name": "bus_id", "type": "u8"}
+      ]
+    },
+    {
+      "cmd": "0x1407",
+      "name": "SPEED_QUERY",
+      "payload": [
+        {"name": "bus_type", "type": "u8"},
+        {"name": "bus_id", "type": "u8"}
+      ]
+    },
+    {
+      "cmd": "0x1408",
+      "name": "SPEED_STATUS",
+      "payload": [
+        {"name": "state", "type": "u8"},
+        {"name": "bus_type", "type": "u8"},
+        {"name": "bus_id", "type": "u8"},
+        {"name": "cur_speed", "type": "u32"},
+        {"name": "target_speed", "type": "u32"},
+        {"name": "remain_ms", "type": "u32"}
+      ]
+    }
+  ]
+}
