@@ -67,60 +67,97 @@ IS_MICROPYTHON = (_sys.implementation.name == "micropython")
 if IS_MICROPYTHON:
     import micropython
 
+    # P4 (RISC-V) 的 viper ptr16 讀取是「無號數」— 負樣本 (-1..-32768) 會被讀成
+    # 65536-x 的大正數，混音衰減後全變成大的正輸出 → 負半週被整流 → 拆聲爆音。
+    # 解法：ptr8 逐 byte 組回並還原 sign（實測修正正確、速度足夠 44.1k×2）。
     @micropython.viper
     def _mix1(out, a, ga: int, lim: int, n: int):
-        po = ptr16(out)
-        pa = ptr16(a)
+        po = ptr8(out)
+        pa = ptr8(a)
         for i in range(n):
-            s = int(pa[i]) * ga >> 15
+            v = int(pa[i * 2]) | (int(pa[i * 2 + 1]) << 8)
+            if v > 32767:
+                v -= 65536
+            s = v * ga >> 15
             if s > lim:
                 s = lim + ((s - lim) >> 2)
             elif s < -lim:
                 s = (-lim) + ((s + lim) >> 2)
-            po[i] = s
+            po[i * 2] = s & 0xFF
+            po[i * 2 + 1] = (s >> 8) & 0xFF
 
     @micropython.viper
     def _mix2(out, a, b, ga: int, gb: int, lim: int, n: int):
-        po = ptr16(out)
-        pa = ptr16(a)
-        pb = ptr16(b)
+        po = ptr8(out)
+        pa = ptr8(a)
+        pb = ptr8(b)
         for i in range(n):
-            s = (int(pa[i]) * ga >> 15) + (int(pb[i]) * gb >> 15)
+            va = int(pa[i * 2]) | (int(pa[i * 2 + 1]) << 8)
+            if va > 32767:
+                va -= 65536
+            vb = int(pb[i * 2]) | (int(pb[i * 2 + 1]) << 8)
+            if vb > 32767:
+                vb -= 65536
+            s = (va * ga >> 15) + (vb * gb >> 15)
             if s > lim:
                 s = lim + ((s - lim) >> 2)
             elif s < -lim:
                 s = (-lim) + ((s + lim) >> 2)
-            po[i] = s
+            po[i * 2] = s & 0xFF
+            po[i * 2 + 1] = (s >> 8) & 0xFF
 
     @micropython.viper
     def _mix3(out, a, b, c, ga: int, gb: int, gc: int, lim: int, n: int):
-        po = ptr16(out)
-        pa = ptr16(a)
-        pb = ptr16(b)
-        pc = ptr16(c)
+        po = ptr8(out)
+        pa = ptr8(a)
+        pb = ptr8(b)
+        pc = ptr8(c)
         for i in range(n):
-            s = (int(pa[i]) * ga >> 15) + (int(pb[i]) * gb >> 15) + (int(pc[i]) * gc >> 15)
+            va = int(pa[i * 2]) | (int(pa[i * 2 + 1]) << 8)
+            if va > 32767:
+                va -= 65536
+            vb = int(pb[i * 2]) | (int(pb[i * 2 + 1]) << 8)
+            if vb > 32767:
+                vb -= 65536
+            vc = int(pc[i * 2]) | (int(pc[i * 2 + 1]) << 8)
+            if vc > 32767:
+                vc -= 65536
+            s = (va * ga >> 15) + (vb * gb >> 15) + (vc * gc >> 15)
             if s > lim:
                 s = lim + ((s - lim) >> 2)
             elif s < -lim:
                 s = (-lim) + ((s + lim) >> 2)
-            po[i] = s
+            po[i * 2] = s & 0xFF
+            po[i * 2 + 1] = (s >> 8) & 0xFF
 
     @micropython.viper
     def _mix4(out, a, b, c, d, ga: int, gb: int, gc: int, gd: int, lim: int, n: int):
-        po = ptr16(out)
-        pa = ptr16(a)
-        pb = ptr16(b)
-        pc = ptr16(c)
-        pd = ptr16(d)
+        po = ptr8(out)
+        pa = ptr8(a)
+        pb = ptr8(b)
+        pc = ptr8(c)
+        pd = ptr8(d)
         for i in range(n):
-            s = (int(pa[i]) * ga >> 15) + (int(pb[i]) * gb >> 15) + \
-                (int(pc[i]) * gc >> 15) + (int(pd[i]) * gd >> 15)
+            va = int(pa[i * 2]) | (int(pa[i * 2 + 1]) << 8)
+            if va > 32767:
+                va -= 65536
+            vb = int(pb[i * 2]) | (int(pb[i * 2 + 1]) << 8)
+            if vb > 32767:
+                vb -= 65536
+            vc = int(pc[i * 2]) | (int(pc[i * 2 + 1]) << 8)
+            if vc > 32767:
+                vc -= 65536
+            vd = int(pd[i * 2]) | (int(pd[i * 2 + 1]) << 8)
+            if vd > 32767:
+                vd -= 65536
+            s = (va * ga >> 15) + (vb * gb >> 15) + \
+                (vc * gc >> 15) + (vd * gd >> 15)
             if s > lim:
                 s = lim + ((s - lim) >> 2)
             elif s < -lim:
                 s = (-lim) + ((s + lim) >> 2)
-            po[i] = s
+            po[i * 2] = s & 0xFF
+            po[i * 2 + 1] = (s >> 8) & 0xFF
 
 else:
     # CPython（PC 單元測試）：同語意純 Python 版

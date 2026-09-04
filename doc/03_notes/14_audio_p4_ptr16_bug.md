@@ -104,7 +104,7 @@ def _mix1(out, a, ga: int, lim: int, n: int):
 |---|---|---|
 | `lib/sw/effect_core.py` | 燈效波表 `array('H')` 0..4095 | ✅ 無號值，正確 |
 | `lib/sw/pixel_layout.py` | pixel 索引/亮度 | ✅ 無號值，正確 |
-| `slave/tasks/dj_task.py` | 同款混音器 | ⚠️ 同一個雷；若該板是 P4/RISC-V 需套同樣修正（S3/Xtensa 可留 `ptr16`） |
+| `slave/tasks/dj_task.py` | 同款混音器 | ✅ 已套同樣修正（`ptr8` 重建帶號 s16）；S3/Xtensa 原 `ptr16` 若在非 P4 板亦可留，此處採與 P4 port 一致版本 |
 
 ---
 
