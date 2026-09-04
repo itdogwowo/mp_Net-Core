@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "id": 1,
+  "name": "demo_eyes",
+  "index": 1,
+  "play_loop": -1,
+  "play_count": 1,
+  "play_interval": 0,
+  "maxF": 500,
+  "mapping": "matrix",
+  "map": [
+    { "group": "matrix.full", "effect": "eyes", "write": "rgb", "range": "0:16" },
+    { "group": "matrix.full", "effect": "wave", "write": "g",   "range": "16:32" }
+  ]
+}

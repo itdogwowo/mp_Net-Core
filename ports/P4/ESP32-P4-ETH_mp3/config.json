@@ -1,0 +1,270 @@
+{
+  "PCA9685": {
+    "enable": 0,
+    "list": [
+      {
+        "GPIO": {
+          "type": 0,
+          "i2c": 0
+        },
+        "dStay": 0,
+        "address": [
+          "0xFF"
+        ]
+      }
+    ]
+  },
+  "SDcard": {
+    "enable": 1,
+    "phat": "/sd",
+    "GPIO": {
+      "data": [
+        39,
+        40,
+        41,
+        42
+      ],
+      "_comment": "sck=CLK/SCK, cmd=CMD/MOSI, [D0/MISO, D1/IRQ, D2/NC, D3/CS]",
+      "sck": 43,
+      "cmd": 44
+    },
+    "config": {
+      "slot": 0,
+      "freq": 40000000,
+      "width": 4
+    }
+  },
+  "UART": {
+    "enable": 1,
+    "list": [
+      {
+        "id": 1,
+        "baudrate": 115200,
+        "GPIO": {
+          "rx": 4,
+          "tx": 5,
+          "en": 49
+        }
+        },
+        {
+        "id": 2,
+        "baudrate": 115200,
+        "GPIO": {
+          "rx": 2,
+          "tx": 3
+        }
+      }
+    ]
+  },
+  "CircuitDecode": {
+    "enable": 1,
+    "list": [
+      {
+        "GPIO": {
+          "uart": 0
+        }
+      }
+    ]
+  },
+  "PCM5102": {
+    "enable": 1,
+    "list": [
+      {
+        "GPIO": {
+          "xsmt": 52,
+          "i2s": 0
+        }
+      }
+    ]
+  },
+  "Audio": {
+    "mode": "block"
+  },
+  
+  "Network": {
+    "wifi": {
+      "ssid_pw": "",
+      "mdns_name": "esp32-led-",
+      "timeout": 300,
+      "active_mode": 2,
+      "enable": 0,
+      "ssid": "Home_WiFi"
+    },
+    "ESP_now": {
+      "enable": 1,
+      "channel": 11
+    },
+    "lan": {
+      "phy_addr": 0,
+      "phy_type": "IP101",
+      "GPIO": {
+        "rst": -1,
+        "mdc": 31,
+        "mdio": 52,
+        "ref_clk": 50,
+        "cs": -1,
+        "int": -1,
+        "spi": -1
+      },
+      "active_mode": 1,
+      "enable": 0,
+      "driver": "RMII"
+    },
+    "priority": [
+      "lan",
+      "wifi"
+    ]
+  },
+  "I2S": {
+    "enable": 1,
+    "list": [
+      {
+        "GPIO": {
+          "ws": 51,
+          "sck": 30,
+          "sd": 31
+        },
+        "config": {
+          "rate": 44100,
+          "mode": "tx",
+          "bits": 16,
+          "format": "stereo",
+          "ibuf": 40000
+        }
+      }
+    ]
+  },
+  "TFT": {
+    "rotation": 0,
+    "color_order": "RGB",
+    "height": 320,
+    "invert": 0,
+    "driver": "ST7789",
+    "enable": 0,
+    "spi_id": 1,
+    "pins": {
+      "rst": "tft_rst",
+      "cs": "tft_cs",
+      "dc": "tft_dc",
+      "bl": "tft_bl"
+    },
+    "pixel_format": "RGB565_BE",
+    "variant": 0,
+    "width": 240
+  },
+  "SPI": {
+    "enable": 0,
+    "force_machine": 0,
+    "list": [
+      {
+        "phase": 1,
+        "polarity": 1,
+        "GPIO": {
+          "mosi": 7,
+          "sck": 8,
+          "miso": null
+        },
+        "data_pins": [],
+        "id": 1,
+        "baudrate": 8000000
+      }
+    ]
+  },
+  "System": {
+    "heartbeat_interval": 10000,
+    "cID": "CC73",
+    "boot_strict": 0,
+    "hostname": "",
+    "master_port": 0,
+    "debug_level": 1,
+    "frame_interval_ms": 33,
+    "discovery_port": 9000,
+    "master_IP": "",
+    "refresh_rate_ms": 1,
+    "dual_core_mode": "0",
+    "num_pixels": 676,
+    "buffer_frames": 1,
+    "log_interval_ms": 1000,
+    "watchdog": {
+      "enable": 1,
+      "auto_rearm_ms": 60000,
+      "btn_bypass_gpio": null,
+      "timeout_ms": 8000
+    },
+    "c_lum": 1.0
+  },
+  "ENC": {
+    "enable": 0,
+    "list": [
+      {
+        "id": 0,
+        "GPIO": {
+          "a": 18,
+          "b": 8
+        }
+      }
+    ]
+  },
+  "Buffer": {
+    "drain_reads": 1,
+    "drop_on_full": 0,
+    "rx_hub_buffers": 16,
+    "u8_rx_slots": 8,
+    "now_rx_slots": 4,
+    "fb_mode": "auto"
+  },
+  "HUSB238": {
+    "enable": 0,
+    "GPIO": {
+      "i2c": 0
+    },
+    "addr": "0x08",
+    "default_voltage": null
+  },
+  "PIN": {
+    "enable": 0,
+    "list": [
+      {
+        "GPIO": 11,
+        "initial": 1,
+        "mode": "OUT",
+        "label": "tft_cs"
+      },
+      {
+        "GPIO": 12,
+        "initial": 0,
+        "mode": "OUT",
+        "label": "tft_dc"
+      },
+      {
+        "GPIO": 13,
+        "initial": 1,
+        "mode": "OUT",
+        "label": "tft_rst"
+      },
+      {
+        "GPIO": 10,
+        "initial": 0,
+        "mode": "OUT",
+        "label": "tft_bl"
+      },
+      {
+        "pull": "UP",
+        "label": "encC",
+        "mode": "IN",
+        "GPIO": 17,
+        "initial": 0
+      },
+      {
+        "pull": "UP",
+        "label": "btn",
+        "mode": "IN",
+        "GPIO": 42,
+        "initial": 0
+      }
+    ]
+  },
+  "scan_ignore": [
+    "/sd"
+  ]
+}

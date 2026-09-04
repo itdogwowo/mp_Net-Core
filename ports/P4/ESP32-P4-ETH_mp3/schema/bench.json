@@ -1,0 +1,29 @@
+{
+  "group": "bench",
+  "cmds": [
+    {
+      "cmd": "0x1811",
+      "name": "BENCH_READY",
+      "payload": []
+    },
+    {
+      "cmd": "0x1812",
+      "name": "BENCH_DATA",
+      "payload": [
+        {"name": "data", "type": "bytes_rest"}
+      ]
+    },
+    {
+      "cmd": "0x1813",
+      "name": "BENCH_RESULT",
+      "payload": []
+    },
+    {
+      "cmd": "0x1814",
+      "name": "BENCH_REPORT",
+      "payload": [
+        {"name": "ok", "type": "u32"}
+      ]
+    }
+  ]
+}

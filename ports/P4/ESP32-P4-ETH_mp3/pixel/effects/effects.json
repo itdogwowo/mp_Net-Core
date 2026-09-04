@@ -1,0 +1,115 @@
+{
+  "version": 1,
+  "effects": [
+    {
+      "id": 1,
+      "name": "breathing",
+      "pixel_n": 64,
+      "program": [
+        {"type": "math_now", "F": 2, "l_max": 4095, "l_lim": 100, "phi": 0, "end_Time": 200},
+        {"type": "square_wave_now", "F": 1, "l_max": 3000, "l_lim": 0, "phi": 1024, "end_Time": 300}
+      ],
+      "step": 1,
+      "spacing": 0,
+      "offset": 0,
+      "speed": 3,
+      "reverse": false
+    },
+    {
+      "id": 2,
+      "name": "eyes",
+      "pixel_n": 64,
+      "program": [
+        {"type": "keep", "F": 1, "l_max": 0, "l_lim": 0, "phi": 0, "end_Time": 60},
+        {"type": "math_now", "F": 5, "l_max": 100, "l_lim": 20, "phi": 3071, "end_Time": 100},
+        {"type": "math_now", "F": 5, "l_max": 1023, "l_lim": 100, "phi": 3071, "end_Time": 200},
+        {"type": "math_now", "F": 5, "l_max": 1023, "l_lim": 200, "phi": 1023, "end_Time": 320}
+      ],
+      "step": 1,
+      "spacing": 10,
+      "offset": 0,
+      "speed": 1,
+      "reverse": false
+    },
+    {
+      "id": 3,
+      "name": "wave",
+      "pixel_n": 64,
+      "program": [
+        {"type": "math_now", "F": 10, "l_max": 4095, "l_lim": 0, "phi": 3071, "end_Time": 100}
+      ],
+      "step": 1,
+      "spacing": 4,
+      "offset": 0,
+      "speed": 1,
+      "reverse": false
+    },
+    {
+      "id": 4,
+      "name": "example_eyes",
+      "pixel_n": 64,
+      "program": [
+        {"type": "keep", "F": 1, "l_max": 0, "l_lim": 0, "phi": 0, "end_Time": 60},
+        {"type": "math_now", "F": 5, "l_max": 100, "l_lim": 20, "phi": 3071, "end_Time": 100},
+        {"type": "math_now", "F": 5, "l_max": 1023, "l_lim": 100, "phi": 3071, "end_Time": 200},
+        {"type": "math_now", "F": 5, "l_max": 1023, "l_lim": 200, "phi": 1023, "end_Time": 320}
+      ],
+      "step": 1,
+      "spacing": 10,
+      "offset": 0,
+      "speed": 1,
+      "reverse": false
+    },
+    {
+      "id": 5,
+      "name": "rise_fall",
+      "pixel_n": 64,
+      "program": [
+        {"type": "math_now", "F": 5, "l_max": 4095, "l_lim": 0, "phi": 3071, "end_Time": 40},
+        {"type": "keep", "F": 1, "l_max": 4095, "l_lim": 0, "phi": 0, "end_Time": 70},
+        {"type": "math_now", "F": 5, "l_max": 4095, "l_lim": 0, "phi": 1023, "end_Time": 110}
+      ],
+      "step": 1,
+      "spacing": 10,
+      "offset": 0,
+      "speed": 1,
+      "reverse": false
+    },
+    {
+      "id": 6,
+      "name": "pearl_chain",
+      "pixel_n": 64,
+      "program": [
+        {"type": "math_now", "F": 5, "l_max": 4095, "l_lim": 0, "phi": 3071, "end_Time": 8},
+        {"type": "keep", "F": 1, "l_max": 4095, "l_lim": 0, "phi": 0, "end_Time": 16},
+        {"type": "math_now", "F": 5, "l_max": 4095, "l_lim": 0, "phi": 1023, "end_Time": 24}
+      ],
+      "step": 1,
+      "spacing": 0,
+      "offset": 0,
+      "speed": 1,
+      "reverse": false,
+      "pearl_n": 4,
+      "pearl_gap": 12
+    },
+    {
+      "id": 7,
+      "name": "uart_motor_sine",
+      "pixel_n": 1,
+      "program": [
+        {"type": "uart_motor_sine", "direction": "B", "speed_percent": 100, "speed_curve": "Sine", "end_Time": 250},
+        {"type": "uart_motor_stop", "end_Time": 300},
+        {"type": "uart_motor_sine", "direction": "A", "speed_percent": 100, "speed_curve": "Sine", "end_Time": 550},
+        {"type": "uart_motor_stop", "end_Time": 600}
+      ],
+      "step": 1,
+      "spacing": 0,
+      "offset": 0,
+      "speed": 1,
+      "reverse": false,
+      "cycles": -1,
+      "hold_raw": 128,
+      "_comment": "馬達正弦波(設定方法)：B伸5s(250幀@50fps) → 停1s → A縮5s → 停1s，cycles=-1無限。輸出走 write:\"w\"，raw<<4 全像素同值；raw 0x00=全速收由 render 原樣接受。"
+    }
+  ]
+}

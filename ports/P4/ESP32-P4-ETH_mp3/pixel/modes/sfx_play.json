@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "id": 3,
+  "name": "sfx_play",
+  "index": 3,
+  "map": [],
+  "audio": {
+    "tracks": [
+      {"file": "ME_44100_16_2.wav", "loop": false, "volume": 80, "start_ms": 0}
+    ],
+    "limit": 80
+  },
+  "delay_ms": 0,
+  "play_loop": 1,
+  "play_count": 1,
+  "play_interval": 0
+}

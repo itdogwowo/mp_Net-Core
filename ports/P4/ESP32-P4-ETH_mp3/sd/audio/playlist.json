@@ -1,0 +1,46 @@
+{
+ "version": 1,
+ "scanned_at": 551658,
+ "files": [
+  {
+   "path": "/sd/audio/E_44100_16_2.wav",
+   "size": 17076612,
+   "name": "E_44100_16_2.wav",
+   "duration_ms": 96806,
+   "bits": 16,
+   "channels": 2,
+   "compat": 1,
+   "rate": 44100
+  },
+  {
+   "name": "E_ff_44100_16_2.wav",
+   "path": "/sd/audio/E_ff_44100_16_2.wav",
+   "size": 17086812,
+   "duration_ms": 96864,
+   "bits": 16,
+   "channels": 2,
+   "compat": 1,
+   "rate": 44100
+  },
+  {
+   "path": "/sd/audio/ME_44100_16_2.wav",
+   "size": 20491904,
+   "name": "ME_44100_16_2.wav",
+   "duration_ms": 116167,
+   "bits": 16,
+   "channels": 2,
+   "compat": 1,
+   "rate": 44100
+  },
+  {
+   "name": "ME_ff_44100_16_2.wav",
+   "path": "/sd/audio/ME_ff_44100_16_2.wav",
+   "size": 20503328,
+   "duration_ms": 116232,
+   "bits": 16,
+   "channels": 2,
+   "compat": 1,
+   "rate": 44100
+  }
+ ]
+}

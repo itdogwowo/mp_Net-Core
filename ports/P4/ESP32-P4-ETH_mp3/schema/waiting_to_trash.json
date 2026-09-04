@@ -1,0 +1,22 @@
+{
+  "group": "waiting_to_trash",
+  "cmds": [
+    {
+      "cmd": "0x1501",
+      "name": "WTT_CTL",
+      "payload": [
+        {"name": "mode", "type": "u8"},
+        {"name": "brightness", "type": "u8"}
+      ]
+    },
+    {
+      "cmd": "0x1502",
+      "name": "WTT_STATUS",
+      "payload": [
+        {"name": "mode", "type": "u8"},
+        {"name": "brightness", "type": "u8"},
+        {"name": "time", "type": "u8"}
+      ]
+    }
+  ]
+}

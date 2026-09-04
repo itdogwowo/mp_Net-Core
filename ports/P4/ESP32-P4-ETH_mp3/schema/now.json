@@ -1,0 +1,23 @@
+{
+  "group": "now",
+  "cmds": [
+    {
+      "cmd": "0x1301",
+      "name": "NOW_INIT",
+      "payload": []
+    },
+    {
+      "cmd": "0x1302",
+      "name": "NOW_SEND_HB",
+      "payload": [
+        {"name": "target_mac", "type": "str_u16len"},
+        {"name": "count", "type": "u8"}
+      ]
+    },
+    {
+      "cmd": "0x1303",
+      "name": "NOW_STATS",
+      "payload": []
+    }
+  ]
+}
