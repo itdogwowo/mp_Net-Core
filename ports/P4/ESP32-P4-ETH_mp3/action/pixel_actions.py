@@ -89,10 +89,9 @@ def on_mode_set(ctx, args):
     if gmode is not None:
         gmode.set_mode(_combine(mode_type, mode_id), start_delay_ms=start_delay_ms)
     else:
-        # 無 gmode（舊行為）：直接寫共用狀態 key（與 gmode 同一語義）
-        bus.shared["mode_id"] = _combine(mode_type, mode_id)
-        bus.shared["mode_seq"] = int(bus.shared.get("mode_seq", 0) or 0) + 1
-        bus.shared["mode_start_at"] = time.ticks_ms() + start_delay_ms
+        # gmode 由 app.py 建立(單一事實來源),理論上一定存在;缺失代表啟動異常。
+        # 不自行寫 bus.shared["mode_id"] —— 那會漏掉 audio 扇出(燈效動但音效不同步)。
+        print("[Pixel] gmode 缺失 — MODE_SET 未執行")
     print("[Pixel] MODE_SET type={} id={} bri={} delay={}ms".format(
         mode_type, mode_id, brightness, start_delay_ms))
 
@@ -110,9 +109,9 @@ def on_mode_stop(ctx, args):
     if gmode is not None:
         gmode.stop_mode(action)
     else:
-        bus.shared["mode_id"] = 0
-        bus.shared["mode_seq"] = int(bus.shared.get("mode_seq", 0) or 0) + 1
-        bus.shared["mode_start_at"] = 0
+        # gmode 一定存在(app.py 建立);缺失代表啟動異常,不自行寫 mode_id。
+        print("[Pixel] gmode 缺失 — MODE_STOP 未執行")
+    print("[Pixel] MODE_STOP action={}".format(action))
     print("[Pixel] MODE_STOP action={}".format(action))
 
 

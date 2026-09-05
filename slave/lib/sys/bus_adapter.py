@@ -82,7 +82,7 @@ class SpiBusAdapter(BusAdapter):
             if data:
                 self.write_data(data)
 
-    def write_data_async(self, data):
+    def write_data_async(self, data, chunk=32768):
         if self._qspi:
             self._cs.value(0)
             try:
@@ -92,23 +92,46 @@ class SpiBusAdapter(BusAdapter):
                 return None
         if self._dma:
             self._dc.value(1)
-            # 大 buffer（>32KB max_transfer_sz）→ C 層自動 async 分 chunk 直送
-            #（內部 RAM 或 PSRAM 皆異步；不再過 Python bounce 序列化 — bounce 只
-            #  在無 C 分 chunk 支援的舊 lcd_bus / 非 lcd_bus 才有意義）
-            # queue 滿（RuntimeError）→ wait_all 清空後重試一次
-            for attempt in range(2):
-                try:
-                    return self._spi.write(data)
-                except RuntimeError as e:
+            # 大 buffer（>32KB max_transfer_sz）→ Python 層分 chunk 直送。
+            # 對齊 I2C/I80/RGB adapter 的分 chunk 契約：整幀(如 240×320×2=153600B)
+            # 一次塞 4-deep DMA queue 會 queue failed(err=0x101)只送出第一段。
+            # 每 chunk 依序送出(用 memoryview 零拷貝切片),chunk ≤32KB 不爆 queue。
+            total = len(data)
+            if total <= chunk:
+                for attempt in range(2):
                     try:
-                        self._spi.wait_all()
-                    except Exception:
-                        pass
-                    if attempt == 0:
-                        continue
-                    self._log_err("write_data_async", e)
-                    return None
-            return None
+                        return self._spi.write(data)
+                    except RuntimeError as e:
+                        try:
+                            self._spi.wait_all()
+                        except Exception:
+                            pass
+                        if attempt == 0:
+                            continue
+                        self._log_err("write_data_async", e)
+                        return None
+                return None
+            mv = memoryview(data)
+            off = 0
+            last_tid = None
+            while off < total:
+                n = min(chunk, total - off)
+                for attempt in range(2):
+                    try:
+                        tid = self._spi.write(mv[off:off + n])
+                        last_tid = tid if tid is not None else last_tid
+                        break
+                    except RuntimeError as e:
+                        try:
+                            self._spi.wait_all()
+                        except Exception:
+                            pass
+                        if attempt == 0:
+                            continue
+                        self._log_err("write_data_async chunk", e)
+                        return None
+                off += n
+            return last_tid
         self._dc.value(1)
         self._cs.value(0)
         self._spi.write(data)

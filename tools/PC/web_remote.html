@@ -1,0 +1,329 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NetBus 網頁遙控</title>
+<style>
+  :root {
+    --bg: #0f1216; --panel: #171c22; --panel2: #1e252e;
+    --line: #2a333d; --text: #dbe2ea; --muted: #8b98a6;
+    --accent: #3da9fc; --ok: #2fbf71; --warn: #e6b23c; --err: #ef5b5b;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 14px/1.5 -apple-system, "Segoe UI", "PingFang TC", "Microsoft JhengHei", sans-serif;
+  }
+  header {
+    display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+    padding: 12px 18px; background: var(--panel); border-bottom: 1px solid var(--line);
+  }
+  header h1 { font-size: 16px; margin: 0; font-weight: 600; }
+  header .meta { color: var(--muted); font-size: 12px; }
+  .badge {
+    padding: 3px 10px; border-radius: 999px; font-size: 12px; font-weight: 600;
+    background: var(--panel2); border: 1px solid var(--line); color: var(--muted);
+  }
+  .badge.on { background: rgba(47,191,113,.15); border-color: var(--ok); color: var(--ok); }
+  .badge.pause { background: rgba(230,178,60,.15); border-color: var(--warn); color: var(--warn); }
+  .layout {
+    display: grid; grid-template-columns: 1.1fr 0.9fr; gap: 14px;
+    padding: 14px; max-width: 1500px; margin: 0 auto;
+  }
+  @media (max-width: 980px) { .layout { grid-template-columns: 1fr; } }
+  .card {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+    padding: 14px; margin-bottom: 14px;
+  }
+  .card h2 {
+    margin: 0 0 10px; font-size: 13px; color: var(--muted);
+    text-transform: uppercase; letter-spacing: .06em; font-weight: 600;
+  }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  button {
+    background: var(--panel2); color: var(--text); border: 1px solid var(--line);
+    padding: 7px 12px; border-radius: 7px; cursor: pointer; font-size: 13px;
+  }
+  button:hover { border-color: var(--accent); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #04121f; font-weight: 600; }
+  button.danger { background: var(--err); border-color: var(--err); color: #1c0505; font-weight: 600; }
+  button.warn { background: var(--warn); border-color: var(--warn); color: #241a02; font-weight: 600; }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  input, select {
+    background: #0c1014; color: var(--text); border: 1px solid var(--line);
+    border-radius: 7px; padding: 6px 9px; font-size: 13px;
+  }
+  input[type=number] { width: 90px; }
+  label { color: var(--muted); font-size: 12px; display: inline-flex; align-items: center; gap: 5px; }
+  table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); }
+  th { color: var(--muted); font-weight: 500; }
+  tr.offline td { opacity: .45; }
+  tr.selected td { background: rgba(61,169,252,.07); }
+  .mono { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
+  .progress { height: 6px; background: #0c1014; border-radius: 3px; overflow: hidden; min-width: 80px; }
+  .progress > span { display: block; height: 100%; background: var(--accent); }
+  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 5px; }
+  .dot.on { background: var(--ok); } .dot.off { background: var(--muted); }
+  #log {
+    background: #0a0d11; border: 1px solid var(--line); border-radius: 8px;
+    height: 420px; overflow-y: auto; padding: 10px; font-size: 12px;
+  }
+  #log .line { white-space: pre-wrap; word-break: break-all; padding: 1px 0; }
+  #log .ts { color: var(--muted); margin-right: 6px; }
+  #log .stderr { color: var(--err); }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .field { display: flex; flex-direction: column; gap: 4px; }
+  .field label { font-size: 11px; }
+  .hint { color: var(--muted); font-size: 11.5px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>🎬 NetBus 網頁遙控</h1>
+  <span class="meta mono" id="netinfo">載入中…</span>
+  <span class="badge" id="playbadge">待機</span>
+</header>
+
+<div class="layout">
+  <div>
+    <div class="card">
+      <h2>掃描設備</h2>
+      <div class="row">
+        <button class="primary" data-action="scan" data-mode="broadcast">廣播掃描</button>
+        <button data-action="scan" data-mode="knock">依紀錄敲門</button>
+        <input id="scan_ips" placeholder="定向 IP, 例 192.168.8.139" style="flex:1; min-width:200px">
+        <button data-action="scan" data-mode="direct" data-ips="#scan_ips">定向掃描</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>設備列表 <span class="hint" id="devcount"></span></h2>
+      <div style="overflow-x:auto">
+        <table id="devtable">
+          <thead>
+            <tr>
+              <th></th><th>設備</th><th>PlayID</th><th>狀態</th>
+              <th>幀</th><th>進度</th><th>FPS</th><th>Mem</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <div class="row" style="margin-top:10px">
+        <button data-action="select_all">全選</button>
+        <button data-action="select_clear">清空選擇</button>
+        <button data-action="clear" class="danger">清除設備列表</button>
+        <button data-action="query">查詢狀態</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>播放控制</h2>
+      <div class="grid2">
+        <div class="field">
+          <label>音檔</label>
+          <select id="mp3"><option value="">— 靜音 (僅燈效) —</option></select>
+        </div>
+        <div class="field">
+          <label>同步延遲 sync_delay_ms (負值=先燈後音)</label>
+          <input type="number" id="delay_ms" value="150" step="1">
+        </div>
+        <div class="field">
+          <label>主動同步 fps (0=關閉)</label>
+          <input type="number" id="active_sync_fps" value="0" step="1" min="0">
+        </div>
+        <div class="field">
+          <label>循環播放</label>
+          <label style="margin-top:4px"><input type="checkbox" id="loop_play"> loop_play</label>
+        </div>
+      </div>
+      <div class="row" style="margin-top:12px">
+        <button class="primary" id="playbtn" data-action="play">▶ 擊發播放</button>
+        <button id="pausebtn" data-action="pause" class="warn">⏸ 暫停/繼續</button>
+        <button id="stopbtn" data-action="stop" class="danger">■ 停止</button>
+      </div>
+    </div>
+  </div>
+
+  <div>
+    <div class="card">
+      <h2>參數 (改完按儲存)</h2>
+      <div class="grid2" id="configgrid"></div>
+      <div class="row" style="margin-top:10px">
+        <button class="primary" id="savecfg">儲存全部參數</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Log</h2>
+      <div class="row" style="margin-bottom:8px">
+        <button id="clearlog">清空畫面</button>
+        <span class="hint">自動捲到底部; 每 0.5s 更新</span>
+      </div>
+      <div id="log" class="mono"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+(function () {
+  var $ = function (s) { return document.querySelector(s); };
+  var $$ = function (s) { return Array.prototype.slice.call(document.querySelectorAll(s)); };
+  var logEl = $('#log');
+  var logSince = 0;
+  var logCleared = false;
+  var CONFIG_KEYS = [
+    ['sync_delay_ms', '同步延遲 ms'], ['loop_play', '循環播放 0/1'],
+    ['play_fps', '權威 fps (0=自動)'], ['active_sync_fps', '主動同步 fps'],
+    ['midjoin_lead_frames', '重連追幀提前量(幀)'],
+    ['active_sync_interval_s', '同步間隔 s'],
+    ['progress_poll_interval_s', '進度輪詢 s'], ['post_play_stop_delay_s', '播完熄燈延遲 s'],
+    ['ws_port', 'WS 埠'], ['upt_port', 'UDP 埠'],
+    ['upload_chunk_size', '上傳 chunk'], ['latency_samples', '延遲樣本數']
+  ];
+
+  function esc(s) {
+    return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
+      return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];
+    });
+  }
+
+  function post(action, extra) {
+    var body = Object.assign({ action: action }, extra || {});
+    fetch('/api/action', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    }).then(function (r) { return r.json(); }).then(function (j) {
+      if (j && j.msg) pushLine(j.msg, j.ok === false ? 'stderr' : 'stdout');
+    }).catch(function (e) { pushLine('請求失敗: ' + e, 'stderr'); });
+  }
+
+  function renderDevices(devs, selected) {
+    var tb = $('#devtable tbody');
+    tb.innerHTML = '';
+    var sel = {};
+    (selected || []).forEach(function (s) { sel[s] = true; });
+    devs.forEach(function (d) {
+      var tr = document.createElement('tr');
+      if (!d.online) tr.className = 'offline';
+      if (sel[d.id]) tr.className += ' selected';
+      var prog = d.total_frames > 0 ? Math.min(100, d.progress) : 0;
+      tr.innerHTML =
+        '<td><span class="dot ' + (d.online ? 'on' : 'off') + '"></span></td>' +
+        '<td class="mono">' + esc(d.id) + '</td>' +
+        '<td>' + esc(d.play_id == null ? '?' : d.play_id) + '</td>' +
+        '<td>' + esc(d.status) + '</td>' +
+        '<td class="mono">' + esc(d.current_frame) + '/' + esc(d.total_frames) + '</td>' +
+        '<td><div class="progress"><span style="width:' + prog.toFixed(1) + '%"></span></div></td>' +
+        '<td class="mono">' + esc(d.fps) + '</td>' +
+        '<td class="mono">' + (d.mem_free ? Math.round(d.mem_free / 1024) + 'K' : '-') + '</td>';
+      tb.appendChild(tr);
+    });
+    $('#devcount').textContent = '(' + devs.filter(function (d) { return d.online; }).length + ' 在線 / ' + devs.length + ' 已知)';
+  }
+
+  function renderConfig(cfg) {
+    var g = $('#configgrid');
+    if (!g.dataset.built) {
+      g.dataset.built = '1';
+      CONFIG_KEYS.forEach(function (k) {
+        var div = document.createElement('div');
+        div.className = 'field';
+        div.innerHTML = '<label>' + esc(k[1]) + ' (' + esc(k[0]) + ')</label>' +
+          '<input type="number" step="any" data-cfg="' + esc(k[0]) + '">';
+        g.appendChild(div);
+      });
+    }
+    $$('#configgrid input[data-cfg]').forEach(function (inp) {
+      var k = inp.getAttribute('data-cfg');
+      if (cfg && cfg[k] != null && inp !== document.activeElement) inp.value = cfg[k];
+    });
+  }
+
+  function renderMp3s(mp3s) {
+    var sel = $('#mp3');
+    var cur = sel.value;
+    var opts = '<option value="">— 靜音 (僅燈效) —</option>';
+    mp3s.forEach(function (m) {
+      opts += '<option value="' + esc(m) + '"' + (m === cur ? ' selected' : '') + '>' + esc(m) + '</option>';
+    });
+    sel.innerHTML = opts;
+  }
+
+  function renderState(s) {
+    $('#netinfo').textContent = '本機 ' + (s.local_ip || '?') + '  |  WS :' + (s.ws_port || 8000) + '  |  Web :' + (s.web_port || 8080);
+    var badge = $('#playbadge');
+    if (s.playing && s.paused) { badge.textContent = '已暫停'; badge.className = 'badge pause'; }
+    else if (s.playing) { badge.textContent = '播放中'; badge.className = 'badge on'; }
+    else { badge.textContent = '待機'; badge.className = 'badge'; }
+    renderDevices(s.devices, s.selected);
+    renderConfig(s.config);
+    renderMp3s(s.mp3s);
+    if (s.config && s.config.loop_play != null) $('#loop_play').checked = !!s.config.loop_play;
+    if (s.config && s.config.active_sync_fps != null) $('#active_sync_fps').value = s.config.active_sync_fps;
+  }
+
+  function pushLine(text, stream) {
+    var div = document.createElement('div');
+    div.className = 'line' + (stream === 'stderr' ? ' stderr' : '');
+    div.innerHTML = '<span class="ts">' + new Date().toTimeString().slice(0, 8) + '</span>' + esc(text);
+    logEl.appendChild(div);
+    while (logEl.children.length > 1500) logEl.removeChild(logEl.firstChild);
+    logEl.scrollTop = logEl.scrollHeight;
+  }
+
+  function pollState() {
+    fetch('/api/state').then(function (r) { return r.json(); }).then(renderState).catch(function () {});
+  }
+
+  function pollLogs() {
+    fetch('/api/logs?since=' + logSince).then(function (r) { return r.json(); }).then(function (j) {
+      if (j && j.logs) {
+        j.logs.forEach(function (l) { pushLine(l.text, l.stream); });
+        logSince = j.next;
+      }
+    }).catch(function () {});
+  }
+
+  // 按鈕綁定
+  $$('button[data-action]').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      var action = btn.getAttribute('data-action');
+      var extra = {};
+      if (action === 'scan') {
+        extra.mode = btn.getAttribute('data-mode') || 'broadcast';
+        var ipsSel = btn.getAttribute('data-ips');
+        if (ipsSel) extra.ips = $(ipsSel).value;
+      } else if (action === 'play') {
+        extra.mp3 = $('#mp3').value;
+        extra.delay_ms = parseInt($('#delay_ms').value, 10);
+        extra.loop = $('#loop_play').checked;
+        extra.active_sync_fps = parseInt($('#active_sync_fps').value, 10);
+        if (isNaN(extra.delay_ms)) extra.delay_ms = 150;
+        if (isNaN(extra.active_sync_fps)) extra.active_sync_fps = 0;
+      }
+      post(action, extra);
+    });
+  });
+
+  $('#savecfg').addEventListener('click', function () {
+    $$('#configgrid input[data-cfg]').forEach(function (inp) {
+      var k = inp.getAttribute('data-cfg');
+      var v = parseFloat(inp.value);
+      if (isNaN(v)) return;
+      post('config', { key: k, value: v });
+    });
+  });
+
+  $('#clearlog').addEventListener('click', function () { logEl.innerHTML = ''; });
+
+  pollState();
+  pollLogs();
+  setInterval(pollState, 1000);
+  setInterval(pollLogs, 500);
+})();
+</script>
+</body>
+</html>

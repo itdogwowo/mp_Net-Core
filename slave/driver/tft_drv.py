@@ -120,7 +120,8 @@ def init_tft(sysbus=None):
     sysbus.shared["tft_height"] = cfg["height"]
     sysbus.shared["tft_driver"] = cfg["driver"]
 
-    # 全黑畫面 (整幀, TFT.show 含 flush, DMA queue 確保送出)
+    # 全黑畫面 (整幀, TFT.show 含 flush; bus_adapter.write_data_async 已對大 buffer
+    # 分 chunk,兼容 SPI-DMA / 一般 SPI / I2C / I80 等所有 adapter)
     black = bytearray(cfg["width"] * cfg["height"] * bpp)
     lcd.show(black)
 
@@ -179,7 +180,7 @@ def init_tft_i80(sysbus=None):
     sysbus.shared["tft_height"] = cfg["height"]
     sysbus.shared["tft_driver"] = cfg["driver"]
 
-    # 全黑畫面
+    # 全黑畫面 (write_data_async 已對大 buffer 分 chunk,兼容所有 adapter)
     black = bytearray(cfg["width"] * cfg["height"] * bpp)
     lcd.show(black)
 

@@ -25,6 +25,11 @@ try:
 except Exception as _e:
     print("[page] settings import skip:", _e)
     settings = None
+try:
+    from ui.lvgl.page import pixel_controller
+except Exception as _e:
+    print("[page] pixel_controller import skip:", _e)
+    pixel_controller = None
 
 # 把模組引用補進 registry(給 app 呼叫 on_enc/on_confirm/update 用)。
 # 用 if 守護:頁面 import 失敗時 PAGES 裡不會有它,跳過不報錯。
@@ -32,6 +37,7 @@ _PAGES_MOD = [
     ("control_panel", control_panel),
     ("pca9685", pca9685),
     ("settings", settings),
+    ("pixel_controller", pixel_controller),
 ]
 for _pid, _mod in _PAGES_MOD:
     if _mod is not None and _pid in registry.PAGES:

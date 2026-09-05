@@ -19,6 +19,7 @@ from tasks.fs_scan_task import FsScanTask
 from tasks.log_task import LogTask
 from tasks.web_ui import WebUITask
 from tasks.control_panel import ControlPanelTask
+from tasks.pixel_control_panel import PixelControlPanelTask
 from tasks.action_task_1 import ActionTask1
 from tasks.action_task import ActionTask
 from tasks.stream_task import StreamTask
@@ -115,7 +116,7 @@ def launcher():
     # CPU1 跑其他 task(採樣等)。
     if bus.has_lcd():
         from tasks.lvgl_task import LvglTask
-        tm.register_task("lvgl", LvglTask, default_affinity=(1, 0), layer=-1)
+        tm.register_task("lvgl", LvglTask, default_affinity=(1, 0), layer=1)
     else:
         log.info("⏭ [CoreManager] lvgl skipped — no LCD/TFT on bus")
 
@@ -128,7 +129,8 @@ def launcher():
     #     - 執行裝置(無 LCD):在 temp/motor 的 Core_Manager 啟用 motor。
     #   預設全關，要用才把註解打開。
     # ═══════════════════════════════════════════════════════════════════
-    # tm.register_task("cpanel", ControlPanelTask, default_affinity=(1, 0), layer=1)
+    tm.register_task("cpanel", ControlPanelTask, default_affinity=(1, 0), layer=1)
+    tm.register_task("pixel_cpanel", PixelControlPanelTask, default_affinity=(1, 0), layer=1)
     # tm.register_task("motor", ActionTask1, default_affinity=(1, 0), layer=0)
     # tm.register_task("action", ActionTask, default_affinity=(1, 0), layer=0)
 

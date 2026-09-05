@@ -14,6 +14,242 @@ from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from collections import defaultdict, deque
+import re
+import webbrowser
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import urlparse, parse_qs
+
+# ==================== 網頁遙控 (Web Remote) — 與 console 共用同一行程 ====================
+# 直接內建在本程式: 跑 NetBusMaster.py 就同時起一個 HTTP 服務, 瀏覽器操作的就是
+# 這個正在跑的實例 (同一份 self.slaves / selected_targets / config), 不是第二個行程。
+_ANSI_RE = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
+# 終端面板整幀重繪用的重 box-drawing 字元 (正常 log 不會用) → 從 web log 過濾掉,
+# 網頁有 /api/state 的結構化設備表, 不需要把整片面板畫框塞進 log。
+_PANEL_CHARS = frozenset("╔╠╚║┌└┐┘╪")
+
+
+class _WebLogRing:
+    def __init__(self, maxlen=1200):
+        self.lock = threading.Lock()
+        self.entries = deque(maxlen=maxlen)
+        self._seq = 0
+        self._pending = {"stdout": "", "stderr": ""}
+
+    def _push(self, stream, text):
+        text = _ANSI_RE.sub("", text).rstrip()
+        if not text.strip():
+            return
+        if any(ch in _PANEL_CHARS for ch in text):
+            return
+        self._seq += 1
+        self.entries.append({
+            "seq": self._seq,
+            "ts": datetime.now().strftime("%H:%M:%S"),
+            "stream": stream,
+            "text": text,
+        })
+
+    def write(self, stream, s):
+        if not s:
+            return
+        with self.lock:
+            self._pending[stream] += s
+            while "\n" in self._pending[stream]:
+                head, self._pending[stream] = self._pending[stream].split("\n", 1)
+                self._push(stream, head)
+
+    def log(self, level, msg):
+        """panel.log() 專用: 面板在跑時 print 會被跳過, 這裡補進 web log 確保不遺漏。"""
+        stream = {"err": "stderr", "warn": "warn", "ok": "ok"}.get(level, "stdout")
+        with self.lock:
+            self._push(stream, str(msg))
+
+    def flush(self):
+        with self.lock:
+            for k in list(self._pending):
+                if self._pending[k]:
+                    self._push(k, self._pending[k])
+                    self._pending[k] = ""
+
+    def get_since(self, since):
+        with self.lock:
+            items = [e for e in self.entries if e["seq"] > since]
+            last = self.entries[-1]["seq"] if self.entries else since
+            return items, last
+
+
+class _WebTeeStream:
+    def __init__(self, name, ring, orig):
+        self.name = name
+        self.ring = ring
+        self.orig = orig
+
+    def write(self, s):
+        if s:
+            self.ring.write(self.name, s)
+        try:
+            return self.orig.write(s)
+        except Exception:
+            return len(s)
+
+    def flush(self):
+        self.ring.flush()
+        try:
+            self.orig.flush()
+        except Exception:
+            pass
+
+    def isatty(self):
+        return getattr(self.orig, "isatty", lambda: False)()
+
+    @property
+    def encoding(self):
+        return getattr(self.orig, "encoding", "utf-8")
+
+
+_WEB_LOG = _WebLogRing()
+sys.stdout = _WebTeeStream("stdout", _WEB_LOG, sys.stdout)
+sys.stderr = _WebTeeStream("stderr", _WEB_LOG, sys.stderr)
+
+
+class _WebHandler(BaseHTTPRequestHandler):
+    """網頁遙控 HTTP 服務 (跑在 NetBusMaster 同一行程, master 設為本實例)。"""
+    master = None   # 由 NetBusMaster._start_web_server 設定
+
+    server_version = "NetBusWeb/1.0"
+
+    def _send_json(self, obj, code=200):
+        body = json.dumps(obj, ensure_ascii=False).encode("utf-8")
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _send_html(self):
+        try:
+            with open(os.path.join(SCRIPT_DIR, "web_remote.html"), "rb") as f:
+                body = f.read()
+        except OSError:
+            body = b"<h1>web_remote.html not found</h1>"
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _read_json_body(self):
+        try:
+            ln = int(self.headers.get("Content-Length", "0") or 0)
+        except ValueError:
+            ln = 0
+        if ln <= 0:
+            return {}
+        try:
+            return json.loads(self.rfile.read(ln).decode("utf-8"))
+        except Exception:
+            return {}
+
+    def log_message(self, fmt, *args):
+        pass  # 關掉每筆 request 的 stderr 雜訊
+
+    def do_GET(self):
+        path = urlparse(self.path).path
+        if path in ("/", "/index.html"):
+            self._send_html()
+            return
+        if path == "/api/state":
+            self._send_json(self._build_state(self.master))
+            return
+        if path == "/api/logs":
+            q = parse_qs(urlparse(self.path).query)
+            try:
+                since = int(q.get("since", ["0"])[0] or 0)
+            except ValueError:
+                since = 0
+            items, last = _WEB_LOG.get_since(since)
+            self._send_json({"logs": items, "next": last})
+            return
+        self._send_json({"error": "not found"}, 404)
+
+    def do_POST(self):
+        if urlparse(self.path).path != "/api/action":
+            self._send_json({"error": "not found"}, 404)
+            return
+        data = self._read_json_body()
+        try:
+            result = self._dispatch(self.master, data)
+        except Exception as e:  # noqa: BLE001
+            result = {"ok": False, "msg": f"處理失敗: {e}"}
+        self._send_json(result)
+
+    @staticmethod
+    def _build_state(m):
+        playing = bool(m.is_playing) or bool(m.play_session_active)
+        paused = bool(m.is_paused)
+        cfg = m.config or {}
+        cfg_out = {}
+        for k in list(NetBusMaster._REMOTE_INT_KEYS) + list(NetBusMaster._REMOTE_FLOAT_KEYS):
+            cfg_out[k] = cfg.get(k, None)
+        return {
+            "local_ip": m.local_ip,
+            "ws_port": cfg.get("ws_port", 8000),
+            "web_port": cfg.get("web_port", 8080),
+            "playing": playing,
+            "paused": paused,
+            "loop_play": int(cfg.get("loop_play", 0)),
+            "devices": m.remote_devices(),
+            "selected": list(m.selected_targets),
+            "config": cfg_out,
+            "mp3s": sorted(f for f in os.listdir(SCRIPT_DIR) if f.lower().endswith(".mp3")),
+        }
+
+    @staticmethod
+    def _dispatch(m, data):
+        action = data.get("action", "")
+        if action == "scan":
+            threading.Thread(target=m.remote_scan, args=(data.get("mode", "broadcast"), data.get("ips", "")), daemon=True).start()
+            return {"ok": True, "msg": f"掃描已啟動 (模式 {data.get('mode', 'broadcast')}), 進度請看 Log"}
+        if action == "select_all":
+            n = m.remote_select_all()
+            return {"ok": True, "msg": f"已全選 {n} 台"}
+        if action == "select_clear":
+            m.remote_select_clear()
+            return {"ok": True, "msg": "已清空選擇"}
+        if action == "select_ids":
+            n = m.remote_select_ids(data.get("ids", []))
+            return {"ok": True, "msg": f"已選擇 {n} 台"}
+        if action == "clear":
+            m.remote_clear()
+            return {"ok": True, "msg": "已清除設備列表"}
+        if action == "play":
+            mp3 = data.get("mp3") or None
+            if mp3:
+                full = os.path.join(SCRIPT_DIR, mp3)
+                if not os.path.isfile(full):
+                    return {"ok": False, "msg": f"找不到音檔: {mp3}"}
+                mp3 = full
+            ok, msg = m.remote_sync_play(
+                mp3=mp3,
+                delay_ms=data.get("delay_ms"),
+                loop=data.get("loop"),
+                active_sync_fps=data.get("active_sync_fps"),
+            )
+            return {"ok": ok, "msg": msg}
+        if action == "pause":
+            paused = m.remote_pause_toggle()
+            return {"ok": True, "msg": "已暫停" if paused else "已繼續", "paused": paused}
+        if action == "stop":
+            m.remote_stop()
+            return {"ok": True, "msg": "已停止"}
+        if action == "query":
+            threading.Thread(target=m.remote_query, daemon=True).start()
+            return {"ok": True, "msg": "查詢已啟動, 結果請看 Log"}
+        if action == "config":
+            ok, msg = m.remote_config_set(data.get("key"), data.get("value"))
+            return {"ok": ok, "msg": msg}
+        return {"ok": False, "msg": f"未知動作: {action}"}
 
 # ==================== 全局默認配置 ====================
 DEFAULT_CONFIG = {
@@ -45,7 +281,17 @@ DEFAULT_CONFIG = {
     #    (slave 端會在檔尾保持最後一幀亮著, 這段延遲 = 最後姿勢定格時間)
     "post_play_stop_delay_s": 10.0,
     # 🔧 中途加入 (mid-join) 的 prepare/READY 握手重試次數
-    "join_retry_count": 3
+    "join_retry_count": 3,
+    # 🔧 網頁遙控: 與 console 共用同一行程/同一實例 (跑 NetBusMaster.py 即同時起 web)
+    "web_enable": 1,          # 1 = 啟動網頁遙控 HTTP 服務
+    "web_port": 8080,         # 網頁遙控埠
+    "web_open_browser": 1,    # 1 = 啟動時自動開瀏覽器
+    # 🔧 權威播放 fps: 同步計算 / 重連追幀 / 起播廣播共用 (解決重連後落後)
+    #    0 = 自動 (用動畫 metadata fps); >0 = 以此 fps 為準。設備實際節拍由
+    #    slave config 的 System.frame_interval_ms 決定 (20ms=50fps); 若與動畫
+    #    metadata fps 不一致, 重連設備就會用錯節拍越播越落後 —— 設 play_fps 對齊。
+    "play_fps": 0,
+    "midjoin_lead_frames": 3  # 重連追幀提前量(幀): 補 seek→讀檔→渲染 的管線延遲
 }
 
 # ==================== 垃圾檔過濾 (Python 快取 / macOS / Windows / 編輯器暫存) ====================
@@ -862,8 +1108,11 @@ class NetBusMaster:
         # 🔧 只載入 bins/metadata.json (總幀數等), 不載入大型 bin 資料 —
         # 讓工具重開後連上設備時面板就有正確的 total_frames (進度% 才能顯示)
         self._load_metadata_only()
+        self._web_server = None
         
         threading.Thread(target=self.start_ws_server, daemon=True).start()
+        # 🔧 網頁遙控與 console 同一行程: 跑 NetBusMaster.py 即同時起 web (預設開啟)。
+        self._start_web_server()
 
     def _migrate_legacy_config(self):
         """把舊版 tools/slave_map.json 遷移到 tools/PC/slave_map.json (與本程式同目錄)。
@@ -1257,7 +1506,12 @@ class NetBusMaster:
             self.panel.update_device(target_cid, status="錯誤", error_msg="READY timeout")
             return
 
-        # 3. 就緒瞬間推算目標幀 = (有效播放時間 + 單向延遲補償) * fps
+        # 3. 就緒瞬間推算目標幀 = (有效播放時間 + 單向延遲補償 + seek 管線提前量) * 權威 fps
+        #    fps 用「權威值」(play_fps / active_sync_fps / metadata), 不再寫死 current_fps,
+        #    否則 slave 實際用 frame_interval_ms 播 (20ms=50fps), PC 用 metadata 30fps 算落點,
+        #    重連設備會 seek 到錯誤位置且越播越落後。
+        fps = self._play_fps_value() or self.current_fps or 40
+        lead = max(0, self._cfg_int("midjoin_lead_frames", 3))
         with self.play_lock:
             paused_extra = self.paused_total
             if self.paused_since is not None:
@@ -1265,18 +1519,21 @@ class NetBusMaster:
         elapsed = time.time() - self.playback_start_time - paused_extra
         if elapsed < 0:
             elapsed = 0
-        target_frame = int((elapsed + lat_s) * self.current_fps)
+        target_frame = int((elapsed + lat_s) * fps) + lead
         if total > 0:
             target_frame = target_frame % total if play_mode == 1 else min(target_frame, total - 1)
-        self.panel.log("info", f"🔄 [Mid-Join] {target_cid} → frame {target_frame}")
+        self.panel.log("info", f"🔄 [Mid-Join] {target_cid} → frame {target_frame} (fps={fps}, lead={lead})")
 
         # 4. 帶幀號播放 + 同步 fps; master 暫停中則讓新裝置也跟上暫停
+        #    🔧 只有「權威 fps 真的開啟」才對單台重連設備廣播 0x3001, 否則讓它
+        #    跟其他設備一樣吃自己的 frame_interval_ms —— 之前無條件廣播 30 就是
+        #    重連後越播越慢的元兇。
         self.send_pkt([target_cid], 0x300A, {"start_frame": target_frame})
-        if self.current_fps > 0:
+        if self._play_fps_value() > 0:
             self.send_pkt([target_cid], 0x3001, {
                 "total_blocks": 0,
                 "frames_per_block": 0,
-                "fps": int(self.current_fps)
+                "fps": int(fps)
             })
         if paused:
             self.send_pkt([target_cid], 0x3005, {"pause": 1})
@@ -1321,7 +1578,9 @@ class NetBusMaster:
             if pos is not None and total > 0:
                 expected = self._expected_frame(target_cid)
                 drift = abs(pos - expected)
-                drift_tol = max(30, int(total * 0.03))
+                # 🔧 容忍度收緊: 重連設備「落後幾幀」也要被抓到並 SEEK 拉回。
+                #    舊值 max(30, 3%) = 282 幀, 小落後永遠不觸發校正。
+                drift_tol = max(3, int(total * 0.005))
                 if drift > drift_tol:
                     self.panel.log("warn", f"   🩹 [Verify] {target_cid} 進度偏差 {drift} 幀 (pos={pos}, expect={expected}) → SEEK 校正")
                     self.send_pkt([target_cid], 0x3004, {"target_block": 0, "target_frame": expected})
@@ -1382,6 +1641,61 @@ class NetBusMaster:
             else:
                 frame = min(frame, max(0, total - 1))
         return frame
+
+    # ==================== 權威播放 fps (config) ====================
+    def _play_fps_value(self):
+        """權威播放 fps: play_fps 優先, 其次 active_sync_fps, 否則 0 (=自動用 metadata)。
+
+        這是「同步計算 / 重連追幀 / 起播廣播」的唯一真相源 —— PC 推算的幀號
+        必須與設備實際播放節拍一致, 否則重連設備會用錯 fps 越播越落後。
+        """
+        play = self._cfg_int("play_fps", 0)
+        if play > 0:
+            return play
+        return self._cfg_int("active_sync_fps", 0)
+
+    def _apply_play_fps(self):
+        """起播時: 依 config 設定權威 fps (current_fps), 需要時補一次 0x3001 廣播。
+
+        play_fps > 0 → current_fps = play_fps; active_sync 沒開時起播廣播一次,
+                       讓所有設備真的以 play_fps 播 (active_sync 有週期廣播, 不用補)。
+        active_sync_fps > 0 (play_fps=0) → current_fps = active_sync_fps。
+        兩者都 0 → 保持 metadata fps (舊行為)。
+        """
+        play = self._cfg_int("play_fps", 0)
+        active = self._cfg_int("active_sync_fps", 0)
+        if play > 0:
+            self.current_fps = play
+            if active <= 0:
+                self.send_pkt(self.selected_targets, 0x3001, {
+                    "total_blocks": 0, "frames_per_block": 0, "fps": play})
+                self.panel.log("info", f"🎬 [play_fps] 起播同步 fps={play}")
+        elif active > 0:
+            self.current_fps = active
+
+    # ==================== 網頁遙控 HTTP 服務 (與 console 同一行程) ====================
+    def _start_web_server(self):
+        """啟動網頁遙控 HTTP 服務 —— 跑在 NetBusMaster 同一行程, 操作的就是本實例。"""
+        if not self._cfg_int("web_enable", 1):
+            return
+        port = self._cfg_int("web_port", 8080)
+        _WebHandler.master = self
+        try:
+            self._web_server = ThreadingHTTPServer(("0.0.0.0", port), _WebHandler)
+        except OSError as e:
+            print(f"⚠️ [Web] 無法監聽 web port {port}: {e}")
+            return
+        threading.Thread(target=self._web_server.serve_forever, daemon=True).start()
+        url = f"http://{self.local_ip}:{port}"
+        print(f"🌐 [Web] 網頁遙控已啟動: {url}")
+        if self._cfg_int("web_open_browser", 1):
+            def _open():
+                try:
+                    time.sleep(1.2)
+                    webbrowser.open(url)
+                except Exception as e:
+                    print(f"⚠️ [Web] 自動開瀏覽器失敗: {e}")
+            threading.Thread(target=_open, daemon=True).start()
 
     def dispatch_logic(self, cid, cmd, payload):
         c_def = self.store.get(cmd)
@@ -5045,6 +5359,8 @@ class NetBusMaster:
             if pid in self.pxld_metadata and "fps" in self.pxld_metadata[pid]:
                 self.current_fps = self.pxld_metadata[pid]["fps"]
                 if self.current_fps == 0: self.current_fps = 40
+        # 🔧 權威 fps (play_fps / active_sync_fps) 覆蓋 metadata, 需要時補一次 0x3001 廣播
+        self._apply_play_fps()
         
         # 🔧 播放模式: 0=一次, 1=循環 (中途加入沿用此值)
         self.current_play_mode = 1 if self.config.get("loop_play", 0) else 0
@@ -5745,6 +6061,244 @@ class NetBusMaster:
         """
         # 由於兼容性問題，直接調用標準 input
         return input(prompt)
+
+    # ==================== Web Remote API (非互動, 供內建網頁遙控 /api/action 呼叫) ====================
+    # 這些方法與互動式選單 (main_loop) 共用同一份核心 (send_pkt / stop_all / 播放狀態機),
+    # 但全部「不讀 stdin、不畫終端 UI」, 讓網頁遙控可以把主程式當 API 來按 1/2/3/4。
+    _REMOTE_INT_KEYS = {
+        "sync_delay_ms", "loop_play", "active_sync_fps", "play_fps",
+        "midjoin_lead_frames", "ws_port", "upt_port", "web_port",
+        "web_enable", "web_open_browser", "upload_chunk_size",
+        "latency_samples", "download_chunk_size", "transfer_retry_count",
+    }
+    _REMOTE_FLOAT_KEYS = {
+        "active_sync_interval_s", "progress_poll_interval_s",
+        "post_play_stop_delay_s", "upload_ack_timeout", "upload_begin_timeout",
+    }
+
+    def remote_devices(self):
+        """回傳所有已知設備的即時狀態 (供網頁渲染設備表)。"""
+        result = []
+        try:
+            with self.panel.lock:
+                monitors = list(self.panel.monitors.items())
+        except Exception:
+            monitors = []
+        selected = set(self.selected_targets)
+        for sid, m in monitors:
+            try:
+                prog = m.get_play_progress()
+                fps = m.calculated_fps
+                cur = m.current_frame
+                total = m.total_frames
+                status = m.status
+                mem = m.mem_free
+            except Exception:
+                prog, fps, cur, total, status, mem = 0.0, 0.0, 0, 0, "?", 0
+            pid = self.config.get("mapping", {}).get(sid, {}).get("play_id")
+            result.append({
+                "id": sid,
+                "online": sid in self.slaves,
+                "play_id": pid,
+                "status": status,
+                "current_frame": cur,
+                "total_frames": total,
+                "progress": round(prog, 1),
+                "fps": round(fps, 1),
+                "mem_free": mem,
+                "selected": sid in selected,
+            })
+        result.sort(key=lambda d: (d["play_id"] is None, d["play_id"] if d["play_id"] is not None else 999999))
+        return result
+
+    def remote_scan(self, mode="broadcast", ips=None, wait=10):
+        """非互動掃描: broadcast / direct / knock。回傳 (ok, message)。"""
+        self.load_config()
+        try:
+            before = set(self.slaves.keys())
+            if mode == "direct":
+                raw = (ips or "").replace('，', ',')
+                ip_list = [p.strip() for p in raw.split(',') if p.strip() and not p.strip().startswith('255.')]
+                if not ip_list:
+                    return False, "未提供有效 IP"
+                self._send_unicast_discover(ip_list, label="[Remote] 定向 DISCOVER")
+                self._wait_connections(before, timeout=wait, label="握手")
+            elif mode == "knock":
+                self._knock_recorded_devices(wait=wait)
+            else:
+                self._broadcast_scan()
+            new = sorted(set(self.slaves.keys()) - before)
+            msg = f"掃描完成, 新連線 {len(new)} 台" + (f": {', '.join(new)}" if new else "")
+            return True, msg
+        except Exception as e:
+            return False, f"掃描失敗: {e}"
+
+    def remote_select_all(self):
+        self.selected_targets = sorted(
+            self.slaves.keys(),
+            key=lambda sid: self.config.get("mapping", {}).get(sid, {}).get("play_id", 999),
+        )
+        return len(self.selected_targets)
+
+    def remote_select_clear(self):
+        self.selected_targets = []
+        return 0
+
+    def remote_select_ids(self, ids):
+        online = set(self.slaves.keys())
+        self.selected_targets = [i for i in (ids or []) if i in online]
+        return len(self.selected_targets)
+
+    def remote_clear(self):
+        for node in list(self.slaves.values()):
+            try:
+                node["conn"].close()
+            except Exception:
+                pass
+        time.sleep(0.5)
+        self.slaves.clear()
+        self.panel.monitors.clear()
+        self.selected_targets.clear()
+        return len(self.slaves)
+
+    def remote_config_set(self, key, val):
+        if key in self._REMOTE_INT_KEYS:
+            self.config[key] = int(val)
+        elif key in self._REMOTE_FLOAT_KEYS:
+            self.config[key] = float(val)
+        else:
+            return False, f"不支援的參數: {key}"
+        self.save_config()
+        return True, f"{key} = {self.config[key]}"
+
+    def remote_sync_play(self, mp3=None, delay_ms=None, loop=None, active_sync_fps=None):
+        """非互動播放: 等同選單 6 的「擊發」, 但參數由網頁直接傳入。回傳 (ok, message)。"""
+        if not self.selected_targets:
+            return False, "請先掃描並選擇設備"
+        if loop is not None:
+            self.config["loop_play"] = 1 if loop else 0
+        if delay_ms is not None:
+            self.config["sync_delay_ms"] = int(delay_ms)
+        if active_sync_fps is not None:
+            self.config["active_sync_fps"] = int(active_sync_fps)
+        self.save_config()
+
+        # 已在播放 → 先停掉上一段, 再重新準備
+        if self.is_playing or self.play_session_active:
+            self.stop_all()
+
+        for tid in self.selected_targets:
+            self.panel.update_device(tid, status="待機")
+            if tid in self.panel.monitors:
+                self.panel.monitors[tid].reset_play_stats()
+
+        self.current_play_mode = 1 if self.config.get("loop_play", 0) else 0
+        self.send_pkt(self.selected_targets, 0x3009, {
+            "file_name": "data.bin",
+            "block_id": 0,
+            "play_mode": self.current_play_mode,
+        })
+
+        # 播放會話開始 (go → stop_all 之間)
+        with self.play_lock:
+            self.play_session_active = True
+            self.audio_finished = False
+            self.paused_since = None
+            self.paused_total = 0.0
+        self._dev_finished.clear()
+        self._stop_was_manual = False
+        self.is_playing = True
+        self.is_paused = False
+
+        # current_fps 由 metadata 提供 (供中途加入/進度推算)
+        self.playback_start_time = time.time()
+        self.current_fps = 40
+        pid = self.config.get("mapping", {}).get(self.selected_targets[0], {}).get("play_id")
+        meta = self.pxld_metadata.get(pid, {}) if pid is not None else {}
+        fps = meta.get("fps", 0)
+        if fps:
+            self.current_fps = fps
+        # 🔧 權威 fps (play_fps / active_sync_fps) 覆蓋 metadata, 需要時補一次 0x3001 廣播
+        self._apply_play_fps()
+
+        self._start_active_sync()
+
+        delay_ms_v = self.config.get("sync_delay_ms", 150)
+        delay_sec = abs(delay_ms_v) / 1000.0
+        if mp3:
+            if delay_ms_v >= 0:
+                self._start_audio_stream(mp3)
+                if delay_ms_v > 0:
+                    time.sleep(delay_sec)
+                self.send_pkt(self.selected_targets, 0x300A, {"start_frame": 0})
+            else:
+                self.send_pkt(self.selected_targets, 0x300A, {"start_frame": 0})
+                time.sleep(delay_sec)
+                self._start_audio_stream(mp3)
+            # 背景看守: 非循環音檔播完 → 補延遲停止並收尾 (等同互動版的 finally + post-play)
+            threading.Thread(target=self._remote_play_watchdog, daemon=True).start()
+        else:
+            # 靜音模式: 只觸發動畫, is_playing 由 stop 結束
+            self.send_pkt(self.selected_targets, 0x300A, {"start_frame": 0})
+
+        self._start_progress_poll()
+        for tid in self.selected_targets:
+            self.panel.update_device(tid, status="播放中")
+        return True, "已擊發播放"
+
+    def _remote_play_watchdog(self):
+        """遠端播放的收尾看守 (音檔自然播完才走這條)。"""
+        while self.is_playing and self.running:
+            time.sleep(0.2)
+        if self._stop_was_manual:
+            return
+        if self.current_play_mode != 1:
+            delay = max(0.0, self._cfg_float("post_play_stop_delay_s", 10.0))
+            time.sleep(delay)
+            if self.selected_targets:
+                self.send_pkt(self.selected_targets, 0x3002, {})
+                self.panel.log("ok", "🛑 已發送停止指令 (0x3002) — 熄燈")
+        with self.play_lock:
+            self.play_session_active = False
+        self._dev_finished.clear()
+        self._stop_active_sync()
+        self._stop_progress_poll()
+        for tid in self.selected_targets:
+            self.panel.update_device(tid, status="待機")
+
+    def remote_pause_toggle(self):
+        """暫停/繼續切換, 回傳目前是否暫停。"""
+        with self.play_lock:
+            self.is_paused = not self.is_paused
+            if self.is_paused:
+                self.paused_since = time.time()
+                self.send_pkt(self.selected_targets, 0x3005, {"pause": 1})
+                for tid in self.selected_targets:
+                    self.panel.update_device(tid, status="暫停")
+            else:
+                if self.paused_since is not None:
+                    self.paused_total += time.time() - self.paused_since
+                    self.paused_since = None
+                self.send_pkt(self.selected_targets, 0x3005, {"pause": 0})
+                for tid in self.selected_targets:
+                    self.panel.update_device(tid, status="播放中")
+        return self.is_paused
+
+    def remote_stop(self):
+        self.stop_all()
+        return True
+
+    def remote_query(self):
+        targets = list(self.selected_targets) or list(self.slaves.keys())
+        if not targets:
+            return "無在線設備"
+        for tid in targets:
+            st = self.query_status(tid)
+            if st:
+                self.panel.log("info", f"[Query] {tid}: {json.dumps(st, ensure_ascii=False)}")
+            else:
+                self.panel.log("warn", f"[Query] {tid}: 無回應")
+        return f"已查詢 {len(targets)} 台"
 
     def main_loop(self):
         # 🔧 不再於啟動時自動敲門叫回設備: master 不主動發起重連 (自動敲門曾在
