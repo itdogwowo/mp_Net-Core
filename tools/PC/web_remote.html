@@ -99,6 +99,24 @@
     </div>
 
     <div class="card">
+      <h2>網卡 <span class="hint" id="netcurrent"></span></h2>
+      <div class="row">
+        <select id="netiface" style="flex:1; min-width:200px"></select>
+        <button class="primary" id="netapply">套用網卡</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>亮度調整 (產生新 pxld)</h2>
+      <div class="row">
+        <select id="bright_pxld" style="flex:1; min-width:200px"></select>
+        <input type="number" id="bright_factor" value="100" step="1" min="1" style="width:90px" title="%">
+        <span class="hint">%</span>
+        <button class="primary" id="brightapply">產生新檔</button>
+      </div>
+    </div>
+
+    <div class="card">
       <h2>設備列表 <span class="hint" id="devcount"></span></h2>
       <div style="overflow-x:auto">
         <table id="devtable">
@@ -123,6 +141,10 @@
       <h2>播放控制</h2>
       <div class="grid2">
         <div class="field">
+          <label>資源 (pxld 主名 → /sd/{stem}.bin)</label>
+          <select id="resource"><option value="">— 目前資源 —</option></select>
+        </div>
+        <div class="field">
           <label>音檔</label>
           <select id="mp3"><option value="">— 靜音 (僅燈效) —</option></select>
         </div>
@@ -134,13 +156,11 @@
           <label>主動同步 fps (0=關閉)</label>
           <input type="number" id="active_sync_fps" value="0" step="1" min="0">
         </div>
-        <div class="field">
-          <label>循環播放</label>
-          <label style="margin-top:4px"><input type="checkbox" id="loop_play"> loop_play</label>
-        </div>
       </div>
       <div class="row" style="margin-top:12px">
-        <button class="primary" id="playbtn" data-action="play">▶ 擊發播放</button>
+        <button class="primary" id="gobtn" data-action="play" data-loop="0">▶ Go 播放一次</button>
+        <button class="primary" id="loopbtn" data-action="play" data-loop="1">🔁 Loop 循環播放</button>
+        <button id="verifybtn" data-action="verify">🔍 驗證資源</button>
         <button id="pausebtn" data-action="pause" class="warn">⏸ 暫停/繼續</button>
         <button id="stopbtn" data-action="stop" class="danger">■ 停止</button>
       </div>
@@ -252,6 +272,48 @@
     sel.innerHTML = opts;
   }
 
+  function renderResources(s) {
+    var sel = $('#resource');
+    var cur = s.resource || '';
+    var opts = '<option value="">— 目前資源 —</option>';
+    // pxld 主名優先 (test.pxld → test); 也併入已切分但無對應 pxld 的資源
+    var stems = [];
+    (s.pxlds || []).forEach(function (p) { stems.push(p.replace(/\.pxld$/i, '')); });
+    (s.resources || []).forEach(function (r) { if (stems.indexOf(r) < 0) stems.push(r); });
+    stems.forEach(function (st) {
+      opts += '<option value="' + esc(st) + '"' + (st === cur ? ' selected' : '') + '>' + esc(st) + '.bin</option>';
+    });
+    sel.innerHTML = opts;
+  }
+
+  function renderNetwork(n) {
+    var sel = $('#netiface');
+    if (!n) return;
+    var cur = n.current || '';
+    var local = n.local_ip || '';
+    var opts = '<option value="">— 自動偵測 —</option>';
+    (n.interfaces || []).forEach(function (it) {
+      var val = it.name || it.ip;
+      var label = (it.name ? it.name + '  ' : '') + it.ip;
+      opts += '<option value="' + esc(val) + '"' + (val === cur ? ' selected' : '') + '>' + esc(label) + '</option>';
+    });
+    sel.innerHTML = opts;
+    $('#netcurrent').textContent = '目前: ' + (cur || '自動') + '  |  本機 IP: ' + local;
+  }
+
+  function renderBrightPxlds(pxlds) {
+    var sel = $('#bright_pxld');
+    if (!sel.dataset.built) {
+      sel.dataset.built = '1';
+    }
+    var cur = sel.value;
+    var opts = '<option value="">— 選擇 pxld —</option>';
+    (pxlds || []).forEach(function (p) {
+      opts += '<option value="' + esc(p) + '"' + (p === cur ? ' selected' : '') + '>' + esc(p) + '</option>';
+    });
+    sel.innerHTML = opts;
+  }
+
   function renderState(s) {
     $('#netinfo').textContent = '本機 ' + (s.local_ip || '?') + '  |  WS :' + (s.ws_port || 8000) + '  |  Web :' + (s.web_port || 8080);
     var badge = $('#playbadge');
@@ -261,7 +323,9 @@
     renderDevices(s.devices, s.selected);
     renderConfig(s.config);
     renderMp3s(s.mp3s);
-    if (s.config && s.config.loop_play != null) $('#loop_play').checked = !!s.config.loop_play;
+    renderResources(s);
+    renderNetwork(s.network);
+    renderBrightPxlds(s.pxlds);
     if (s.config && s.config.active_sync_fps != null) $('#active_sync_fps').value = s.config.active_sync_fps;
   }
 
@@ -298,11 +362,14 @@
         if (ipsSel) extra.ips = $(ipsSel).value;
       } else if (action === 'play') {
         extra.mp3 = $('#mp3').value;
+        extra.resource = $('#resource').value;
         extra.delay_ms = parseInt($('#delay_ms').value, 10);
-        extra.loop = $('#loop_play').checked;
+        extra.loop = btn.getAttribute('data-loop') === '1';
         extra.active_sync_fps = parseInt($('#active_sync_fps').value, 10);
         if (isNaN(extra.delay_ms)) extra.delay_ms = 150;
         if (isNaN(extra.active_sync_fps)) extra.active_sync_fps = 0;
+      } else if (action === 'verify') {
+        extra.resource = $('#resource').value;
       }
       post(action, extra);
     });
@@ -315,6 +382,18 @@
       if (isNaN(v)) return;
       post('config', { key: k, value: v });
     });
+  });
+
+  $('#netapply').addEventListener('click', function () {
+    post('network', { selector: $('#netiface').value });
+  });
+
+  $('#brightapply').addEventListener('click', function () {
+    var p = $('#bright_pxld').value;
+    var f = parseFloat($('#bright_factor').value);
+    if (!p) { pushLine('請先選擇 pxld', 'stderr'); return; }
+    if (isNaN(f) || f <= 0) { pushLine('亮度比例無效', 'stderr'); return; }
+    post('brightness', { pxld: p, factor: f / 100 });
   });
 
   $('#clearlog').addEventListener('click', function () { logEl.innerHTML = ''; });

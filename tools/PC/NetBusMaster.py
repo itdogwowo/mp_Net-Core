@@ -199,6 +199,10 @@ class _WebHandler(BaseHTTPRequestHandler):
             "playing": playing,
             "paused": paused,
             "loop_play": int(cfg.get("loop_play", 0)),
+            "resource": m.resource_stem,
+            "resources": m._list_resources(),
+            "pxlds": m._list_pxld_files(),
+            "network": m.remote_network_info(),
             "devices": m.remote_devices(),
             "selected": list(m.selected_targets),
             "config": cfg_out,
@@ -235,8 +239,15 @@ class _WebHandler(BaseHTTPRequestHandler):
                 delay_ms=data.get("delay_ms"),
                 loop=data.get("loop"),
                 active_sync_fps=data.get("active_sync_fps"),
+                resource=data.get("resource"),
             )
             return {"ok": ok, "msg": msg}
+        if action == "verify":
+            ok, results = m._verify_resource(data.get("resource") or m.resource_stem)
+            n_bad = sum(1 for r in results if not r.get("match"))
+            if ok:
+                return {"ok": True, "msg": f"驗證通過: {len(results)} 台全部一致", "results": results}
+            return {"ok": False, "msg": f"驗證未通過: {n_bad}/{len(results)} 台不一致 (詳見 Log)", "results": results}
         if action == "pause":
             paused = m.remote_pause_toggle()
             return {"ok": True, "msg": "已暫停" if paused else "已繼續", "paused": paused}
@@ -249,6 +260,12 @@ class _WebHandler(BaseHTTPRequestHandler):
         if action == "config":
             ok, msg = m.remote_config_set(data.get("key"), data.get("value"))
             return {"ok": ok, "msg": msg}
+        if action == "network":
+            ok, msg = m.remote_set_network(data.get("selector", ""))
+            return {"ok": ok, "msg": msg}
+        if action == "brightness":
+            ok, msg, out_name = m.remote_brightness(data.get("pxld"), data.get("factor"))
+            return {"ok": ok, "msg": msg, "out": out_name}
         return {"ok": False, "msg": f"未知動作: {action}"}
 
 # ==================== 全局默認配置 ====================
@@ -257,6 +274,10 @@ DEFAULT_CONFIG = {
     "mapping": {},
     "ws_port": 8000,
     "upt_port": 9000,
+    # 🔧 網卡選擇: 空 = 自動偵測; 否則可填網卡名(en0)/IP(192.168.8.131)/子網前綴(192.168.8.)。
+    #    同一台機器同時接網際網路 + 設備本地網時, 自動偵測(連 8.8.8.8)會抓錯網卡,
+    #    讓 DISCOVER 的 ws_url 指向錯的 IP → slave 連不回。設定此欄即可指定用哪張網卡。
+    "network_interface": "",
     "deploy_timeout": 120,
     "max_workers": 50,
     "download_chunk_size": 1024 *2,
@@ -467,7 +488,7 @@ try:
     from slave.lib.sys.proto import Proto, StreamParser
     from slave.lib.sys.schema_loader import SchemaStore
     from slave.lib.sys.schema_codec import SchemaCodec
-    from tools.PC.PXLDv3Splitter import PXLDv3Decoder
+    from tools.PC.PXLDv3Splitter import PXLDv3Decoder, adjust_pxld_brightness
 except ImportError as e:
     print(f"❌ 導入錯誤: {e}")
     sys.exit(1)
@@ -1069,7 +1090,7 @@ class NetBusMaster:
         self.slaves = self.device_manager.slaves  # 兼容舊代碼，指向 Manager 的字典
         
         self.running = True
-        self.local_ip = self.get_local_ip()
+        self.local_ip = '127.0.0.1'   # 稍後 load_config 後再依 network_interface 偵測
         
         self.is_playing = False
         self.is_paused = False
@@ -1098,9 +1119,13 @@ class NetBusMaster:
         self._migrate_legacy_config()
         self._migrate_legacy_data()
         self.load_config()
+        self._iface_cache = None      # (ts, [ifaces]) — 網卡清單短暫快取 (避免 /api/state 每秒跑 ifconfig)
+        self._iface_cache_ttl = 5.0
+        self.local_ip = self.get_local_ip()   # 依 network_interface (若有設定) 偵測本機 IP
         self.selected_targets = []
         self.prepared_data = {}
         self.pxld_metadata = {}
+        self.resource_stem = "data"   # 目前選中的資源 (pxld 主名) → 上傳/播放檔名 = {stem}.bin
         self.transfer_cancel = threading.Event()
         self._transfer_kb_stop = threading.Event()
         self._transfer_kb_thread = None
@@ -1229,15 +1254,117 @@ class NetBusMaster:
         with open(self.config_file, 'w', encoding='utf-8') as f:
             json.dump(ordered_config, f, indent=4, ensure_ascii=False)
     
+    def _list_interfaces(self):
+        """列出本機所有 IPv4 網卡 [{"name","ip"}, ...]。失敗回 []。
+
+        帶短暫快取: /api/state 每秒輪詢會呼叫 remote_network_info, 不必每秒跑
+        ifconfig 子行程 (網卡清單很少變動, 5 秒快取已足夠)。
+        """
+        cache = getattr(self, "_iface_cache", None)
+        ttl = getattr(self, "_iface_cache_ttl", 5.0)
+        if cache and (time.time() - cache[0]) < ttl:
+            return cache[1]
+        try:
+            if os.name == "nt":
+                result = self._list_interfaces_windows()
+            else:
+                result = self._list_interfaces_unix()
+        except Exception:
+            result = []
+        self._iface_cache = (time.time(), result)
+        return result
+
+    def _list_interfaces_unix(self):
+        out = []
+        cur = None
+        try:
+            raw = subprocess.check_output(["ifconfig"], text=True, stderr=subprocess.DEVNULL)
+        except Exception:
+            return out
+        for line in raw.splitlines():
+            if not line.startswith((" ", "\t")):
+                cur = line.split(":")[0].strip() if ":" in line else line.split()[0]
+                continue
+            m = re.search(r"inet\s+(\d+\.\d+\.\d+\.\d+)", line)
+            if m and cur:
+                ip = m.group(1)
+                if not ip.startswith("127.") and not any(d["ip"] == ip for d in out):
+                    out.append({"name": cur, "ip": ip})
+        return out
+
+    def _list_interfaces_windows(self):
+        out = []
+        try:
+            raw = subprocess.check_output(["ipconfig"], text=True, stderr=subprocess.DEVNULL)
+        except Exception:
+            return out
+        cur = None
+        for line in raw.splitlines():
+            m_name = re.search(r"adapter\s+(.+?):", line)
+            if m_name:
+                cur = m_name.group(1).strip()
+                continue
+            m_ip = re.search(r"IPv4[^\d]*(\d+\.\d+\.\d+\.\d+)", line)
+            if m_ip and cur:
+                ip = m_ip.group(1)
+                if not ip.startswith("127.") and not any(d["ip"] == ip for d in out):
+                    out.append({"name": cur, "ip": ip})
+        return out
+
+    def _resolve_interface_ip(self, selector):
+        """依 selector 找對應網卡 IP: 支援 IP 精準 / 網卡名 / 子網前綴。找不到回 None。"""
+        if not selector:
+            return None
+        selector = str(selector).strip()
+        if not selector:
+            return None
+        ifaces = self._list_interfaces()
+        for it in ifaces:                     # 1) 直接 IP
+            if it["ip"] == selector:
+                return it["ip"]
+        for it in ifaces:                     # 2) 網卡名
+            if it["name"] == selector:
+                return it["ip"]
+        prefix = selector.rstrip("/")         # 3) 子網前綴 (例 "192.168.8.")
+        if prefix.endswith(".") or re.match(r"^\d+\.\d+\.\d+\.$", prefix):
+            for it in ifaces:
+                if it["ip"].startswith(prefix):
+                    return it["ip"]
+        return None
+
+    def _make_discover_socket(self):
+        """建 DISCOVER 用的 UDP socket, 綁定到選定網卡 (讓廣播從正確 NIC 出去)。"""
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+        ip = self.local_ip
+        if ip and ip not in ("127.0.0.1", "0.0.0.0"):
+            try:
+                s.bind((ip, 0))
+            except Exception:
+                pass
+        return s
+
     def get_local_ip(self):
         """偵測本機 IP (給 slave 連回用的 ws_url)。
 
-        公司內網常沒有網際網路, 8.8.8.8 連不到會回 127.0.0.1 → slave 會連錯;
-        依序嘗試:
-          1. UDP connect 8.8.8.8 (需能路由到網際網路)
-          2. gethostbyname_ex(主機名) 取第一個非 127. 的 IP (內網可用)
-          3. 回退 127.0.0.1
+        依序:
+          1. config `network_interface` 有設定且解析得到 → 用那張
+          2. 本機只有「唯一一張」非 loopback 網卡 → 直接用那張 (最可靠, 不被
+             8.8.8.8 的預設路由誤導)
+          3. 自動偵測: UDP connect 8.8.8.8 → 主機名 → 127.0.0.1
         """
+        sel = self.config.get("network_interface", "")
+        if sel:
+            ip = self._resolve_interface_ip(sel)
+            if ip:
+                return ip
+            print(f"⚠️ [Net] network_interface='{sel}' 找不到對應網卡 IP, 改用唯一網卡/自動偵測")
+
+        # 只有一張非 loopback 網卡時, 直接用那張 (雙網卡時才需要上面 config 指定)
+        ifaces = self._list_interfaces()
+        if len(ifaces) == 1:
+            return ifaces[0]["ip"]
+
         try:
             s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             try:
@@ -1486,7 +1613,7 @@ class NetBusMaster:
             # 🔧 先 clear 再 send (修 race); node 每次重抓 (修重連換 dict 的 race)
             node["ready_event"].clear()
             self.send_pkt([target_cid], 0x3009, {
-                "file_name": "data.bin",
+                "file_name": self._bin_name(),
                 "block_id": 0,
                 "play_mode": play_mode
             })
@@ -4503,7 +4630,7 @@ class NetBusMaster:
         pkt = self._build_discover_packet()
         print(f"📡 {label} → {len(ips)} 個 IP (UDP {udp_port}, Server IP: {self.local_ip})")
         try:
-            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s = self._make_discover_socket()
             for attempt in range(3):
                 for ip in ips:
                     try:
@@ -4591,15 +4718,14 @@ class NetBusMaster:
         """廣播 DISCOVER (0x1001) 到全域 + 子網廣播位址。"""
         print("\n[Scan] 正在廣播發現包...")
         try:
-            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            s.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-
             # Refresh local IP
             self.local_ip = self.get_local_ip()
 
             port = self.config.get("ws_port", 8000)
             udp_port = self.config.get("upt_port", 9000)
             pkt = self._build_discover_packet(port)
+
+            s = self._make_discover_socket()
 
             print(f"📡 Broadcasting DISCOVER to port {udp_port} (Server IP: {self.local_ip})")
 
@@ -4780,9 +4906,88 @@ class NetBusMaster:
         self.panel.start()
     
     # ==================== Step 2: 準備數據 (修復版) ====================
+    # ==================== 資源庫 (pxld 多套) ====================
+    def _pxld_stem(self, path):
+        """'test.pxld' → 'test' (只換副檔名, 主名保留; 播放時 {stem}.bin)。"""
+        return os.path.splitext(os.path.basename(path))[0]
+
+    def _bin_name(self, stem=None):
+        stem = stem or self.resource_stem or "data"
+        return stem + ".bin"
+
+    def _resource_dir(self, stem=None):
+        """資源的 bins 目錄。'data' = 舊版扁平 data/bins/; 其餘 = data/bins/<stem>/。"""
+        stem = stem or self.resource_stem or "data"
+        if stem == "data":
+            return BINS_DIR
+        return os.path.join(BINS_DIR, stem)
+
+    def _list_resources(self):
+        """列出已切分的資源主名 (data.bin 舊版 = 'data'; 其餘 = data/bins/<stem>/)。"""
+        stems = []
+        try:
+            if os.path.isfile(os.path.join(BINS_DIR, "metadata.json")):
+                stems.append("data")
+            if os.path.isdir(BINS_DIR):
+                for name in sorted(os.listdir(BINS_DIR)):
+                    d = os.path.join(BINS_DIR, name)
+                    if os.path.isdir(d) and os.path.isfile(os.path.join(d, "metadata.json")):
+                        if name not in stems:
+                            stems.append(name)
+        except Exception:
+            pass
+        return stems
+
+    def _list_pxld_files(self):
+        """目前目錄下的 .pxld 檔案清單 (供播放時選資源)。"""
+        try:
+            return sorted(f for f in os.listdir(SCRIPT_DIR) if f.lower().endswith(".pxld"))
+        except Exception:
+            return []
+
+    def _resource_bin_path(self, pid, stem=None):
+        return os.path.join(self._resource_dir(stem), f"pid_{pid}.bin")
+
+    def _verify_resource(self, stem=None):
+        """驗證每個選中設備的 /sd/{stem}.bin 與本地一致 (等同部署驗證那一步)。
+
+        回傳 (ok, results)。results = [{tid, pid, local_sha, remote_sha, size_ok, match}]。
+        檔名安全檢查不通過 → ok=False 且不發任何查詢。
+        """
+        stem = stem or self.resource_stem or "data"
+        # 嚴格檔名: 只允許安全字元, 禁止路徑穿越
+        if not stem or stem in (".", "..") or "/" in stem or "\\" in stem:
+            return False, "資源名稱不合法: {!r}".format(stem)
+        targets = list(self.selected_targets) or list(self.slaves.keys())
+        if not targets:
+            return False, "無在線/已選設備"
+        results = []
+        all_ok = True
+        for tid in targets:
+            pid = self.config.get("mapping", {}).get(tid, {}).get("play_id")
+            local = self.prepared_data.get(pid)
+            local_sha = hashlib.sha256(local).hexdigest()[:16] if local else None
+            remote_sha_bytes = self._query_remote_sha(tid, f"/sd/{self._bin_name(stem)}")
+            remote_sha = remote_sha_bytes.hex()[:16] if remote_sha_bytes else None
+            match = bool(local_sha and remote_sha and local_sha == remote_sha)
+            if not match:
+                all_ok = False
+            results.append({
+                "tid": tid, "pid": pid,
+                "local_sha": local_sha, "remote_sha": remote_sha,
+                "match": match,
+            })
+            self.panel.log(
+                "ok" if match else "err",
+                f"🔍 [Verify] {tid} /sd/{self._bin_name(stem)} "
+                f"local={local_sha or '無本地數據'} remote={remote_sha or '不存在/逾時'} "
+                f"{'✔ 一致' if match else '✖ 不一致'}"
+            )
+        return all_ok, results
+
     def _save_bins(self):
-        """將 prepared_data 保存到 data/bins/ 目錄"""
-        bins_dir = BINS_DIR
+        """將 prepared_data 保存到資源目錄 (data/bins/<stem>/)。"""
+        bins_dir = self._resource_dir()
         os.makedirs(bins_dir, exist_ok=True)
 
         for pid, data in self.prepared_data.items():
@@ -4818,14 +5023,16 @@ class NetBusMaster:
         except Exception as e:
             print(f"  ⚠️ Metadata (only) load failed: {e}")
 
-    def _load_bins(self):
-        """從 data/bins/ 目錄載入 bin 檔案到 prepared_data"""
-        bins_dir = BINS_DIR
+    def _load_bins(self, stem=None):
+        """從資源目錄 (data/bins/<stem>/ 或舊版扁平 data/bins/) 載入 bin 到 prepared_data。"""
+        stem = stem or self.resource_stem or "data"
+        bins_dir = self._resource_dir(stem)
         needed_pids = {self.config["mapping"][tid].get("play_id") for tid in self.selected_targets}
         needed_pids.discard(None)
 
         self.prepared_data.clear()
         self.pxld_metadata.clear()
+        self.resource_stem = stem
         
         # Load Metadata
         meta_path = os.path.join(bins_dir, 'metadata.json')
@@ -4835,7 +5042,7 @@ class NetBusMaster:
                     loaded_meta = json.load(f)
                     # Convert string keys to int
                     self.pxld_metadata = {int(k): v for k, v in loaded_meta.items()}
-                print(f"  📋 Metadata loaded ({len(self.pxld_metadata)} entries)")
+                print(f"  📋 Metadata loaded ({len(self.pxld_metadata)} entries) from {meta_path}")
             except Exception as e:
                 print(f"  ⚠️ Metadata load failed: {e}")
 
@@ -4857,7 +5064,13 @@ class NetBusMaster:
                 missing.append(pid)
 
         if missing:
-            print(f"  ⚠️ 缺少 PlayID: {missing}")
+            missing = sorted(missing)
+            if len(missing) <= 8:
+                detail = ", ".join(str(p) for p in missing)
+            else:
+                detail = ", ".join(str(p) for p in missing[:8]) + ", … 共 {} 個".format(len(missing))
+            print(f"  ⚠️ 資源 '{stem}' 缺少 {len(missing)} 個 PlayID 的本地檔: {detail}")
+            print(f"     → 這套 pxld 還沒切分/上傳過 (或切分時未含這些設備)。先跑 Step 2 切分 → Step 3 上傳。")
 
         return loaded, missing
 
@@ -4954,6 +5167,9 @@ class NetBusMaster:
             self.panel.start()
             return
         
+        # 🔧 資源名 = pxld 主名 (test.pxld → test → /sd/test.bin)
+        self.resource_stem = self._pxld_stem(path)
+        print(f"\n🏷️  資源主名: '{self.resource_stem}' → 上傳/播放檔名 = '{self._bin_name()}'")
         print(f"\n⚙️ 正在解析動畫: {path}...")
         
         self.prepared_data.clear()
@@ -5087,7 +5303,7 @@ class NetBusMaster:
                 valid_tids.append(tid)
                 
         # 批量發送查詢
-        self.send_pkt(valid_tids, 0x2005, {"path": "/sd/data.bin"})
+        self.send_pkt(valid_tids, 0x2005, {"path": f"/sd/{self._bin_name()}"})
         
         tout = self.config.get("deploy_timeout", 120)
         print(f"⏳ 等待設備回報 (Timeout: {tout}s)...")
@@ -5190,12 +5406,14 @@ class NetBusMaster:
         if not node or data is None:
             raise Exception("無數據或離線")
 
-        local_sha = self._upload_bytes(tid, data, "/sd/data.bin", file_idx=1, total_files=1, file_id=1)
+        bin_name = self._bin_name()
+        remote = f"/sd/{bin_name}"
+        local_sha = self._upload_bytes(tid, data, remote, file_idx=1, total_files=1, file_id=1)
         # 🔧 播放數據常改, 不該進「3 次重啟自動回滾」保護帶: 上傳完立即 confirm
-        #    (清 .bak + pending)。否則 /data.bin 的備份會留著, 3 次開機後被靜默還原成舊版。
-        if not self._confirm_file(tid, "/sd/data.bin"):
-            self._log_event("FAIL", "data.bin 確認失敗 (pending 未清, 可能 3 次重啟後回滾)", device_id=tid)
-            self.panel.log("warn", f"⚠️ [{tid}] data.bin 上傳成功但確認失敗 (pending 未清)")
+        #    (清 .bak + pending)。否則檔案的備份會留著, 3 次開機後被靜默還原成舊版。
+        if not self._confirm_file(tid, remote):
+            self._log_event("FAIL", f"{bin_name} 確認失敗 (pending 未清, 可能 3 次重啟後回滾)", device_id=tid)
+            self.panel.log("warn", f"⚠️ [{tid}] {bin_name} 上傳成功但確認失敗 (pending 未清)")
         self.config["mapping"][tid]["last_sha"] = local_sha.hex()
         self.save_config()
     
@@ -5213,28 +5431,54 @@ class NetBusMaster:
             input("\n按 Enter 繼續...")
             self.panel.start()
             return
-        
+
+        # ── 1. 選資源 (pxld) — 主名即檔名: test.pxld → /sd/test.bin ──
+        pxld_files = self._list_pxld_files()
+        if pxld_files:
+            print("\n🎬 [資源選擇] 播放哪一套 pxld (主名 = /sd 下的 .bin 檔名):")
+            w = max((len(self._pxld_stem(f)) for f in pxld_files), default=8)
+            for i, f in enumerate(pxld_files):
+                stem = self._pxld_stem(f)
+                print(f"   {i+1:>2}. {stem:<{w}}  →  /sd/{stem}.bin")
+            print(f"   [Enter] 沿用目前資源: {self._bin_name()}")
+            raw = input("\n👉 選擇編號: ").strip()
+            if raw:
+                try:
+                    idx = int(raw) - 1
+                    if 0 <= idx < len(pxld_files):
+                        self.resource_stem = self._pxld_stem(pxld_files[idx])
+                    else:
+                        print("❌ 選擇無效, 沿用目前資源")
+                except ValueError:
+                    print("❌ 輸入無效, 沿用目前資源")
+        else:
+            print("⚠️ 目前目錄找不到 .pxld (沿用目前資源: {})".format(self._bin_name()))
+
+        # 載入該資源的本地 bin 資料 (供驗證 sha 比對 / total_frames / fps)
+        loaded, _missing = self._load_bins(self.resource_stem)
+        print(f"🏷️  資源: {self._bin_name()}  (本地載入 {loaded} 個 PlayID)")
+
         if AUDIO_MODE is None:
             print("⚠️ 音訊模塊未安裝 (miniaudio/pygame) — MP3 無法播放,但仍可播放燈效 (靜音模式)")
-        
+
         mp3_files = [f for f in os.listdir('.') if f.endswith('.mp3')]
         if not mp3_files:
             print("❌ 找不到 MP3 文件 (可選)")
-        
+
         print(f"\n🎵 [音訊準備] 模式: {AUDIO_MODE}")
         print(f"  0. 不播放音訊 (僅觸發動畫)")
         for i, f in enumerate(mp3_files):
             print(f"  {i+1}. {f}")
         print("  q. 取消返回")
         print("  [Enter] 等同 0 (靜音模式)")
-        
+
         selected_mp3 = None
         try:
             raw_choice = input("\n👉 選擇編號: ").strip().lower()
             if raw_choice == 'q':
                 self.panel.start()
                 return
-            
+
             if raw_choice == '':
                 choice = 0
             else:
@@ -5259,18 +5503,18 @@ class NetBusMaster:
             time.sleep(1)
             self.panel.start()
             return
-        
+
         print(f"\n⚙️ 正在預備設備...")
-        
+
         for tid in self.selected_targets:
             self.panel.update_device(tid, status="待機")
             if tid in self.panel.monitors:
                 self.panel.monitors[tid].reset_play_stats()
-        
+
         # 🔧 play_mode: 0=播放一次, 1=循環 (播完自動重頭)
         self.current_play_mode = 1 if self.config.get("loop_play", 0) else 0
         self.send_pkt(self.selected_targets, 0x3009, {
-            "file_name": "data.bin",
+            "file_name": self._bin_name(),
             "block_id": 0,
             "play_mode": self.current_play_mode
         })
@@ -5280,19 +5524,31 @@ class NetBusMaster:
             act_str = f"fps={act_fps}" if act_fps > 0 else "關閉"
             print("\n" + "!" * 50)
             print("     系統就緒,等待擊發")
-            print(f"     延遲設定: {self.config.get('sync_delay_ms', 0)} ms  │  循環播放: {loop_str}  │  主動同步: {act_str}")
-            print("     輸入 'go' 開始 | 't' 微調延遲 | 'l' 延遲測試並紀錄 | 'p' 切換循環 | 'a' 切換主動同步 | 'q' 取消")
+            print(f"     資源: {self._bin_name()}  │  延遲: {self.config.get('sync_delay_ms', 0)} ms  │  循環: {loop_str}  │  主動同步: {act_str}")
+            print("     'go' 播放一次 | 'loop' 循環播放 | 'v' 驗證資源 | 't' 微調延遲 | 'l' 延遲測試 | 'a' 切換主動同步 | 'q' 取消")
             print("!" * 50)
-            
+
             trigger = input("\n🚀 指令: ").lower().strip()
-            
-            if trigger == 'go':
+
+            if trigger in ('go', 'loop'):
+                self.config["loop_play"] = 1 if trigger == 'loop' else 0
+                self.current_play_mode = 1 if self.config["loop_play"] else 0
+                self.save_config()
+                self.send_pkt(self.selected_targets, 0x3009, {
+                    "file_name": self._bin_name(),
+                    "block_id": 0,
+                    "play_mode": self.current_play_mode
+                })
                 break
             elif trigger == 'q':
                 print("🛑 已取消")
                 time.sleep(1)
                 self.panel.start()
                 return
+            elif trigger == 'v':
+                # 🔧 驗證資源: 比對每個 slave 的 /sd/{stem}.bin 與本地 sha (同部署驗證)
+                ok, _res = self._verify_resource(self.resource_stem)
+                print("✅ 驗證通過 (所有設備一致)" if ok else "❌ 驗證未通過 (見上方明細)")
             elif trigger == 't':
                 try:
                     curr = self.config.get("sync_delay_ms", 150)
@@ -5329,7 +5585,7 @@ class NetBusMaster:
                 self.save_config()
                 self.current_play_mode = 1 if self.config["loop_play"] else 0
                 self.send_pkt(self.selected_targets, 0x3009, {
-                    "file_name": "data.bin",
+                    "file_name": self._bin_name(),
                     "block_id": 0,
                     "play_mode": self.current_play_mode
                 })
@@ -5831,7 +6087,7 @@ class NetBusMaster:
                 # 只對這一台準備 + 播放 data.bin; 等 READY (0x3008) 再開播,
                 # 避免 0x300A 到時 slave 還在 LOADING 狀態而漏接。
                 node["ready_event"].clear()
-                self.send_pkt([cid], 0x3009, {"file_name": "data.bin", "block_id": 0, "play_mode": 0})
+                self.send_pkt([cid], 0x3009, {"file_name": self._bin_name(), "block_id": 0, "play_mode": 0})
                 if not node["ready_event"].wait(timeout=2.0):
                     print("   ⚠️ READY 逾時 (data.bin 可能未部署/開檔失敗), 仍嘗試開播")
                 self.send_pkt([cid], 0x300A, {"start_frame": 0})
@@ -6048,6 +6304,8 @@ class NetBusMaster:
         print(" 8. Profiles           | 每 id Profile (模式/狀態/批次備份)")
         print(" 9. PoE Restart        | 交換器 PoE 電源控制 (重啟/關閉/開啟, Cisco 3560)")
         print(" i. Install Deps       | 檢查/安裝缺失的 Python 模組")
+        print(" n. Network Interface  | 選擇網卡 (網際網路/設備本地網雙網卡時指定)")
+        print(" b. Brightness         | 調整 .pxld 亮度並產生新檔")
         print(" s. STOP ALL           | 緊急停止")
         print(" q. Exit               | 退出程序")
         print("=" * 60)
@@ -6171,10 +6429,19 @@ class NetBusMaster:
         self.save_config()
         return True, f"{key} = {self.config[key]}"
 
-    def remote_sync_play(self, mp3=None, delay_ms=None, loop=None, active_sync_fps=None):
-        """非互動播放: 等同選單 6 的「擊發」, 但參數由網頁直接傳入。回傳 (ok, message)。"""
+    def remote_sync_play(self, mp3=None, delay_ms=None, loop=None, active_sync_fps=None, resource=None):
+        """非互動播放: 等同選單 6 的「擊發」, 但參數由網頁直接傳入。回傳 (ok, message)。
+
+        resource: pxld 主名或 .bin 檔名 (test / test.pxld / test.bin 都接受) —
+        對應 /sd/{stem}.bin。
+        """
         if not self.selected_targets:
             return False, "請先掃描並選擇設備"
+        # 🔧 資源選擇: 換資源才重新載入本地 bins
+        if resource:
+            stem = self._pxld_stem(resource) if resource.lower().endswith((".pxld", ".bin")) else resource
+            self.resource_stem = stem
+        self._load_bins(self.resource_stem)
         if loop is not None:
             self.config["loop_play"] = 1 if loop else 0
         if delay_ms is not None:
@@ -6194,7 +6461,7 @@ class NetBusMaster:
 
         self.current_play_mode = 1 if self.config.get("loop_play", 0) else 0
         self.send_pkt(self.selected_targets, 0x3009, {
-            "file_name": "data.bin",
+            "file_name": self._bin_name(),
             "block_id": 0,
             "play_mode": self.current_play_mode,
         })
@@ -6300,6 +6567,136 @@ class NetBusMaster:
                 self.panel.log("warn", f"[Query] {tid}: 無回應")
         return f"已查詢 {len(targets)} 台"
 
+    def remote_set_network(self, selector):
+        """設定網卡 (selector: 網卡名/IP/子網前綴/空=自動), 存 config 並重偵測 local_ip。"""
+        self.config["network_interface"] = selector if selector else ""
+        self.save_config()
+        self._iface_cache = None   # 換網卡後失效快取
+        self.local_ip = self.get_local_ip()
+        if selector:
+            if self.local_ip in ("127.0.0.1", "0.0.0.0"):
+                return False, f"找不到網卡 '{selector}' (已存 config, 但本機 IP 未解析成功)"
+            return True, f"網卡已設為 '{selector}' → 本機 IP {self.local_ip}"
+        return True, f"網卡已設為「自動偵測」 → 本機 IP {self.local_ip}"
+
+    def remote_network_info(self):
+        """回傳所有網卡清單 + 目前設定 (供網頁下拉)。"""
+        ifaces = self._list_interfaces()
+        return {
+            "interfaces": ifaces,
+            "current": self.config.get("network_interface", ""),
+            "local_ip": self.local_ip,
+        }
+
+    def select_network_interface(self):
+        """console 選單: 列出網卡, 選一張存 config (或選自動)。"""
+        self.load_config()
+        self.panel.stop()
+        ConsoleUI.clear_screen()
+        ConsoleUI.show_cursor()
+
+        ifaces = self._list_interfaces()
+        cur = self.config.get("network_interface", "")
+        print("\n🌐 [網卡選擇]")
+        print(f"   目前設定: {cur or '(自動偵測)'}  →  本機 IP: {self.local_ip}")
+        print("-" * 56)
+        print("  0. 自動偵測 (default)")
+        for i, it in enumerate(ifaces):
+            mark = "← 目前" if it["ip"] == self.local_ip or it["name"] == cur or it["ip"] == cur else ""
+            print(f"  {i+1}. {it['name']:<12} {it['ip']:<16} {mark}")
+        print("-" * 56)
+        raw = input("👉 請選擇 (0-{}): ".format(len(ifaces))).strip()
+        if raw == "0":
+            ok, msg = self.remote_set_network("")
+        else:
+            try:
+                idx = int(raw) - 1
+                if 0 <= idx < len(ifaces):
+                    ok, msg = self.remote_set_network(ifaces[idx]["name"])
+                else:
+                    ok, msg = False, "編號無效"
+            except ValueError:
+                ok, msg = False, "輸入無效"
+        print(("✅ " if ok else "❌ ") + msg)
+        time.sleep(1)
+        self.panel.start()
+
+    # ==================== 亮度調整 (產生新 pxld) ====================
+    def remote_brightness(self, pxld_name, factor):
+        """依比例調整某個 .pxld 的亮度, 產生新檔 {stem}_bright{pct}.pxld。
+
+        pxld_name: 目前目錄下的 .pxld 檔名 (或主名); factor: 0.0~1.0 (或 >1)。
+        回傳 (ok, message, out_name)。
+        """
+        if not pxld_name:
+            return False, "未指定 .pxld 檔案", None
+        if not pxld_name.lower().endswith(".pxld"):
+            pxld_name += ".pxld"
+        src = os.path.join(SCRIPT_DIR, pxld_name)
+        if not os.path.isfile(src):
+            return False, "找不到檔案: {}".format(pxld_name), None
+        try:
+            factor = float(factor)
+        except (TypeError, ValueError):
+            return False, "亮度比例無效: {!r}".format(factor), None
+        if factor <= 0:
+            return False, "亮度比例必須 > 0 (0.5=50%, 1.0=100%)", None
+
+        stem = self._pxld_stem(pxld_name)
+        pct = int(round(factor * 100))
+        out_name = "{}_bright{}.pxld".format(stem, pct)
+        dst = os.path.join(SCRIPT_DIR, out_name)
+        try:
+            n = adjust_pxld_brightness(src, dst, factor)
+        except Exception as e:
+            return False, "亮度調整失敗: {}".format(e), None
+        return True, "已產生 {} ({} LEDs, {}%)".format(out_name, n, pct), out_name
+
+    def step_brightness(self):
+        """console 選單: 選一個 .pxld → 輸入亮度比例 → 產生新 pxld。"""
+        self.panel.stop()
+        ConsoleUI.clear_screen()
+        ConsoleUI.show_cursor()
+
+        pxld_files = self._list_pxld_files()
+        if not pxld_files:
+            print("❌ 目前目錄找不到 .pxld 檔案")
+            input("\n按 Enter 返回...")
+            self.panel.start()
+            return
+
+        print("\n💡 [亮度調整] 選一套 pxld, 按比例調整亮度後產生新檔:")
+        w = max(len(f) for f in pxld_files)
+        for i, f in enumerate(pxld_files):
+            print(f"   {i+1:>2}. {f:<{w}}")
+        raw = input("\n👉 選擇編號: ").strip()
+        try:
+            idx = int(raw) - 1
+            if not (0 <= idx < len(pxld_files)):
+                raise ValueError
+        except ValueError:
+            print("❌ 選擇無效")
+            time.sleep(1)
+            self.panel.start()
+            return
+        pxld_name = pxld_files[idx]
+
+        raw2 = input("👉 亮度比例 (0~100, 例 50 = 50% / 120 = 120%): ").strip()
+        try:
+            factor = float(raw2) / 100.0
+        except ValueError:
+            print("❌ 比例無效")
+            time.sleep(1)
+            self.panel.start()
+            return
+
+        ok, msg, out_name = self.remote_brightness(pxld_name, factor)
+        print(("✅ " if ok else "❌ ") + msg)
+        if ok and out_name:
+            print(f"   → 之後可在 Step 2 選 '{out_name}' 切分 → Step 3 上傳 (檔名 /sd/{self._pxld_stem(out_name)}.bin)")
+        time.sleep(1.5)
+        self.panel.start()
+
     def main_loop(self):
         # 🔧 不再於啟動時自動敲門叫回設備: master 不主動發起重連 (自動敲門曾在
         #    「離線判斷 → 敲門 → slave 自我斷線重連」間造成抖動循環, 見
@@ -6355,6 +6752,12 @@ class NetBusMaster:
                 self._print_menu()
             elif ch == 'i':
                 self.step_i_install_deps()
+                self._print_menu()
+            elif ch == 'n':
+                self.select_network_interface()
+                self._print_menu()
+            elif ch == 'b':
+                self.step_brightness()
                 self._print_menu()
             elif ch == 's':
                 self.stop_all()
