@@ -171,7 +171,32 @@ class _WebHandler(BaseHTTPRequestHandler):
             items, last = _WEB_LOG.get_since(since)
             self._send_json({"logs": items, "next": last})
             return
+        if path == "/api/qr":
+            self._send_qr_svg()
+            return
         self._send_json({"error": "not found"}, 404)
+
+    def _send_qr_svg(self):
+        """純本地 QR: 編碼目前網頁網址 (綁定網卡 IP:web_port) 成 SVG 回傳。不連外網。"""
+        try:
+            from qr_local import qr_svg
+        except Exception:
+            self._send_json({"error": "qr_local.py missing"}, 500)
+            return
+        port = self.master.config.get("web_port", 8080)
+        ip = self.master.local_ip
+        url = f"http://{ip}:{port}"
+        try:
+            svg = qr_svg(url).encode("utf-8")
+        except Exception as e:
+            self._send_json({"error": f"qr encode failed: {e}"}, 500)
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", "image/svg+xml")
+        self.send_header("Content-Length", str(len(svg)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(svg)
 
     def do_POST(self):
         if urlparse(self.path).path != "/api/action":
@@ -199,7 +224,7 @@ class _WebHandler(BaseHTTPRequestHandler):
             "playing": playing,
             "paused": paused,
             "loop_play": int(cfg.get("loop_play", 0)),
-            "resource": m.resource_stem,
+            "resource": m.resource_stem or m._default_stem(),
             "resources": m._list_resources(),
             "pxlds": m._list_pxld_files(),
             "network": m.remote_network_info(),
@@ -242,6 +267,23 @@ class _WebHandler(BaseHTTPRequestHandler):
                 resource=data.get("resource"),
             )
             return {"ok": ok, "msg": msg}
+        if action == "prepare":
+            ok, msg = m.remote_prepare(
+                resource=data.get("resource"),
+                loop=data.get("loop"),
+                delay_ms=data.get("delay_ms"),
+                active_sync_fps=data.get("active_sync_fps"),
+            )
+            return {"ok": ok, "msg": msg}
+        if action == "fire":
+            mp3 = data.get("mp3") or None
+            if mp3:
+                full = os.path.join(SCRIPT_DIR, mp3)
+                if not os.path.isfile(full):
+                    return {"ok": False, "msg": f"找不到音檔: {mp3}"}
+                mp3 = full
+            ok, msg = m.remote_fire(mp3=mp3)
+            return {"ok": ok, "msg": msg}
         if action == "verify":
             ok, results = m._verify_resource(data.get("resource") or m.resource_stem)
             n_bad = sum(1 for r in results if not r.get("match"))
@@ -266,6 +308,18 @@ class _WebHandler(BaseHTTPRequestHandler):
         if action == "brightness":
             ok, msg, out_name = m.remote_brightness(data.get("pxld"), data.get("factor"))
             return {"ok": ok, "msg": msg, "out": out_name}
+        if action == "latency":
+            stats, applied = m.latency_probe(apply=bool(data.get("apply", False)))
+            if stats is None:
+                return {"ok": False, "msg": "延遲偵查無結果 (無設備/無回應)"}
+            base = m._cfg_int("audio_delay_base_ms", 0)
+            msg = f"延遲 min {stats['min_ms']}ms / avg {stats['avg_ms']}ms / max {stats['max_ms']}ms"
+            if applied is not None:
+                msg += f"  → 套用 {base}ms(基線) + {stats['max_ms']}ms(網路) = {applied}ms"
+            return {"ok": True, "msg": msg, "stats": stats, "applied": applied, "base": base}
+        if action == "direct_test":
+            threading.Thread(target=m.remote_direct_test, daemon=True).start()
+            return {"ok": True, "msg": "Direct 串流測試已啟動 (紅色呼吸→純黑→停止), 請看 Log"}
         return {"ok": False, "msg": f"未知動作: {action}"}
 
 # ==================== 全局默認配置 ====================
@@ -312,7 +366,25 @@ DEFAULT_CONFIG = {
     #    slave config 的 System.frame_interval_ms 決定 (20ms=50fps); 若與動畫
     #    metadata fps 不一致, 重連設備就會用錯節拍越播越落後 —— 設 play_fps 對齊。
     "play_fps": 0,
-    "midjoin_lead_frames": 3  # 重連追幀提前量(幀): 補 seek→讀檔→渲染 的管線延遲
+    "midjoin_lead_frames": 3,  # 重連追幀提前量(幀): 補 seek→讀檔→渲染 的管線延遲
+    # 🔧 延遲偵查: 對所有選中設備量單向延遲, 統計後可自動套用到 sync_delay_ms。
+    #    latency_probe_auto = 1 → 擊發播放前自動偵查並把「最大單向延遲」套進
+    #    sync_delay_ms (先音後燈補償); 0 = 手動 (預設)。延遲=網路單向延遲, 不含
+    #    miniaudio 本機音效啟動延遲 —— 後者若也要自動量, 需另加發聲時間戳。
+    "latency_probe_auto": 0,
+    "latency_probe_samples": 5,   # 每台設備量測樣本數
+    "latency_probe_warmup_s": 0.4, # 每台量測前暖機秒數 (避免 cold-start RTT)
+    # 🔧 音效啟動延遲基線 (ms): miniaudio 開檔/解碼/音效卡 buffer 的啟動延遲,
+    #    ping 量不到 (那是「網路單向延遲」)。延遲偵查套用時:
+    #    sync_delay_ms = audio_delay_base_ms + max(網路單向延遲)。此值手動調。
+    "audio_delay_base_ms": 0,
+    # 🔧 重連追幀 (mid-join) 時序: 準備檔(0x3009)→READY 後, 先固定等這段時間讓
+    #    slave 把 data.bin 開好/進快取, 再量延遲、算幀、發 0x300A。少了這段, seek
+    #    在冷檔案上會慢且不穩, 算好的位置一發就落後。
+    "midjoin_settle_s": 0.5,
+    # 🔧 重連追幀的延遲量測樣本數 (平均法): 用「平均單向延遲」補償而非 min RTT。
+    #    min RTT 在抖動下會低估 → 補償偏小 → 重連後追不上。平均給足裕量。
+    "midjoin_latency_samples": 3
 }
 
 # ==================== 垃圾檔過濾 (Python 快取 / macOS / Windows / 編輯器暫存) ====================
@@ -718,22 +790,23 @@ class MonitorPanel:
         self.log_lock = threading.Lock()
 
     def log(self, level, msg):
-        """把後台通知導進面板 log 區 (非阻塞, 不再直接 print 到 stdout 打亂畫面)。
+        """把後台通知導進面板 log 區 + 網頁 log (非阻塞, 不再直接 print 打亂畫面)。
 
         level: "info" | "ok" | "warn" | "err" (對應面板著色)。
-        面板「沒在跑」(選單/啟動階段) 時 fallback 到 print, 讓通知仍看得到。
-        此方法可被任何執行緒安全呼叫。
+        此方法可被任何執行緒安全呼叫。console 面板 running 時顯示在 log_buffer;
+        網頁端由 _WEB_LOG.log 補進 web log 環形緩衝, 兩邊各只出現一次, 不重複。
         """
         try:
             with self.log_lock:
                 self.log_buffer.append((datetime.now().strftime("%H:%M:%S"), level, str(msg)))
         except Exception:
             pass
-        if not self.running:
-            try:
-                print(str(msg))
-            except Exception:
-                pass
+        # 🔧 網頁 log 出口 (stdout 已被 tee 到 web ring, 這裡「手動」補進去,
+        #    避免與 stdout print 重複 → 每則訊息在 web 只出現一次)
+        try:
+            _WEB_LOG.log(level, str(msg))
+        except Exception:
+            pass
 
     def _drain_logs(self, limit=200):
         """取出目前 log 區 (副本), 供渲染使用。"""
@@ -1004,9 +1077,7 @@ class DeviceManager:
                 "ping_t0": 0.0,
                 "ping_lock": threading.Lock(),      # 🔧 串行化 ping (延遲量測併發防護)
                 "ping_rtt": None,                   # 🔧 最近一次 RTT (ms)
-                "ping_offset": None,                # 🔧 最近一次時鐘偏移 (slave-master, ms)
                 "latency_ms": None,                 # 🔧 單向延遲估計 (min-RTT/2, ms)
-                "clock_offset_ms": None,            # 🔧 min-RTT 樣本的時鐘偏移 (ms)
                 "min_rtt_ms": None,                 # 🔧 本次量測最小 RTT (ms)
                 "avg_rtt_ms": None,                 # 🔧 本次量測平均 RTT (ms)
                 "mode_event": threading.Event(),    # 🔧 0x3102 MODE_LIST_RSP (配對模式)
@@ -1125,7 +1196,9 @@ class NetBusMaster:
         self.selected_targets = []
         self.prepared_data = {}
         self.pxld_metadata = {}
-        self.resource_stem = "data"   # 目前選中的資源 (pxld 主名) → 上傳/播放檔名 = {stem}.bin
+        self.resource_stem = ""   # 目前選中的資源 (pxld 主名) → 上傳/播放檔名 = {stem}.bin; 空 = 未選
+        self._prepared_resource = None
+        self._prepared_play_mode = 0
         self.transfer_cancel = threading.Event()
         self._transfer_kb_stop = threading.Event()
         self._transfer_kb_thread = None
@@ -1487,8 +1560,7 @@ class NetBusMaster:
                 self.save_config()
                 print(f"📝 [Mapping] {cid} IP 紀錄更新 → {client_ip}")
             
-            # 🔧 上線打招呼: 敲門/掃描/主動重連連上都會顯示
-            print(f"👋 [Connect] {cid} 已上線 (PlayID {play_id})")
+            # 🔧 上線打招呼: 敲門/掃描/主動重連連上都會顯示 (只 log 一次, 不再 print 造成重複)
             self.panel.log("ok", f"👋 [Connect] {cid} 已上線 (PlayID {play_id})")
             
             # --- Mid-Stream Join Logic (🔧 延遲補償 + READY 等待, 推算最準確幀號) ---
@@ -1582,14 +1654,6 @@ class NetBusMaster:
         self.panel.update_device(target_cid, status="中途加入")
         self.panel.log("info", f"🔗 [Mid-Join] {target_cid} 開始接回流程 (attempt {_attempt + 1})...")
 
-        # 0. 量測此設備的單向延遲 (RTT/2), 供幀號補償
-        lat_s = 0.0
-        lat = self.measure_latency(target_cid, samples=3)
-        if lat is not None:
-            lat_s = lat / 1000.0
-            self._log_latency([(target_cid, lat)], note="mid-join")
-            self.panel.log("info", f"   📡 {target_cid} latency {lat:.1f}ms → 補償 {lat_s*1000:.0f}ms")
-
         # 非循環且主控已播到結尾 → 視為已播完, 不續播
         total = self._device_total_frames(target_cid)
         if play_mode == 0 and total > 0:
@@ -1633,23 +1697,44 @@ class NetBusMaster:
             self.panel.update_device(target_cid, status="錯誤", error_msg="READY timeout")
             return
 
-        # 3. 就緒瞬間推算目標幀 = (有效播放時間 + 單向延遲補償 + seek 管線提前量) * 權威 fps
-        #    fps 用「權威值」(play_fps / active_sync_fps / metadata), 不再寫死 current_fps,
-        #    否則 slave 實際用 frame_interval_ms 播 (20ms=50fps), PC 用 metadata 30fps 算落點,
-        #    重連設備會 seek 到錯誤位置且越播越落後。
-        fps = self._play_fps_value() or self.current_fps or 40
+        # 1.5 🔧 準備檔 READY 後, 先固定等一段 settle, 讓 slave 把 data.bin 真正
+        #    開好/進快取, 之後的 seek 才會快而穩定 (否則在冷檔案上 seek 慢且抖,
+        #    算好的位置一發就落後)。
+        settle = max(0.0, self._cfg_float("midjoin_settle_s", 0.5))
+        if settle > 0:
+            time.sleep(settle)
+
+        # 2. 重測延遲 (3 次平均): min RTT 在抖動下會低估 → 補償偏小 → 追不上,
+        #    改用平均單向延遲給足裕量。
+        lat_s = 0.0
+        samples = max(2, self._cfg_int("midjoin_latency_samples", 3))
+        lat = self.measure_latency(target_cid, samples=samples, use_avg=True)
+        if lat is not None:
+            lat_s = lat / 1000.0
+            self._log_latency([(target_cid, lat)], note="mid-join")
+            self.panel.log("info", f"   📡 {target_cid} latency {lat:.1f}ms (avg) → 補償 {lat_s*1000:.0f}ms")
+
+        # 3. 就緒瞬間推算目標幀 = (有效播放時間 + 平均單向延遲補償 + seek 管線提前量) * 權威 fps
+        #    fps 用 slave 實際渲染 fps (1000/frame_interval_ms), 或權威 fps;
+        #    不用 metadata fps (30) 去算 —— slave 實際用 frame_interval_ms 前進,
+        #    兩者不同 → 追幀越差越多。
+        #    🔧 重連設備剛上線, status_data 可能是舊的 → 先查一次拿到真正的
+        #    frame_interval_ms, 否則 _tracking_fps 會 fallback 到 metadata fps 算錯。
+        self.query_status(target_cid, timeout=1.5)
+        fps = self._tracking_fps(target_cid)
         lead = max(0, self._cfg_int("midjoin_lead_frames", 3))
         with self.play_lock:
             paused_extra = self.paused_total
             if self.paused_since is not None:
                 paused_extra += time.time() - self.paused_since
+        # 🔧 在「發送前一刻」才取時間戳, 把 compute→send 之間的空窗壓到最小
         elapsed = time.time() - self.playback_start_time - paused_extra
         if elapsed < 0:
             elapsed = 0
         target_frame = int((elapsed + lat_s) * fps) + lead
         if total > 0:
             target_frame = target_frame % total if play_mode == 1 else min(target_frame, total - 1)
-        self.panel.log("info", f"🔄 [Mid-Join] {target_cid} → frame {target_frame} (fps={fps}, lead={lead})")
+        self.panel.log("info", f"🔄 [Mid-Join] {target_cid} → frame {target_frame} (fps={fps}, lead={lead}, lat={lat_s*1000:.0f}ms)")
 
         # 4. 帶幀號播放 + 同步 fps; master 暫停中則讓新裝置也跟上暫停
         #    🔧 只有「權威 fps 真的開啟」才對單台重連設備廣播 0x3001, 否則讓它
@@ -1669,7 +1754,7 @@ class NetBusMaster:
         self.panel.update_device(target_cid, current_frame=target_frame)
 
         # 5. 🔧 接回後驗證閉環: 確認 slave 真的開始播, 進度偏差就 SEEK 拉回
-        ok = self._verify_join(target_cid, target_frame)
+        ok = self._verify_join(target_cid, target_frame, lead_ms=lat_s)
         if not ok and _attempt == 0:
             self.panel.log("warn", f"🔁 [Mid-Join] {target_cid} 接回後未開始播放 → 整輪重來一次")
             time.sleep(1.0)
@@ -1678,12 +1763,15 @@ class NetBusMaster:
         if ok:
             self.panel.log("ok", f"✅ [Mid-Join] {target_cid} 已接回播放 (frame {target_frame}{', 同步暫停' if paused else ''})")
 
-    def _verify_join(self, target_cid, target_frame, rounds=3):
+    def _verify_join(self, target_cid, target_frame, rounds=3, lead_ms=0.0):
         """接回後驗證: 輪詢 slave 狀態, 確認 stream 真的有在跑且進度正確。
 
         回 True = 播放中/已對齊; False = 3 輪都未開始 (接口/狀態沒生效)。
         進度偏差超過容差 → 發 0x3004 SEEK 校正 (slave 端 seek 後回 0x3008,
         狀態自動回 PLAYING, 不需要重送 0x300A)。
+
+        🔧 lead_ms: 接回時量的單向延遲補償, 校正基準要含它 (與 target_frame 一致),
+           否則校正會把延遲補償當偏差抵消掉。
         """
         for rnd in range(1, rounds + 1):
             time.sleep(1.2)
@@ -1703,7 +1791,7 @@ class NetBusMaster:
             self.panel.update_device(target_cid, current_frame=cur, mem_free=mem_free)
             total = self._device_total_frames(target_cid)
             if pos is not None and total > 0:
-                expected = self._expected_frame(target_cid)
+                expected = self._expected_frame(target_cid, lead_ms=lead_ms)
                 drift = abs(pos - expected)
                 # 🔧 容忍度收緊: 重連設備「落後幾幀」也要被抓到並 SEEK 拉回。
                 #    舊值 max(30, 3%) = 282 幀, 小落後永遠不觸發校正。
@@ -1747,11 +1835,15 @@ class NetBusMaster:
             return 0
         return self.pxld_metadata.get(play_id, {}).get("total_frames", 0) or 0
 
-    def _expected_frame(self, cid):
+    def _expected_frame(self, cid, lead_ms=0.0):
         """依主控時鐘推算該設備「現在應該在哪一幀」。
 
         有效播放時間 = now - playback_start_time - 暫停時間; 循環模式取模,
         非循環 clamp 到最後一幀。中途加入與進度校正共用此推算, 保證一致。
+
+        🔧 lead_ms: 校正時傳入「接回補償 (單向延遲)」, 讓校正基準與接回落點一致;
+           否則 _verify_join 用無補償的 expected 當基準, 會把剛設的延遲補償
+           當成「偏差」又 SEEK 拉回去 —— 補償設了等於白設。
         """
         with self.play_lock:
             paused_extra = self.paused_total
@@ -1760,7 +1852,8 @@ class NetBusMaster:
         elapsed = time.time() - self.playback_start_time - paused_extra
         if elapsed < 0:
             elapsed = 0
-        frame = int(elapsed * self.current_fps)
+        fps = self._tracking_fps(cid)
+        frame = int((elapsed + lead_ms) * fps)
         total = self._device_total_frames(cid)
         if total > 0:
             if self.current_play_mode == 1:
@@ -1780,6 +1873,34 @@ class NetBusMaster:
         if play > 0:
             return play
         return self._cfg_int("active_sync_fps", 0)
+
+    def _slave_frame_fps(self, cid):
+        """slave 實際渲染幀率 = 1000 / frame_interval_ms (從 0x1102 回報讀取)。
+
+        🔧 這是追幀的真正權威 fps: slave 的 stream_pos_frame 就是照「渲染節拍」前進,
+           而渲染節拍由 System.frame_interval_ms 決定 (不是動畫 metadata 的 fps)。
+           若 PC 用 metadata 30fps 去算「現在該在哪一幀」, slave 實際用 20ms=50fps
+           前進 → 越追越不準, 且隨時間漂移。讀不到時才 fallback。
+        """
+        node = self.slaves.get(cid)
+        if node:
+            sd = node.get("status_data") or {}
+            fim = sd.get("frame_interval_ms")
+            if fim:
+                try:
+                    f = 1000.0 / float(fim)
+                    if f > 0:
+                        return f
+                except Exception:
+                    pass
+        return float(self._play_fps_value() or self.current_fps or 40)
+
+    def _tracking_fps(self, cid):
+        """追幀用的 fps: 有權威 fps (play_fps/active_sync_fps) 用它, 否則用 slave 實際渲染 fps。"""
+        v = self._play_fps_value()
+        if v > 0:
+            return float(v)
+        return self._slave_frame_fps(cid)
 
     def _apply_play_fps(self):
         """起播時: 依 config 設定權威 fps (current_fps), 需要時補一次 0x3001 廣播。
@@ -1802,19 +1923,32 @@ class NetBusMaster:
 
     # ==================== 網頁遙控 HTTP 服務 (與 console 同一行程) ====================
     def _start_web_server(self):
-        """啟動網頁遙控 HTTP 服務 —— 跑在 NetBusMaster 同一行程, 操作的就是本實例。"""
+        """啟動網頁遙控 HTTP 服務 —— 跑在 NetBusMaster 同一行程, 操作的就是本實例。
+
+        🔧 綁定到「當前選中的網卡 IP」(self.local_ip), 只讓那一張網卡連入 (更準確);
+            local_ip 無效 (127.0.0.1 / 0.0.0.0 / 空) 時才 fallback 0.0.0.0。
+        """
         if not self._cfg_int("web_enable", 1):
             return
         port = self._cfg_int("web_port", 8080)
         _WebHandler.master = self
+        bind_ip = self.local_ip if self.local_ip not in ("127.0.0.1", "0.0.0.0", "") else "0.0.0.0"
         try:
-            self._web_server = ThreadingHTTPServer(("0.0.0.0", port), _WebHandler)
+            self._web_server = ThreadingHTTPServer((bind_ip, port), _WebHandler)
         except OSError as e:
-            print(f"⚠️ [Web] 無法監聽 web port {port}: {e}")
-            return
+            print(f"⚠️ [Web] 無法綁定 {bind_ip}:{port} ({e}), 回退 0.0.0.0")
+            bind_ip = "0.0.0.0"
+            try:
+                self._web_server = ThreadingHTTPServer((bind_ip, port), _WebHandler)
+            except OSError as e2:
+                print(f"⚠️ [Web] 0.0.0.0:{port} 也無法監聽: {e2}")
+                return
         threading.Thread(target=self._web_server.serve_forever, daemon=True).start()
-        url = f"http://{self.local_ip}:{port}"
-        print(f"🌐 [Web] 網頁遙控已啟動: {url}")
+        url = f"http://{self.local_ip}:{port}" if bind_ip != "0.0.0.0" else f"http://{self.local_ip}:{port}"
+        print(f"🌐 [Web] 網頁遙控已啟動 (綁定 {bind_ip}:{port}, 只有這張網卡可連入):")
+        print(f"      → {url}")
+        print(f"   💡 從別台機器連入請用上面的網址; 連不上多半是 macOS 防火牆擋了入站連線")
+        print(f"      (系統設定 → 網路 → 防火牆, 允許 Python 接受連入)。")
         if self._cfg_int("web_open_browser", 1):
             def _open():
                 try:
@@ -1823,6 +1957,21 @@ class NetBusMaster:
                 except Exception as e:
                     print(f"⚠️ [Web] 自動開瀏覽器失敗: {e}")
             threading.Thread(target=_open, daemon=True).start()
+
+    def _restart_web_server(self):
+        """重啟網頁伺服器 (換網卡後重綁到新 IP)。WS 伺服器不受影響。"""
+        old = getattr(self, "_web_server", None)
+        if old is not None:
+            try:
+                old.shutdown()
+            except Exception:
+                pass
+            try:
+                old.server_close()
+            except Exception:
+                pass
+        self._web_server = None
+        self._start_web_server()
 
     def dispatch_logic(self, cid, cmd, payload):
         c_def = self.store.get(cmd)
@@ -1887,17 +2036,18 @@ class NetBusMaster:
         
         elif cmd == 0x100B:
             # 🔧 TIME_SYNC_RSP: 延遲量測回應
-            #    t0 = 本機送出時刻, t1 = slave 收到時刻 (received_at_ms, slave 時鐘),
-            #    t2 = 本機收到時刻 → RTT = t2-t0; 時鐘偏移 = t1 - (t0+t2)/2
+            #    t0 = 本機送出時刻, t2 = 本機收到時刻 (都是 master 的 epoch 時鐘)
+            #    → RTT = t2 - t0。單向延遲 ≈ min_RTT / 2。
+            #    ⚠️ 不再算「時鐘偏移」: slave 回傳的 received_at_ms 是 time.ticks_ms()
+            #    (開機以來的毫秒), 跟 master 的 epoch 秒不同時間基準, 相減只會得到
+            #    約 -57 年的垃圾值, 對延遲補償毫無用處, 已移除。
             if cid in self.slaves:
                 node = self.slaves[cid]
                 t2 = time.time()
                 t0 = node.get("ping_t0", t2)
-                t1 = args.get("received_at_ms", 0) / 1000.0
                 rtt = t2 - t0
                 if rtt >= 0:
                     node["ping_rtt"] = rtt * 1000.0
-                    node["ping_offset"] = (t1 - (t0 + t2) / 2.0) * 1000.0
                     node["ping_event"].set()
         
         elif cmd == 0x3102:
@@ -2006,42 +2156,58 @@ class NetBusMaster:
             # 如果 tid 根本不在 slaves (socket 已 close/清除)，則無法發送，忽略
     
     # ==================== 延遲量測 / 紀錄 (0x100A/0x100B TIME_SYNC) ====================
-    def measure_latency(self, cid, samples=None):
-        """量測單一設備的單向延遲 (ms)。回傳平均值或 None (無回應)。
+    def measure_latency(self, cid, samples=None, warmup=0.0, use_avg=False):
+        """量測單一設備的單向延遲 (ms)。回傳估計值或 None (無回應)。
 
-        利用 0x100A TIME_SYNC (master_time_ms) → slave 回 0x100B TIME_SYNC_RSP
-        (received_at_ms = slave 本地收到時刻)。每個樣本取:
-          RTT    = t2 - t0            (本機送出→收到)
-          偏移   = t1 - (t0+t2)/2     (slave 時鐘 − master 時鐘)
-        NTP 式取「最小 RTT」樣本 (佇列不對稱最小、最可信):
-          單向延遲 ≈ min_RTT / 2      (單一路徑下最精確的估計)
-        另把時鐘偏移一併存下, 供顯示/對時參考。
+        利用 0x100A TIME_SYNC → slave 回 0x100B (RTT 由 master 送出/收到時間算,
+        不依賴 slave 時鐘)。每個樣本取 RTT = t2 - t0 (本機送出→收到)。
+
+        use_avg=False (預設): NTP 式取「最小 RTT」樣本 (佇列不對稱最小、最可信),
+          單向延遲 ≈ min_RTT / 2 —— 適合「展示」與「profile」。
+        use_avg=True: 單向延遲 ≈ avg_RTT / 2 —— 重連追幀用。min RTT 在抖動下
+          會低估, 導致補償偏小、重連後追不上; 平均給足裕量 (使用者回報的落後主因)。
+
+        🔧 warmup: 剛重連時 TCP 仍在 slow-start / 緩衝冷, 前幾個 RTT 明顯偏高。
+        🔧 race: 每圈重抓 node; 等待期間 slave 又重連把 node 換掉 → 該圈作廢。
         """
         node = self.slaves.get(cid)
         if not node:
             return None
         samples = int(samples if samples is not None else self._cfg_int("latency_samples", 5))
         samples = max(1, samples)
-        samples_data = []  # (rtt_ms, offset_ms)
-        with node["ping_lock"]:  # 🔧 避免與健康檢查探測併發互相覆蓋 ping_t0
-            for _ in range(samples):
-                node["ping_event"].clear()
+        if warmup > 0:
+            time.sleep(warmup)
+        samples_data = []  # rtt_ms
+        for _ in range(samples):
+            node = self.slaves.get(cid)   # 🔧 每圈重抓, 防重連換 dict
+            if node is None:
+                return None
+            lock = node.get("ping_lock") or threading.Lock()
+            with lock:
+                evt = node["ping_event"]
+                evt.clear()
                 node["ping_rtt"] = None
-                node["ping_offset"] = None
                 node["ping_t0"] = time.time()
                 self.send_pkt([cid], 0x100A, {"master_time_ms": int(time.time() * 1000) & 0xFFFFFFFF})
-                if node["ping_event"].wait(timeout=1.0):
-                    rtt = node.get("ping_rtt")
-                    if rtt is not None:
-                        samples_data.append((rtt, node.get("ping_offset", 0.0)))
+                if evt.wait(timeout=1.0):
+                    # 🔧 確認 node 沒在等待期間被重連換掉 (否則 rtt 寫到新 node, 舊 evt 是誤觸發)
+                    if self.slaves.get(cid) is node:
+                        rtt = node.get("ping_rtt")
+                        if rtt is not None:
+                            samples_data.append(rtt)
         if not samples_data:
             return None
-        # NTP 式: 最小 RTT 樣本最可信 (佇列不對稱最小)
-        best = min(samples_data, key=lambda x: x[0])
-        node["min_rtt_ms"] = best[0]
-        node["avg_rtt_ms"] = sum(r for r, _ in samples_data) / len(samples_data)
-        node["latency_ms"] = best[0] / 2.0
-        node["clock_offset_ms"] = best[1]
+        # 🔧 丟掉第一個樣本 (暖機高值殘留); 至少留 1 個
+        if len(samples_data) > 2:
+            samples_data = samples_data[1:]
+        best = min(samples_data)
+        avg = sum(samples_data) / len(samples_data)
+        node = self.slaves.get(cid)
+        if node is None:
+            return (avg / 2.0) if use_avg else (best / 2.0)
+        node["min_rtt_ms"] = best
+        node["avg_rtt_ms"] = avg
+        node["latency_ms"] = (avg / 2.0) if use_avg else (best / 2.0)
         return node["latency_ms"]
 
     def _log_latency(self, rows, note=""):
@@ -2086,10 +2252,9 @@ class NetBusMaster:
                 node = self.slaves.get(tid, {})
                 min_rtt = node.get("min_rtt_ms")
                 avg_rtt = node.get("avg_rtt_ms")
-                off = node.get("clock_offset_ms")
                 extra = ""
                 if min_rtt is not None:
-                    extra = f"  (minRTT {min_rtt:5.1f}ms / avgRTT {avg_rtt:5.1f}ms / offset {off:+7.2f}ms)"
+                    extra = f"  (minRTT {min_rtt:5.1f}ms / avgRTT {avg_rtt:5.1f}ms)"
                 print(f"  ✅ {tid}: 單向 {lat:6.1f} ms{extra}")
                 rows.append((tid, lat))
         if rows:
@@ -2097,6 +2262,57 @@ class NetBusMaster:
                 note = input("  📝 備註 (Enter=無): ").strip()
             self._log_latency(rows, note=note)
             print(f"💾 已紀錄 {len(rows)} 筆 → {os.path.join(LOG_DIR, self.config.get('latency_log_file', 'latency_log.csv'))}")
+
+    def latency_probe(self, targets=None, apply=False):
+        """延遲偵查: 量所有目標的單向延遲, 統計 min/avg/max。
+
+        apply=True 時套用「audio_delay_base_ms + max(網路單向延遲)」到 sync_delay_ms。
+        audio_delay_base_ms 是音效啟動延遲基線 (miniaudio 開檔/解碼/音效卡 buffer,
+        ping 量不到, 需手填); max(網路延遲) 是這次量到最慢那台的單向延遲。
+        回傳 (stats, applied_ms)。
+        """
+        targets = list(targets) if targets is not None else list(self.selected_targets)
+        if not targets:
+            self.panel.log("warn", "⚠️ 延遲偵查: 無目標設備")
+            return None, None
+        samples = self._cfg_int("latency_probe_samples", 5)
+        warmup = self._cfg_float("latency_probe_warmup_s", 0.4)
+        self.panel.log("info", f"📡 [延遲偵查] 開始量測 {len(targets)} 台 (samples={samples}, warmup={warmup}s)...")
+        rows = []
+        for tid in targets:
+            lat = self.measure_latency(tid, samples=samples, warmup=warmup)
+            if lat is None:
+                self.panel.log("warn", f"   ❌ {tid}: 無回應")
+                continue
+            node = self.slaves.get(tid, {})
+            rows.append({
+                "tid": tid,
+                "pid": self.config.get("mapping", {}).get(tid, {}).get("play_id"),
+                "latency_ms": round(lat, 2),
+                "min_rtt_ms": round(node.get("min_rtt_ms", 0), 2),
+                "avg_rtt_ms": round(node.get("avg_rtt_ms", 0), 2),
+            })
+            self.panel.log("info", f"   ✅ {tid} (PlayID {rows[-1]['pid']}): 單向 {lat:.2f}ms (minRTT {rows[-1]['min_rtt_ms']}ms)")
+        if not rows:
+            self.panel.log("warn", "⚠️ 延遲偵查: 全部無回應")
+            return None, None
+        lats = [r["latency_ms"] for r in rows]
+        stats = {
+            "count": len(rows),
+            "min_ms": round(min(lats), 2),
+            "avg_ms": round(sum(lats) / len(lats), 2),
+            "max_ms": round(max(lats), 2),
+            "rows": rows,
+        }
+        self.panel.log("ok", f"📊 [延遲偵查] 結果: min {stats['min_ms']}ms / avg {stats['avg_ms']}ms / max {stats['max_ms']}ms (共 {stats['count']} 台)")
+        applied_ms = None
+        if apply:
+            base = self._cfg_int("audio_delay_base_ms", 0)
+            applied_ms = int(round(base + stats["max_ms"]))
+            self.config["sync_delay_ms"] = applied_ms
+            self.save_config()
+            self.panel.log("ok", f"⚙️ [延遲偵查] 已套用 sync_delay_ms = {base}ms(音效基線) + {stats['max_ms']}ms(最大網路延遲) = {applied_ms}ms")
+        return stats, applied_ms
 
     def _get_mode_name(self, cid, mode_id):
         """查詢單一本地燈效模式的名稱 (0x3107→0x3108), 失敗回 '?'。
@@ -2200,7 +2416,6 @@ class NetBusMaster:
             lat = self.measure_latency(cid, samples=3)
             if lat is not None:
                 profile["latency_ms"] = round(lat, 2)
-                profile["clock_offset_ms"] = round(node.get("clock_offset_ms") or 0.0, 2)
         # 檔案清單
         if manifest is not None:
             profile["files"] = sorted(manifest.keys())
@@ -2233,7 +2448,7 @@ class NetBusMaster:
             print(f"      frame_interval_ms: {st.get('frame_interval_ms', '?')}  │  played_frames: {st.get('played_frames', '?')}  │  stream_frame_count: {st.get('stream_frame_count', '?')}")
             print(f"      stream_mode: {st.get('stream_mode', '?')}  │  stream_active: {st.get('stream_active', '?')}")
         if "latency_ms" in profile:
-            print(f"      單向延遲: {profile['latency_ms']} ms  │  offset: {profile.get('clock_offset_ms')} ms")
+            print(f"      單向延遲: {profile['latency_ms']} ms")
         modes = profile.get("modes") or []
         if modes:
             print(f"      可播放模式 {len(modes)} 個:")
@@ -4911,29 +5126,37 @@ class NetBusMaster:
         """'test.pxld' → 'test' (只換副檔名, 主名保留; 播放時 {stem}.bin)。"""
         return os.path.splitext(os.path.basename(path))[0]
 
+    def _default_stem(self):
+        """未選資源時的預設主名: 第一個 .pxld 主名, 沒有才回 'data' (舊版兜底)。"""
+        pxld = self._list_pxld_files()
+        if pxld:
+            return self._pxld_stem(pxld[0])
+        return "data"
+
     def _bin_name(self, stem=None):
-        stem = stem or self.resource_stem or "data"
+        stem = stem or self.resource_stem or self._default_stem()
         return stem + ".bin"
 
     def _resource_dir(self, stem=None):
         """資源的 bins 目錄。'data' = 舊版扁平 data/bins/; 其餘 = data/bins/<stem>/。"""
-        stem = stem or self.resource_stem or "data"
+        stem = stem or self.resource_stem or self._default_stem()
         if stem == "data":
             return BINS_DIR
         return os.path.join(BINS_DIR, stem)
 
     def _list_resources(self):
-        """列出已切分的資源主名 (data.bin 舊版 = 'data'; 其餘 = data/bins/<stem>/)。"""
+        """列出已切分的資源主名 = data/bins/<stem>/ 目錄 (新邏輯)。
+
+        不再把舊版扁平 data/bins/metadata.json 當成 'data' 資源 —— 舊版單一
+        data.bin 已由「每套 pxld 一個目錄」取代, 避免網頁下拉又冒出 data.bin。
+        """
         stems = []
         try:
-            if os.path.isfile(os.path.join(BINS_DIR, "metadata.json")):
-                stems.append("data")
             if os.path.isdir(BINS_DIR):
                 for name in sorted(os.listdir(BINS_DIR)):
                     d = os.path.join(BINS_DIR, name)
                     if os.path.isdir(d) and os.path.isfile(os.path.join(d, "metadata.json")):
-                        if name not in stems:
-                            stems.append(name)
+                        stems.append(name)
         except Exception:
             pass
         return stems
@@ -4965,8 +5188,12 @@ class NetBusMaster:
         all_ok = True
         for tid in targets:
             pid = self.config.get("mapping", {}).get(tid, {}).get("play_id")
-            local = self.prepared_data.get(pid)
-            local_sha = hashlib.sha256(local).hexdigest()[:16] if local else None
+            local_path = self._resource_bin_path(pid, stem) if pid is not None else None
+            if local_path and os.path.isfile(local_path):
+                # 🔧 串流算 sha (64KB chunk), 不把整檔讀進記憶體; 有 mtime/size 快取
+                local_sha = self._calc_local_sha(local_path).hex()[:16]
+            else:
+                local_sha = None
             remote_sha_bytes = self._query_remote_sha(tid, f"/sd/{self._bin_name(stem)}")
             remote_sha = remote_sha_bytes.hex()[:16] if remote_sha_bytes else None
             match = bool(local_sha and remote_sha and local_sha == remote_sha)
@@ -5073,6 +5300,49 @@ class NetBusMaster:
             print(f"     → 這套 pxld 還沒切分/上傳過 (或切分時未含這些設備)。先跑 Step 2 切分 → Step 3 上傳。")
 
         return loaded, missing
+
+    def _load_metadata_for_stem(self, stem=None):
+        """只載入資源 metadata (total_frames/fps) 並確認本地 bin 檔是否存在, 不讀檔內容。
+
+        進入 Sync Play 用: 進播放只需要 total_frames/fps, 不需要把 51 個 24MB 的
+        bin 全塞進記憶體。真正的 sha 比對移到按下 'v' 驗證時才逐檔算 (串流讀取)。
+        回傳 (現有檔數, missing_playids)。
+        """
+        stem = stem or self.resource_stem or "data"
+        bins_dir = self._resource_dir(stem)
+        needed_pids = {self.config["mapping"][tid].get("play_id") for tid in self.selected_targets}
+        needed_pids.discard(None)
+
+        self.resource_stem = stem
+
+        # 只讀 metadata (小檔), 不讀 bin 內容
+        meta_path = os.path.join(bins_dir, 'metadata.json')
+        if os.path.exists(meta_path):
+            try:
+                with open(meta_path, 'r', encoding='utf-8') as f:
+                    loaded_meta = json.load(f)
+                self.pxld_metadata = {int(k): v for k, v in loaded_meta.items()}
+                print(f"  📋 Metadata loaded ({len(self.pxld_metadata)} entries) from {meta_path}")
+            except Exception as e:
+                print(f"  ⚠️ Metadata load failed: {e}")
+
+        present = 0
+        missing = []
+        for pid in sorted(needed_pids):
+            if os.path.isfile(os.path.join(bins_dir, f"pid_{pid}.bin")):
+                present += 1
+            else:
+                missing.append(pid)
+
+        if missing:
+            if len(missing) <= 8:
+                detail = ", ".join(str(p) for p in missing)
+            else:
+                detail = ", ".join(str(p) for p in missing[:8]) + ", … 共 {} 個".format(len(missing))
+            print(f"  ⚠️ 資源 '{stem}' 缺少 {len(missing)} 個 PlayID 的本地檔: {detail}")
+            print(f"     → 這套 pxld 還沒切分/上傳過 (或切分時未含這些設備)。先跑 Step 2 切分 → Step 3 上傳。")
+
+        return present, missing
 
     def _fill_pca_w(self, data):
         """把 data.bin 每幀「最後 16 顆」的 W 通道填上有值。
@@ -5454,9 +5724,10 @@ class NetBusMaster:
         else:
             print("⚠️ 目前目錄找不到 .pxld (沿用目前資源: {})".format(self._bin_name()))
 
-        # 載入該資源的本地 bin 資料 (供驗證 sha 比對 / total_frames / fps)
-        loaded, _missing = self._load_bins(self.resource_stem)
-        print(f"🏷️  資源: {self._bin_name()}  (本地載入 {loaded} 個 PlayID)")
+        # 🔧 只載入 metadata (total_frames/fps), 不讀 51 個 bin 的內容 ——
+        #    進播放不需要整檔資料; 真正 sha 比對等按下 'v' 驗證時才串流算。
+        present, _missing = self._load_metadata_for_stem(self.resource_stem)
+        print(f"🏷️  資源: {self._bin_name()}  (本地現有 {present} 個 PlayID 檔; 驗證時才比對 sha)")
 
         if AUDIO_MODE is None:
             print("⚠️ 音訊模塊未安裝 (miniaudio/pygame) — MP3 無法播放,但仍可播放燈效 (靜音模式)")
@@ -5554,11 +5825,15 @@ class NetBusMaster:
                     curr = self.config.get("sync_delay_ms", 150)
                     new_val = input(f"👉 輸入新延遲 (當前 {curr}ms): ").strip()
                     if new_val:
-                        self.config["sync_delay_ms"] = int(new_val)
-                        self.save_config()
-                        print(f"✅ 延遲已更新為: {self.config['sync_delay_ms']} ms")
+                        v = int(new_val)
+                        if not (-60000 <= v <= 60000):
+                            print("❌ 延遲需在 -60000 ~ 60000 ms 之間")
+                        else:
+                            self.config["sync_delay_ms"] = v
+                            self.save_config()
+                            print(f"✅ 延遲已更新為: {self.config['sync_delay_ms']} ms")
                 except ValueError:
-                    print("❌ 輸入無效")
+                    print("❌ 輸入無效 (需為整數)")
             elif trigger == 'l':
                 # 🔧 延遲測試 + 手動紀錄 (CSV, 可加備註)
                 self._latency_test_and_log(ask_note=True)
@@ -5607,8 +5882,9 @@ class NetBusMaster:
         delay_ms = self.config.get("sync_delay_ms", 150)
         delay_sec = abs(delay_ms) / 1000.0
         
-        # 記錄播放起始時間與 FPS，供中途加入使用
-        self.playback_start_time = time.time()
+        # 記錄 FPS（供中途加入使用）。⚠️ playback_start_time 改在「真正發 0x300A
+        # 開燈那一刻」才設 —— 之前設在延遲 sleep 之前, 大延遲時主控時鐘提早
+        # (delay_ms/1000*fps) 幀, SEEK 校正會把 slave 硬拉超前 → 看起來「崩壞」。
         self.current_fps = 40 # Default
         if self.selected_targets:
             pid = self.config["mapping"][self.selected_targets[0]].get("play_id")
@@ -5642,13 +5918,16 @@ class NetBusMaster:
                 self._start_audio_stream(selected_mp3)
                 if delay_ms > 0:
                     time.sleep(delay_sec)
+                self.playback_start_time = time.time()   # 🔧 開燈那一刻才計時
                 self.send_pkt(self.selected_targets, 0x300A, {"start_frame": 0})
             else:
+                self.playback_start_time = time.time()   # 🔧 開燈那一刻才計時
                 self.send_pkt(self.selected_targets, 0x300A, {"start_frame": 0})
                 time.sleep(delay_sec)
                 self._start_audio_stream(selected_mp3)
         else:
             # Silent mode: just trigger
+            self.playback_start_time = time.time()   # 🔧 開燈那一刻才計時
             self.send_pkt(self.selected_targets, 0x300A, {"start_frame": 0})
         
         # 🔧 播放進度輪詢: 每秒向 slave 查 0x1101, 用 0x1102 更新面板進度
@@ -5724,17 +6003,12 @@ class NetBusMaster:
                 self.play_session_active = False
             self._dev_finished.clear()
 
-        # 🔧 自然播完 (非循環音檔結束, 非手動 s/q 停止) → 延遲 post_play_stop_delay_s
-        #    後才送 0x3002 停止指令。slave 端在檔尾會保持最後一幀亮著, 這段延遲就是
-        #    「最後姿勢定格」時間; 延遲一到才真正熄燈。手動停止時 stop_all() 已立即
-        #    送過 0x3002, 這裡不重複送 (否則會誤關掉緊接著的下一段準備)。
+        # 🔧 自然播完 (非循環音檔結束, 非手動 s/q 停止) → 先播純黑 post_play_stop_delay_s
+        #    秒再送 0x3002 停止。原本這段時間 slave 停在「最後一幀姿勢」, 現在改用
+        #    direct mode 發純黑幀覆蓋, 讓收尾是平滑淡出到黑, 不是停在最後一幀。
         if (not self._stop_was_manual) and (self.current_play_mode != 1):
             delay = max(0.0, self._cfg_float("post_play_stop_delay_s", 10.0))
-            self.panel.log("info", "🏁 播放自然結束, {} 秒後發送停止指令 (0x3002)...".format(delay))
-            time.sleep(delay)
-            if self.selected_targets:
-                self.send_pkt(self.selected_targets, 0x3002, {})
-                self.panel.log("ok", "🛑 已發送停止指令 (0x3002) — 熄燈")
+            self._blackout_then_stop(self.selected_targets, delay)
 
         for tid in self.selected_targets:
             self.panel.update_device(tid, status="待機")
@@ -5825,15 +6099,21 @@ class NetBusMaster:
                 cur, pos, active, mem_free, _rid = self._parse_status(st)
                 self.panel.update_device(tid, current_frame=cur, mem_free=mem_free)
                 mon = self.panel.monitors.get(tid)
-                # 🔧 自然播完偵測: 裝置回報 stream_active=False 且已播過幀 →
+                # 🔧 自然播完偵測: 裝置回報 stream_active=False 且「已播到接近結尾」→
                 #    非循環播放已到檔尾; 標記後, 之後重連不再自動續播。
-                #    (剛重啟的裝置 cur=0 且 stream_active=False, 不算播完,
-                #     避免把「重啟後還沒接回」誤判成「播完」)
+                #    flaky 設備會偶發回報 active=False 但 frame 才到中段 (例如
+                #    80F1B2D1F530 回報 frame 7323/9427 就被誤判播完) —— 這種情況
+                #    不標播完, 讓它重連時仍可被 mid-join 救回。
                 if active is False:
-                    if mon and mon.status in ("播放中", "暫停", "中途加入") and cur > 0:
+                    total_frames = self._device_total_frames(tid)
+                    near_end = (total_frames > 0 and cur >= total_frames - max(3, int(total_frames * 0.02)))
+                    if mon and mon.status in ("播放中", "暫停", "中途加入") and cur > 0 and near_end:
                         self._dev_finished.add(tid)
                         self.panel.update_device(tid, status="播完")
-                        print(f"🏁 [Play] {tid} 串流已自然播完 (frame {cur})")
+                        print(f"🏁 [Play] {tid} 串流已自然播完 (frame {cur}/{total_frames})")
+                    elif mon and mon.status in ("播放中", "暫停", "中途加入") and cur > 0:
+                        # flaky: active=False 但還沒到結尾 → 不標播完, 只留 log, 等待重連救回
+                        self.panel.log("warn", f"⚠️ [Play] {tid} 回報 stream_active=False 但 frame {cur}/{total_frames} 未到結尾 (flaky?), 不標播完")
                     continue
                 # 🔧 進度校正: 播放中且回報進度與主控推算偏差過大 → SEEK 拉回。
                 #    (新韌體有 stream_pos_frame 才做; 舊韌體 played_frames 是
@@ -6328,10 +6608,12 @@ class NetBusMaster:
         "midjoin_lead_frames", "ws_port", "upt_port", "web_port",
         "web_enable", "web_open_browser", "upload_chunk_size",
         "latency_samples", "download_chunk_size", "transfer_retry_count",
+        "latency_probe_auto", "latency_probe_samples", "audio_delay_base_ms",
     }
     _REMOTE_FLOAT_KEYS = {
         "active_sync_interval_s", "progress_poll_interval_s",
         "post_play_stop_delay_s", "upload_ack_timeout", "upload_begin_timeout",
+        "latency_probe_warmup_s",
     }
 
     def remote_devices(self):
@@ -6429,44 +6711,81 @@ class NetBusMaster:
         self.save_config()
         return True, f"{key} = {self.config[key]}"
 
-    def remote_sync_play(self, mp3=None, delay_ms=None, loop=None, active_sync_fps=None, resource=None):
-        """非互動播放: 等同選單 6 的「擊發」, 但參數由網頁直接傳入。回傳 (ok, message)。
+    def remote_prepare(self, resource=None, loop=None, delay_ms=None, active_sync_fps=None):
+        """準備 (select + data 暖機): 選資源、送 0x3009 讓 slave 開檔/載入, 並等 READY。
 
-        resource: pxld 主名或 .bin 檔名 (test / test.pxld / test.bin 都接受) —
-        對應 /sd/{stem}.bin。
+        與播放 (remote_fire) 拆開: 讓 slave 有時間把 data.bin 打開/暖機, 否則
+        「選了就馬上擊發」slave 可能還在開檔, 0x300A 到時會漏接。回傳 (ok, message)。
         """
         if not self.selected_targets:
             return False, "請先掃描並選擇設備"
-        # 🔧 資源選擇: 換資源才重新載入本地 bins
         if resource:
             stem = self._pxld_stem(resource) if resource.lower().endswith((".pxld", ".bin")) else resource
             self.resource_stem = stem
-        self._load_bins(self.resource_stem)
+        self._load_metadata_for_stem(self.resource_stem)
         if loop is not None:
             self.config["loop_play"] = 1 if loop else 0
         if delay_ms is not None:
-            self.config["sync_delay_ms"] = int(delay_ms)
+            self.config["sync_delay_ms"] = max(-60000, min(60000, int(delay_ms)))
         if active_sync_fps is not None:
             self.config["active_sync_fps"] = int(active_sync_fps)
         self.save_config()
 
-        # 已在播放 → 先停掉上一段, 再重新準備
+        # 已在播放 → 先停掉上一段
         if self.is_playing or self.play_session_active:
             self.stop_all()
 
         for tid in self.selected_targets:
-            self.panel.update_device(tid, status="待機")
+            self.panel.update_device(tid, status="準備中")
             if tid in self.panel.monitors:
                 self.panel.monitors[tid].reset_play_stats()
 
         self.current_play_mode = 1 if self.config.get("loop_play", 0) else 0
+
+        # 🔧 先 clear ready_event 再送 0x3009, 之後等每台 READY (data 暖機完成)
+        for tid in self.selected_targets:
+            node = self.slaves.get(tid)
+            if node:
+                node["ready_event"].clear()
         self.send_pkt(self.selected_targets, 0x3009, {
             "file_name": self._bin_name(),
             "block_id": 0,
             "play_mode": self.current_play_mode,
         })
 
-        # 播放會話開始 (go → stop_all 之間)
+        # 等 READY (0x3008) — slave 開檔 + 讀第一幀完成
+        ready = set()
+        deadline = time.time() + 5.0
+        while time.time() < deadline:
+            for tid in self.selected_targets:
+                node = self.slaves.get(tid)
+                if node and node.get("ready_event", threading.Event()).is_set():
+                    ready.add(tid)
+            if len(ready) >= len(self.selected_targets):
+                break
+            time.sleep(0.1)
+
+        n_ready = len(ready)
+        n_total = len(self.selected_targets)
+        for tid in self.selected_targets:
+            self.panel.update_device(tid, status="待機")
+        self._prepared_resource = self.resource_stem
+        self._prepared_play_mode = self.current_play_mode
+        if n_ready < n_total:
+            self.panel.log("warn", f"⚙️ [Prepare] {n_ready}/{n_total} 台已 READY (其餘可能仍在開檔, 播放時會再確認)")
+        return True, f"已準備 {n_ready}/{n_total} 台 (data 暖機完成, 可擊發)"
+
+    def remote_fire(self, mp3=None):
+        """擊發播放 (0x300A): 前提是已 remote_prepare。回傳 (ok, message)。"""
+        if not self.selected_targets:
+            return False, "請先掃描並選擇設備"
+        if not self.play_session_active and not self.is_playing:
+            # 尚未準備 → 自動補 prepare (向後相容)
+            ok, msg = self.remote_prepare()
+            if not ok:
+                return False, msg
+
+        # 播放會話開始 (fire → stop_all 之間)
         with self.play_lock:
             self.play_session_active = True
             self.audio_finished = False
@@ -6478,7 +6797,6 @@ class NetBusMaster:
         self.is_paused = False
 
         # current_fps 由 metadata 提供 (供中途加入/進度推算)
-        self.playback_start_time = time.time()
         self.current_fps = 40
         pid = self.config.get("mapping", {}).get(self.selected_targets[0], {}).get("play_id")
         meta = self.pxld_metadata.get(pid, {}) if pid is not None else {}
@@ -6490,6 +6808,12 @@ class NetBusMaster:
 
         self._start_active_sync()
 
+        # 🔧 延遲偵查 (自動): 若 config latency_probe_auto=1, 擊發前先量所有設備
+        #    單向延遲並把「最大延遲」套進 sync_delay_ms (先音後燈)。仍只補網路
+        #    延遲, 不含 miniaudio 本機啟動延遲。
+        if self._cfg_int("latency_probe_auto", 0):
+            self.latency_probe(self.selected_targets, apply=True)
+
         delay_ms_v = self.config.get("sync_delay_ms", 150)
         delay_sec = abs(delay_ms_v) / 1000.0
         if mp3:
@@ -6497,21 +6821,29 @@ class NetBusMaster:
                 self._start_audio_stream(mp3)
                 if delay_ms_v > 0:
                     time.sleep(delay_sec)
+                self.playback_start_time = time.time()   # 🔧 開燈那一刻才計時
                 self.send_pkt(self.selected_targets, 0x300A, {"start_frame": 0})
             else:
+                self.playback_start_time = time.time()   # 🔧 開燈那一刻才計時
                 self.send_pkt(self.selected_targets, 0x300A, {"start_frame": 0})
                 time.sleep(delay_sec)
                 self._start_audio_stream(mp3)
-            # 背景看守: 非循環音檔播完 → 補延遲停止並收尾 (等同互動版的 finally + post-play)
             threading.Thread(target=self._remote_play_watchdog, daemon=True).start()
         else:
-            # 靜音模式: 只觸發動畫, is_playing 由 stop 結束
+            self.playback_start_time = time.time()   # 🔧 開燈那一刻才計時
             self.send_pkt(self.selected_targets, 0x300A, {"start_frame": 0})
 
         self._start_progress_poll()
         for tid in self.selected_targets:
             self.panel.update_device(tid, status="播放中")
         return True, "已擊發播放"
+
+    def remote_sync_play(self, mp3=None, delay_ms=None, loop=None, active_sync_fps=None, resource=None):
+        """一鍵播放 (準備+擊發): 等同舊行為, 內部先 prepare 再 fire。回傳 (ok, message)。"""
+        ok, msg = self.remote_prepare(resource=resource, loop=loop, delay_ms=delay_ms, active_sync_fps=active_sync_fps)
+        if not ok:
+            return False, msg
+        return self.remote_fire(mp3=mp3)
 
     def _remote_play_watchdog(self):
         """遠端播放的收尾看守 (音檔自然播完才走這條)。"""
@@ -6521,10 +6853,7 @@ class NetBusMaster:
             return
         if self.current_play_mode != 1:
             delay = max(0.0, self._cfg_float("post_play_stop_delay_s", 10.0))
-            time.sleep(delay)
-            if self.selected_targets:
-                self.send_pkt(self.selected_targets, 0x3002, {})
-                self.panel.log("ok", "🛑 已發送停止指令 (0x3002) — 熄燈")
+            self._blackout_then_stop(self.selected_targets, delay)
         with self.play_lock:
             self.play_session_active = False
         self._dev_finished.clear()
@@ -6567,17 +6896,115 @@ class NetBusMaster:
                 self.panel.log("warn", f"[Query] {tid}: 無回應")
         return f"已查詢 {len(targets)} 台"
 
+    # ==================== Direct Mode (0x3003) 串流測試 ====================
+    def _resource_frame_bytes(self, pid=None):
+        """反推每幀 bytes (RGBW, 4B/pixel), 從 metadata total_frames + bin 檔大小。
+
+        這是 direct mode 的權威幀大小, 與 slave 端「多除小補」的 slot 對齊。
+        (實際動畫 676 pixel × 4 = 2704 bytes)
+        """
+        if pid is None:
+            pid = 0
+            if self.selected_targets:
+                pid = self.config.get("mapping", {}).get(self.selected_targets[0], {}).get("play_id", 0)
+        total = (self.pxld_metadata.get(pid, {}) or {}).get("total_frames", 0)
+        if total > 0:
+            bin_path = self._resource_bin_path(pid, self.resource_stem)
+            if os.path.isfile(bin_path):
+                fb = os.path.getsize(bin_path) // total
+                if fb > 0:
+                    return fb
+        return 2704   # 676 pixel × 4 兜底
+
+    def _direct_frame(self, r=0, g=0, b=0, w=0, frame_bytes=None):
+        """構造一幀純色 RGBW 資料 (每 pixel 4 bytes 順序: R,G,B,W)。"""
+        fb = frame_bytes or self._resource_frame_bytes()
+        n = fb // 4
+        buf = bytearray(fb)
+        for i in range(n):
+            o = i * 4
+            buf[o] = r & 0xFF
+            buf[o + 1] = g & 0xFF
+            buf[o + 2] = b & 0xFF
+            buf[o + 3] = w & 0xFF
+        return bytes(buf)
+
+    def remote_direct_breath(self, duration_s=3.0, fps=None, brightness=255):
+        """Direct Mode 測試: 用 0x3003 直接發 RGBW 幀, 播放「紅色呼吸」。
+
+        純網絡逐幀串流 (不走 data.bin 檔案)。正弦呼吸紅光, 每幀 R 通道變化,
+        G/B/W = 0。結束後不自動停, 由呼叫端接 _blackout_then_stop。回傳 (ok, message)。
+        """
+        import math
+        targets = list(self.selected_targets) or list(self.slaves.keys())
+        if not targets:
+            return False, "無在線/已選設備"
+        fb = self._resource_frame_bytes()
+        if fps is None:
+            fps = self._tracking_fps(targets[0])
+        fps = max(1, min(120, int(fps)))
+        frame_interval = 1.0 / fps
+        breath_period = 2.0   # 一個完整呼吸週期 (秒)
+        total_frames = max(1, int(duration_s * fps))
+        self.panel.log("info", f"🎬 [Direct] 紅色呼吸開始: {duration_s}s @ {fps}fps, 幀 {fb}B ({fb // 4} px)")
+        t0 = time.time()
+        for i in range(total_frames):
+            t = i / fps
+            v = int((math.sin(2 * math.pi * t / breath_period) + 1.0) / 2.0 * brightness)
+            frame = self._direct_frame(r=v, g=0, b=0, w=0, frame_bytes=fb)
+            self.send_pkt(targets, 0x3003, {"pixel_data": frame})
+            next_t = t0 + (i + 1) * frame_interval
+            sleep = next_t - time.time()
+            if sleep > 0:
+                time.sleep(sleep)
+        self.panel.log("ok", "🎬 [Direct] 紅色呼吸結束")
+        return True, f"紅色呼吸播完 ({duration_s}s @ {fps}fps)"
+
+    def _blackout_then_stop(self, targets, blackout_s):
+        """純黑收尾: 用 direct mode 發純黑幀 (覆蓋最後一幀姿勢), 保持 blackout_s 秒後送 0x3002 停止。"""
+        if not targets:
+            return
+        fb = self._resource_frame_bytes()
+        black = self._direct_frame(r=0, g=0, b=0, w=0, frame_bytes=fb)
+        for _ in range(3):   # 連發幾幀確保 slave 渲染到純黑
+            self.send_pkt(targets, 0x3003, {"pixel_data": black})
+            time.sleep(0.05)
+        self.panel.log("info", f"⬛ [Blackout] 純黑 {blackout_s:.1f}s 後停止")
+        if blackout_s > 0:
+            time.sleep(blackout_s)
+        self.send_pkt(targets, 0x3002, {})
+        self.panel.log("ok", "🛑 已發送停止指令 (0x3002) — 熄燈")
+
+    def remote_direct_test(self):
+        """完整 direct mode 測試: 紅色呼吸 → 純黑 → 停止。"""
+        ok, msg = self.remote_direct_breath(duration_s=3.0)
+        if not ok:
+            return False, msg
+        targets = list(self.selected_targets) or list(self.slaves.keys())
+        self._blackout_then_stop(targets, 1.0)
+        return True, "紅色呼吸 → 純黑 → 停止 完成"
+
     def remote_set_network(self, selector):
-        """設定網卡 (selector: 網卡名/IP/子網前綴/空=自動), 存 config 並重偵測 local_ip。"""
+        """設定網卡 (selector: 網卡名/IP/子網前綴/空=自動), 存 config 並重偵測 local_ip。
+
+        換網卡後會延遲重啟網頁伺服器, 讓它改綁到新網卡的 IP (只有那張卡可連入)。
+        WS 伺服器維持 0.0.0.0, 不受影響 (slave 連回不因換卡而斷)。
+        """
         self.config["network_interface"] = selector if selector else ""
         self.save_config()
         self._iface_cache = None   # 換網卡後失效快取
         self.local_ip = self.get_local_ip()
+        # 🔧 延遲重啟 web server (晚一點讓當前 response 送完再重綁新 IP)
+        if getattr(self, "_web_server", None) is not None:
+            def _delayed():
+                time.sleep(0.5)
+                self._restart_web_server()
+            threading.Thread(target=_delayed, daemon=True).start()
         if selector:
             if self.local_ip in ("127.0.0.1", "0.0.0.0"):
                 return False, f"找不到網卡 '{selector}' (已存 config, 但本機 IP 未解析成功)"
-            return True, f"網卡已設為 '{selector}' → 本機 IP {self.local_ip}"
-        return True, f"網卡已設為「自動偵測」 → 本機 IP {self.local_ip}"
+            return True, f"網卡已設為 '{selector}' → 本機 IP {self.local_ip} (網頁將改綁此 IP)"
+        return True, f"網卡已設為「自動偵測」 → 本機 IP {self.local_ip} (網頁將改綁此 IP)"
 
     def remote_network_info(self):
         """回傳所有網卡清單 + 目前設定 (供網頁下拉)。"""

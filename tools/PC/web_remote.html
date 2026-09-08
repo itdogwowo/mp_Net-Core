@@ -149,20 +149,35 @@
           <select id="mp3"><option value="">— 靜音 (僅燈效) —</option></select>
         </div>
         <div class="field">
-          <label>同步延遲 sync_delay_ms (負值=先燈後音)</label>
-          <input type="number" id="delay_ms" value="150" step="1">
+          <label>同步延遲 sync_delay_ms (負值=先燈後音, 範圍 -60000~60000)</label>
+          <input type="number" id="delay_ms" value="150" step="1" min="-60000" max="60000">
         </div>
         <div class="field">
           <label>主動同步 fps (0=關閉)</label>
           <input type="number" id="active_sync_fps" value="0" step="1" min="0">
         </div>
+        <div class="field">
+          <label>循環播放</label>
+          <label style="margin-top:4px"><input type="checkbox" id="loop_play"> loop_play (準備時套用)</label>
+        </div>
       </div>
       <div class="row" style="margin-top:12px">
-        <button class="primary" id="gobtn" data-action="play" data-loop="0">▶ Go 播放一次</button>
-        <button class="primary" id="loopbtn" data-action="play" data-loop="1">🔁 Loop 循環播放</button>
+        <button class="primary" id="preparebtn" data-action="prepare">⏳ 準備 (選資源 + 暖機)</button>
+        <button class="primary" id="firebtn" data-action="fire">▶ 播放</button>
         <button id="verifybtn" data-action="verify">🔍 驗證資源</button>
+      </div>
+      <div class="row" style="margin-top:8px">
+        <button id="latencybtn" data-action="latency">📡 延遲偵查</button>
+        <button id="latencyapplybtn" data-action="latency" data-apply="1">📡 偵查並套用</button>
+        <span class="hint" id="latencyres"></span>
+      </div>
+      <div class="row" style="margin-top:8px">
+        <button id="directbtn" data-action="direct_test">🎬 Direct 串流測試 (紅呼吸→黑→停)</button>
+      </div>
+      <div class="row" style="margin-top:8px">
         <button id="pausebtn" data-action="pause" class="warn">⏸ 暫停/繼續</button>
         <button id="stopbtn" data-action="stop" class="danger">■ 停止</button>
+        <button id="qrbtn" style="margin-left:auto">🔳 QR Code</button>
       </div>
     </div>
   </div>
@@ -198,6 +213,8 @@
     ['sync_delay_ms', '同步延遲 ms'], ['loop_play', '循環播放 0/1'],
     ['play_fps', '權威 fps (0=自動)'], ['active_sync_fps', '主動同步 fps'],
     ['midjoin_lead_frames', '重連追幀提前量(幀)'],
+    ['latency_probe_auto', '延遲偵查自動套用 0/1'], ['latency_probe_samples', '延遲偵查樣本數'],
+    ['latency_probe_warmup_s', '延遲偵查暖機 s'], ['audio_delay_base_ms', '音效啟動延遲基線 ms'],
     ['active_sync_interval_s', '同步間隔 s'],
     ['progress_poll_interval_s', '進度輪詢 s'], ['post_play_stop_delay_s', '播完熄燈延遲 s'],
     ['ws_port', 'WS 埠'], ['upt_port', 'UDP 埠'],
@@ -217,6 +234,11 @@
       body: JSON.stringify(body)
     }).then(function (r) { return r.json(); }).then(function (j) {
       if (j && j.msg) pushLine(j.msg, j.ok === false ? 'stderr' : 'stdout');
+      if (j && j.stats) {
+        var t = 'min ' + j.stats.min_ms + ' / avg ' + j.stats.avg_ms + ' / max ' + j.stats.max_ms + ' ms';
+        if (j.applied != null) t += '  → 已套用 sync_delay_ms=' + j.applied + 'ms';
+        $('#latencyres').textContent = t;
+      }
     }).catch(function (e) { pushLine('請求失敗: ' + e, 'stderr'); });
   }
 
@@ -316,6 +338,7 @@
 
   function renderState(s) {
     $('#netinfo').textContent = '本機 ' + (s.local_ip || '?') + '  |  WS :' + (s.ws_port || 8000) + '  |  Web :' + (s.web_port || 8080);
+    refreshQrUrl(s);
     var badge = $('#playbadge');
     if (s.playing && s.paused) { badge.textContent = '已暫停'; badge.className = 'badge pause'; }
     else if (s.playing) { badge.textContent = '播放中'; badge.className = 'badge on'; }
@@ -327,6 +350,7 @@
     renderNetwork(s.network);
     renderBrightPxlds(s.pxlds);
     if (s.config && s.config.active_sync_fps != null) $('#active_sync_fps').value = s.config.active_sync_fps;
+    if (s.loop_play != null) $('#loop_play').checked = !!s.loop_play;
   }
 
   function pushLine(text, stream) {
@@ -360,6 +384,15 @@
         extra.mode = btn.getAttribute('data-mode') || 'broadcast';
         var ipsSel = btn.getAttribute('data-ips');
         if (ipsSel) extra.ips = $(ipsSel).value;
+      } else if (action === 'prepare') {
+        extra.resource = $('#resource').value;
+        extra.delay_ms = parseInt($('#delay_ms').value, 10);
+        extra.loop = $('#loop_play').checked;
+        extra.active_sync_fps = parseInt($('#active_sync_fps').value, 10);
+        if (isNaN(extra.delay_ms)) extra.delay_ms = 150;
+        if (isNaN(extra.active_sync_fps)) extra.active_sync_fps = 0;
+      } else if (action === 'fire') {
+        extra.mp3 = $('#mp3').value;
       } else if (action === 'play') {
         extra.mp3 = $('#mp3').value;
         extra.resource = $('#resource').value;
@@ -370,6 +403,8 @@
         if (isNaN(extra.active_sync_fps)) extra.active_sync_fps = 0;
       } else if (action === 'verify') {
         extra.resource = $('#resource').value;
+      } else if (action === 'latency') {
+        extra.apply = btn.getAttribute('data-apply') === '1';
       }
       post(action, extra);
     });
@@ -396,6 +431,22 @@
     post('brightness', { pxld: p, factor: f / 100 });
   });
 
+  // ── QR Code: 掃碼即可連到正確 URL ──
+  var qrUrl = '';
+  function refreshQrUrl(s) {
+    if (s && s.local_ip && s.web_port) {
+      qrUrl = 'http://' + s.local_ip + ':' + s.web_port;
+    }
+  }
+  $('#qrbtn').addEventListener('click', function () {
+    if (!qrUrl) { pushLine('尚未取得本機 IP/埠', 'stderr'); return; }
+    var qrImg = document.getElementById('qrimg');
+    // 純本地: 後端 /api/qr 產生 SVG, 不連外網
+    qrImg.src = '/api/qr';
+    document.getElementById('qrtext').textContent = qrUrl;
+    document.getElementById('qrmodal').style.display = 'flex';
+  });
+
   $('#clearlog').addEventListener('click', function () { logEl.innerHTML = ''; });
 
   pollState();
@@ -403,6 +454,23 @@
   setInterval(pollState, 1000);
   setInterval(pollLogs, 500);
 })();
+</script>
+
+<div id="qrmodal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,.7); align-items:center; justify-content:center; z-index:999;">
+  <div style="background:#171c22; border:1px solid #2a333d; border-radius:12px; padding:22px; text-align:center; max-width:360px;">
+    <h3 style="margin:0 0 10px; font-size:15px;">掃描以連到控制台</h3>
+    <img id="qrimg" alt="QR" style="width:300px; height:300px; background:#fff; border-radius:8px;">
+    <div id="qrtext" class="mono" style="margin-top:12px; font-size:13px; word-break:break-all; color:#8b98a6;"></div>
+    <button id="qrclose" style="margin-top:14px;">關閉</button>
+  </div>
+</div>
+<script>
+  document.getElementById('qrclose').addEventListener('click', function () {
+    document.getElementById('qrmodal').style.display = 'none';
+  });
+  document.getElementById('qrmodal').addEventListener('click', function (e) {
+    if (e.target === this) this.style.display = 'none';
+  });
 </script>
 </body>
 </html>
