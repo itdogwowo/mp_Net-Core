@@ -334,10 +334,6 @@ DEFAULT_CONFIG = {
     "network_interface": "",
     "deploy_timeout": 120,
     "max_workers": 128,
-    # 🔧 EDP 廣播播放: 播放(0x300A)/準備(0x3009)/停止(0x3002)除走 WS 逐台發送外,
-    #    再走 UDP 逐台補發一次 (1=開啟, 0=關閉), 救「漏掉 WS」的那 1~2 台。UDP 走
-    #    slave 的 UDP-DISCV 通道 (upt_port)。0x3009 靠 slave 端冪等避免重開檔破壞同步。
-    "udp_broadcast_play": 1,
     "download_chunk_size": 1024 *2,
     "download_chunk_min": 1024,
     "upload_chunk_size": 4096,
@@ -356,6 +352,11 @@ DEFAULT_CONFIG = {
     "active_sync_interval_s": 10.0,       # 廣播間隔 (秒)
     # 🔧 播放會話 / 離線自癒: 播放期間定期向 slave 查詢播放進度 (0x1101→0x1102)
     "progress_poll_interval_s": 1.0,      # 進度輪詢間隔 (秒)
+    # 🔧 連線穩定 (半開自癒, 純 master 端, 不需改韌體):
+    "preplay_liveness_check": 1,          # 進入播放/準備前並行 ping, 半開設備敲門叫回重連
+    "midplay_auto_heal": 1,               # 播放中設備連續無回應 → 敲門一次叫回 (mid-join 追幀接回)
+    "midplay_heal_miss_threshold": 3,     # 連續多少次無回應才判定半開
+    "midplay_heal_cooldown_s": 60.0,      # 同一設備兩次自癒敲門的最小間隔 (秒, 避免 ECONNABORTED 循環)
     # 🔧 播放完全自然結束後 (非循環音檔播完), 延遲多少秒才送 0x3002 停止指令
     #    (slave 端會在檔尾保持最後一幀亮著, 這段延遲 = 最後姿勢定格時間)
     "post_play_stop_delay_s": 10.0,
@@ -1186,6 +1187,8 @@ class NetBusMaster:
         self._dev_finished = set()        # 🔧 本次會話「已自然播完」的設備 (重連不再自動續播)
         self._stop_was_manual = False     # 🔧 本次播放是否由使用者手動停止 (s/q), 決定要不要補「延遲停止」
         self._dev_drift = {}              # 🔧 每台設備的「連續進度偏差」次數 (3 次 → SEEK 校正)
+        self._dev_heal_misses = {}        # 🔧 每台設備「連續無回應」次數 (半開偵測, 播放中自癒用)
+        self._dev_heal_last_knock = {}    # 🔧 每台設備上次自癒敲門時間戳 (rate limit, 防循環)
         self._progress_poll_stop = threading.Event()   # 🔧 播放進度輪詢執行緒
         self._progress_poll_thread = None
         
@@ -2159,57 +2162,168 @@ class NetBusMaster:
                         pass
             # 如果 tid 根本不在 slaves (socket 已 close/清除)，則無法發送，忽略
     
-    def _device_ip(self, tid):
-        """取設備目前的 IP: 優先 live socket 對端位址, 退回 mapping 紀錄。"""
-        node = self.slaves.get(tid)
-        if node and node.get("addr"):
-            try:
-                return node["addr"][0]
-            except Exception:
-                pass
-        return self.config.get("mapping", {}).get(tid, {}).get("ip", "")
+    # ==================== 連線穩定 (半開偵測 / 敲門自癒, 純 master 端) ====================
+    def _probe_alive(self, cid, timeout=0.7):
+        """對單台設備 ping (0x100A→0x100B), 回 True = 活著, False = 無回應 (半開/離線)。
 
-    def send_pkt_udp_broadcast(self, targets, cmd_id, args, reset_clock=False):
-        """UDP 補發一幀 NC4 指令給「選中的設備」 (EDP 廣播播放)。
-
-        ⚠️ 刻意「逐台 unicast」而非一次全域廣播: 跟 send_pkt(WS) 相同的順序與時序,
-        讓補發幀的到達分佈和 WS 一致。若用 255.255.255.255 一次廣播, UDP 幾乎同時
-        到達, 而 WS 是逐台送 → 兩種通道的到達時間差會把設備拉成兩批, 反而不同步。
-
-        走 slave 的 UDP-DISCV 通道 (upt_port, 預設 9000) —— slave 端 BusDecodeTask
-        會把收到的任何 NC4 幀都送去 dispatch, 因此 0x3009/0x300A/0x3002 都能走 UDP。
-        補發 0x3009 (prepare) 救「WS 半開、漏接 prepare 而開不了檔」的設備; slave 端
-        _begin_load 已改成冪等 (同檔同模式不再重開), 所以已收到 WS 的設備不會因此
-        重新載入、被拉成兩批。
-
-        reset_clock=True (0x300A 擊發): 補發完把 playback_start_time 重設到此刻,
-        讓中途加入的追幀計算以「最後一台收到擊發」為準。
+        半開連線的特徵: master 端 sendall 寫得進去 (kernel 收下), 但對面收不到、
+        也回不來 → ping 逾時。正常設備會立刻回 0x100B。這是「有沒有回應」的
+        一次性主動檢查, 只在操作者擊發播放前 / 進度輪詢發現異常時執行,
+        不是背景定時 health 檢查 (見 doc/03_notes/12)。
         """
-        if not self._cfg_int("udp_broadcast_play", 1):
+        node = self.slaves.get(cid)
+        if not node:
             return False
+        lock = node.get("ping_lock") or threading.Lock()
         try:
-            # bytes() 立即快照: Proto.pack 回傳共享 buffer 的 memoryview, 會被下一次
-            # pack() 覆蓋; 這裡對同一幀做多次 sendto, 先固化為 bytes 才安全。
-            pkt = bytes(Proto.pack(cmd_id, SchemaCodec.encode(self.store.get(cmd_id), args)))
+            with lock:
+                evt = node["ping_event"]
+                evt.clear()
+                node["ping_rtt"] = None
+                node["ping_t0"] = time.time()
+                self.send_pkt([cid], 0x100A, {"master_time_ms": int(time.time() * 1000) & 0xFFFFFFFF})
+                if evt.wait(timeout=timeout):
+                    return self.slaves.get(cid) is node   # 🔧 防重連換 dict 的誤判
+                return False
+        except Exception:
+            return False
+
+    def _knock_ips_quiet(self, ips):
+        """對指定 IP 靜默 unicast DISCOVER (0x1001), 不打印 (供自癒內部呼叫)。"""
+        if not ips:
+            return
+        try:
+            self.local_ip = self.get_local_ip()
+            pkt = self._build_discover_packet()
             port = self.config.get("upt_port", 9000)
             s = self._make_discover_socket()
             try:
-                for tid in targets:
-                    ip = self._device_ip(tid)
-                    if not ip:
-                        continue
-                    try:
-                        s.sendto(pkt, (ip, port))
-                    except Exception:
-                        pass
+                for ip in ips:
+                    for _ in range(3):
+                        try:
+                            s.sendto(pkt, (ip, port))
+                        except Exception:
+                            pass
             finally:
                 s.close()
-            if reset_clock:
-                self.playback_start_time = time.time()
-            return True
-        except Exception as e:
-            self.panel.log("warn", f"⚠️ [UDP補發] 0x{cmd_id:04X} 失敗: {e}")
-            return False
+        except Exception:
+            pass
+
+    def _stabilize_connections(self, targets):
+        """進入播放/準備前的「穩定連結」閘門: 並行 ping 所有目標, 把半開/無回應的
+        設備敲門叫回重連, 確保 0x3009/0x300A 發出去時每台都接得到。
+
+        回傳 (alive, repaired, still_dead):
+          alive       = 原本就活著的設備
+          repaired    = 敲門後重連成功的設備
+          still_dead  = 敲門後仍沒回來的設備 (這次播放先警告, 之後可手動掃描)
+        """
+        if not self._cfg_int("preplay_liveness_check", 1):
+            return list(targets), [], []
+        targets = [t for t in targets if t in self.slaves]
+        if not targets:
+            return [], [], []
+
+        alive, dead = [], []
+        with ThreadPoolExecutor(max_workers=min(64, len(targets))) as ex:
+            futs = {ex.submit(self._probe_alive, t): t for t in targets}
+            for f in futs:
+                (alive if f.result() else dead).append(futs[f])
+
+        if not dead:
+            return alive, [], []
+
+        ips = []
+        for t in dead:
+            ip = self.config.get("mapping", {}).get(t, {}).get("ip", "")
+            if ip and ip not in ips:
+                ips.append(ip)
+        if not ips:
+            return alive, [], dead
+
+        self.panel.log("warn", f"🔍 [LinkGuard] {len(dead)} 台無回應, 敲門自癒: {', '.join(dead)}")
+        self._knock_ips_quiet(ips)
+
+        repaired, still_dead = [], list(dead)
+        deadline = time.time() + 6.0
+        while time.time() < deadline and still_dead:
+            time.sleep(0.6)
+            still = []
+            for t in still_dead:
+                (repaired if self._probe_alive(t, timeout=0.7) else still).append(t)
+            still_dead = still
+
+        if repaired:
+            self.panel.log("ok", f"✅ [LinkGuard] 已自癒 {len(repaired)} 台: {', '.join(repaired)}")
+        if still_dead:
+            self.panel.log("warn", f"⚠️ [LinkGuard] 仍無回應 {len(still_dead)} 台: {', '.join(still_dead)}")
+        return alive, repaired, still_dead
+
+    def _maybe_heal_half_dead(self, tid):
+        """播放途中: 設備在 self.slaves (WS 通道還在) 但 0x1101 無回應 = 半開連線。
+
+        連續 N 次無回應且超過冷卻時間 → 敲門一次叫它斷掉舊 WS 重連 (重連後
+        handle_client 會觸發 mid-join 自動追幀接回)。rate limit + 冷卻避免回到
+        舊版「定時敲門 → ECONNABORTED 循環」的老問題。
+        """
+        if not self._cfg_int("midplay_auto_heal", 1):
+            return
+        if tid not in self.slaves:
+            # 已完全離線 → 不主動敲門 (遵循「重連由操作者發起」原則), 交給手動掃描
+            self._dev_heal_misses[tid] = 0
+            return
+        misses = self._dev_heal_misses.get(tid, 0) + 1
+        self._dev_heal_misses[tid] = misses
+        threshold = max(2, self._cfg_int("midplay_heal_miss_threshold", 3))
+        if misses < threshold:
+            return
+        now = time.time()
+        cooldown = max(5.0, self._cfg_float("midplay_heal_cooldown_s", 60.0))
+        if now - self._dev_heal_last_knock.get(tid, 0) < cooldown:
+            return
+        self._dev_heal_last_knock[tid] = now
+        self._dev_heal_misses[tid] = 0
+        ip = self.config.get("mapping", {}).get(tid, {}).get("ip", "")
+        if not ip:
+            return
+        self.panel.log("warn", f"🩹 [LinkGuard] {tid} 連續 {misses} 次無回應 (半開?) → 敲門自癒")
+        self._knock_ips_quiet([ip])
+
+    def _wait_all_ready(self, targets, timeout=5.0, retries=1):
+        """等所有目標回 0x3008 READY_ACK (0x3009 開檔完成); 未回的設備重發 0x3009 再等。
+
+        這是「擊發前」的關鍵閘門: slave 收到 0x3009 後要開檔 + 讀第一幀, 期間若
+        0x300A 就到, slave 的 play 指令會在 LOADING 狀態被靜默丟棄 (狀態機只接受
+        READY/PAUSED → PLAYING), 那台就永遠不亮。慢開檔的設備 (24MB data.bin 在
+        SD 卡上開檔秒數不一) 就是「隨機一台沒反應」的來源。等齊 READY 再發 0x300A
+        就沒有這個競爭。
+
+        回傳仍沒 READY 的設備清單 (這些多半半死/過慢, 交給 mid-play 自癒)。
+        """
+        pending = [t for t in targets if t in self.slaves]
+        for r in range(retries + 1):
+            if not pending:
+                break
+            deadline = time.time() + timeout
+            while time.time() < deadline:
+                still = [t for t in pending
+                         if not (self.slaves.get(t) and self.slaves[t].get("ready_event", threading.Event()).is_set())]
+                pending = still
+                if not pending:
+                    break
+                time.sleep(0.1)
+            if pending and r < retries:
+                # 重發 0x3009 給還沒 READY 的設備 (清掉可能剛好到的 stale ready 再等)
+                for t in pending:
+                    node = self.slaves.get(t)
+                    if node:
+                        node["ready_event"].clear()
+                self.send_pkt(pending, 0x3009, {
+                    "file_name": self._bin_name(),
+                    "block_id": 0,
+                    "play_mode": self.current_play_mode
+                })
+        return pending
 
     # ==================== 延遲量測 / 紀錄 (0x100A/0x100B TIME_SYNC) ====================
     def measure_latency(self, cid, samples=None, warmup=0.0, use_avg=False):
@@ -5833,6 +5947,12 @@ class NetBusMaster:
 
         print(f"\n⚙️ 正在預備設備...")
 
+        # 🔧 進入播放前先「穩定連結」: 半開/無回應的設備敲門叫回重連, 避免
+        #    0x3009/0x300A 發出去後那台才斷線漏接 (半死問題)。
+        _alive, _repaired, still_dead = self._stabilize_connections(self.selected_targets)
+        if still_dead:
+            print(f"⚠️ 以下設備目前無回應, 本次播放先警告 (之後可手動掃描叫回): {', '.join(still_dead)}")
+
         for tid in self.selected_targets:
             self.panel.update_device(tid, status="待機")
             if tid in self.panel.monitors:
@@ -5841,11 +5961,6 @@ class NetBusMaster:
         # 🔧 play_mode: 0=播放一次, 1=循環 (播完自動重頭)
         self.current_play_mode = 1 if self.config.get("loop_play", 0) else 0
         self.send_pkt(self.selected_targets, 0x3009, {
-            "file_name": self._bin_name(),
-            "block_id": 0,
-            "play_mode": self.current_play_mode
-        })
-        self.send_pkt_udp_broadcast(self.selected_targets, 0x3009, {
             "file_name": self._bin_name(),
             "block_id": 0,
             "play_mode": self.current_play_mode
@@ -5866,16 +5981,19 @@ class NetBusMaster:
                 self.config["loop_play"] = 1 if trigger == 'loop' else 0
                 self.current_play_mode = 1 if self.config["loop_play"] else 0
                 self.save_config()
+                # 🔧 擊發前先等 READY: 避免 0x300A 到時 slave 還在 LOADING 而吞掉播放指令
+                for tid in self.selected_targets:
+                    node = self.slaves.get(tid)
+                    if node:
+                        node["ready_event"].clear()
                 self.send_pkt(self.selected_targets, 0x3009, {
                     "file_name": self._bin_name(),
                     "block_id": 0,
                     "play_mode": self.current_play_mode
                 })
-                self.send_pkt_udp_broadcast(self.selected_targets, 0x3009, {
-                    "file_name": self._bin_name(),
-                    "block_id": 0,
-                    "play_mode": self.current_play_mode
-                })
+                still = self._wait_all_ready(self.selected_targets, timeout=5.0, retries=2)
+                if still:
+                    print(f"⚠️ 以下設備未 READY, 播放可能漏掉 (之後自癒): {', '.join(still)}")
                 break
             elif trigger == 'q':
                 print("🛑 已取消")
@@ -5926,11 +6044,6 @@ class NetBusMaster:
                 self.save_config()
                 self.current_play_mode = 1 if self.config["loop_play"] else 0
                 self.send_pkt(self.selected_targets, 0x3009, {
-                    "file_name": self._bin_name(),
-                    "block_id": 0,
-                    "play_mode": self.current_play_mode
-                })
-                self.send_pkt_udp_broadcast(self.selected_targets, 0x3009, {
                     "file_name": self._bin_name(),
                     "block_id": 0,
                     "play_mode": self.current_play_mode
@@ -5991,18 +6104,15 @@ class NetBusMaster:
                     time.sleep(delay_sec)
                 self.playback_start_time = time.time()   # 🔧 開燈那一刻才計時
                 self.send_pkt(self.selected_targets, 0x300A, {"start_frame": 0})
-                self.send_pkt_udp_broadcast(self.selected_targets, 0x300A, {"start_frame": 0}, reset_clock=True)
             else:
                 self.playback_start_time = time.time()   # 🔧 開燈那一刻才計時
                 self.send_pkt(self.selected_targets, 0x300A, {"start_frame": 0})
-                self.send_pkt_udp_broadcast(self.selected_targets, 0x300A, {"start_frame": 0}, reset_clock=True)
                 time.sleep(delay_sec)
                 self._start_audio_stream(selected_mp3)
         else:
             # Silent mode: just trigger
             self.playback_start_time = time.time()   # 🔧 開燈那一刻才計時
             self.send_pkt(self.selected_targets, 0x300A, {"start_frame": 0})
-            self.send_pkt_udp_broadcast(self.selected_targets, 0x300A, {"start_frame": 0}, reset_clock=True)
         
         # 🔧 播放進度輪詢: 每秒向 slave 查 0x1101, 用 0x1102 更新面板進度
         self._start_progress_poll()
@@ -6168,7 +6278,10 @@ class NetBusMaster:
                     continue
                 st = self.query_status(tid, timeout=1.0)
                 if not st:
+                    # 🔧 半開自癒: WS 通道還在但 0x1101 無回應 → 可能半開, 敲門叫回
+                    self._maybe_heal_half_dead(tid)
                     continue
+                self._dev_heal_misses[tid] = 0   # 🔧 有回應 → 重設無回應計數
                 # 🔧 新舊韌體格式統一解析 (接口相容)
                 cur, pos, active, mem_free, _rid = self._parse_status(st)
                 self.panel.update_device(tid, current_frame=cur, mem_free=mem_free)
@@ -6283,7 +6396,6 @@ class NetBusMaster:
         
         if self.selected_targets:
             self.send_pkt(self.selected_targets, 0x3002, {})
-            self.send_pkt_udp_broadcast(self.selected_targets, 0x3002, {})
             
             for tid in self.selected_targets:
                 self.panel.update_device(tid, status="待機")
@@ -6684,12 +6796,12 @@ class NetBusMaster:
         "web_enable", "web_open_browser", "upload_chunk_size",
         "latency_samples", "download_chunk_size", "transfer_retry_count",
         "latency_probe_auto", "latency_probe_samples", "audio_delay_base_ms",
-        "udp_broadcast_play",
+        "preplay_liveness_check", "midplay_auto_heal", "midplay_heal_miss_threshold",
     }
     _REMOTE_FLOAT_KEYS = {
         "active_sync_interval_s", "progress_poll_interval_s",
         "post_play_stop_delay_s", "upload_ack_timeout", "upload_begin_timeout",
-        "latency_probe_warmup_s",
+        "latency_probe_warmup_s", "midplay_heal_cooldown_s",
     }
 
     def remote_devices(self):
@@ -6818,6 +6930,11 @@ class NetBusMaster:
 
         self.current_play_mode = 1 if self.config.get("loop_play", 0) else 0
 
+        # 🔧 進入準備前先「穩定連結」: 半開/無回應設備敲門自癒 (同 console 路徑)
+        _alive, _repaired, still_dead = self._stabilize_connections(self.selected_targets)
+        if still_dead:
+            self.panel.log("warn", f"⚠️ [Prepare] 以下設備無回應: {', '.join(still_dead)}")
+
         # 🔧 先 clear ready_event 再送 0x3009, 之後等每台 READY (data 暖機完成)
         for tid in self.selected_targets:
             node = self.slaves.get(tid)
@@ -6828,25 +6945,11 @@ class NetBusMaster:
             "block_id": 0,
             "play_mode": self.current_play_mode,
         })
-        self.send_pkt_udp_broadcast(self.selected_targets, 0x3009, {
-            "file_name": self._bin_name(),
-            "block_id": 0,
-            "play_mode": self.current_play_mode,
-        })
 
-        # 等 READY (0x3008) — slave 開檔 + 讀第一幀完成
-        ready = set()
-        deadline = time.time() + 5.0
-        while time.time() < deadline:
-            for tid in self.selected_targets:
-                node = self.slaves.get(tid)
-                if node and node.get("ready_event", threading.Event()).is_set():
-                    ready.add(tid)
-            if len(ready) >= len(self.selected_targets):
-                break
-            time.sleep(0.1)
+        # 等 READY (0x3008) — slave 開檔 + 讀第一幀完成; 未回的設備重發 0x3009 再等
+        still = self._wait_all_ready(self.selected_targets, timeout=5.0, retries=2)
 
-        n_ready = len(ready)
+        n_ready = len(self.selected_targets) - len(still)
         n_total = len(self.selected_targets)
         for tid in self.selected_targets:
             self.panel.update_device(tid, status="待機")
@@ -6904,18 +7007,15 @@ class NetBusMaster:
                     time.sleep(delay_sec)
                 self.playback_start_time = time.time()   # 🔧 開燈那一刻才計時
                 self.send_pkt(self.selected_targets, 0x300A, {"start_frame": 0})
-                self.send_pkt_udp_broadcast(self.selected_targets, 0x300A, {"start_frame": 0}, reset_clock=True)
             else:
                 self.playback_start_time = time.time()   # 🔧 開燈那一刻才計時
                 self.send_pkt(self.selected_targets, 0x300A, {"start_frame": 0})
-                self.send_pkt_udp_broadcast(self.selected_targets, 0x300A, {"start_frame": 0}, reset_clock=True)
                 time.sleep(delay_sec)
                 self._start_audio_stream(mp3)
             threading.Thread(target=self._remote_play_watchdog, daemon=True).start()
         else:
             self.playback_start_time = time.time()   # 🔧 開燈那一刻才計時
             self.send_pkt(self.selected_targets, 0x300A, {"start_frame": 0})
-            self.send_pkt_udp_broadcast(self.selected_targets, 0x300A, {"start_frame": 0}, reset_clock=True)
 
         self._start_progress_poll()
         for tid in self.selected_targets:
