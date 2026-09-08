@@ -333,7 +333,11 @@ DEFAULT_CONFIG = {
     #    讓 DISCOVER 的 ws_url 指向錯的 IP → slave 連不回。設定此欄即可指定用哪張網卡。
     "network_interface": "",
     "deploy_timeout": 120,
-    "max_workers": 50,
+    "max_workers": 128,
+    # 🔧 EDP 廣播播放: 播放(0x300A)/準備(0x3009)/停止(0x3002)除走 WS 逐台發送外,
+    #    再走 UDP 逐台補發一次 (1=開啟, 0=關閉), 救「漏掉 WS」的那 1~2 台。UDP 走
+    #    slave 的 UDP-DISCV 通道 (upt_port)。0x3009 靠 slave 端冪等避免重開檔破壞同步。
+    "udp_broadcast_play": 1,
     "download_chunk_size": 1024 *2,
     "download_chunk_min": 1024,
     "upload_chunk_size": 4096,
@@ -753,7 +757,7 @@ class ConsoleUI:
         print("\033[?25h", end="")
     
     @staticmethod
-    def get_color(value, threshold_good=80, threshold_warn=50):
+    def get_color(value, threshold_good=80, threshold_warn=60):
         if value >= threshold_good:
             return "\033[92m"
         elif value >= threshold_warn:
@@ -1465,7 +1469,7 @@ class NetBusMaster:
         s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         port = self.config.get("ws_port", 8000)
         s.bind(('0.0.0.0', port))
-        s.listen(20)
+        s.listen(128)
         print(f"[WS Server] 監聽 0.0.0.0:{port} ,IP: {self.local_ip}")
         
         while self.running:
@@ -2155,6 +2159,58 @@ class NetBusMaster:
                         pass
             # 如果 tid 根本不在 slaves (socket 已 close/清除)，則無法發送，忽略
     
+    def _device_ip(self, tid):
+        """取設備目前的 IP: 優先 live socket 對端位址, 退回 mapping 紀錄。"""
+        node = self.slaves.get(tid)
+        if node and node.get("addr"):
+            try:
+                return node["addr"][0]
+            except Exception:
+                pass
+        return self.config.get("mapping", {}).get(tid, {}).get("ip", "")
+
+    def send_pkt_udp_broadcast(self, targets, cmd_id, args, reset_clock=False):
+        """UDP 補發一幀 NC4 指令給「選中的設備」 (EDP 廣播播放)。
+
+        ⚠️ 刻意「逐台 unicast」而非一次全域廣播: 跟 send_pkt(WS) 相同的順序與時序,
+        讓補發幀的到達分佈和 WS 一致。若用 255.255.255.255 一次廣播, UDP 幾乎同時
+        到達, 而 WS 是逐台送 → 兩種通道的到達時間差會把設備拉成兩批, 反而不同步。
+
+        走 slave 的 UDP-DISCV 通道 (upt_port, 預設 9000) —— slave 端 BusDecodeTask
+        會把收到的任何 NC4 幀都送去 dispatch, 因此 0x3009/0x300A/0x3002 都能走 UDP。
+        補發 0x3009 (prepare) 救「WS 半開、漏接 prepare 而開不了檔」的設備; slave 端
+        _begin_load 已改成冪等 (同檔同模式不再重開), 所以已收到 WS 的設備不會因此
+        重新載入、被拉成兩批。
+
+        reset_clock=True (0x300A 擊發): 補發完把 playback_start_time 重設到此刻,
+        讓中途加入的追幀計算以「最後一台收到擊發」為準。
+        """
+        if not self._cfg_int("udp_broadcast_play", 1):
+            return False
+        try:
+            # bytes() 立即快照: Proto.pack 回傳共享 buffer 的 memoryview, 會被下一次
+            # pack() 覆蓋; 這裡對同一幀做多次 sendto, 先固化為 bytes 才安全。
+            pkt = bytes(Proto.pack(cmd_id, SchemaCodec.encode(self.store.get(cmd_id), args)))
+            port = self.config.get("upt_port", 9000)
+            s = self._make_discover_socket()
+            try:
+                for tid in targets:
+                    ip = self._device_ip(tid)
+                    if not ip:
+                        continue
+                    try:
+                        s.sendto(pkt, (ip, port))
+                    except Exception:
+                        pass
+            finally:
+                s.close()
+            if reset_clock:
+                self.playback_start_time = time.time()
+            return True
+        except Exception as e:
+            self.panel.log("warn", f"⚠️ [UDP補發] 0x{cmd_id:04X} 失敗: {e}")
+            return False
+
     # ==================== 延遲量測 / 紀錄 (0x100A/0x100B TIME_SYNC) ====================
     def measure_latency(self, cid, samples=None, warmup=0.0, use_avg=False):
         """量測單一設備的單向延遲 (ms)。回傳估計值或 None (無回應)。
@@ -3303,7 +3359,7 @@ class NetBusMaster:
         for tid in targets:
             self.panel.update_device(tid, status="準備中", transfer_label="", upload_progress=0)
 
-        max_workers = self.config.get("max_workers", 10)
+        max_workers = max(self.config.get("max_workers", 50), len(targets))
         promoted = {}   # tid -> [root_paths]
         promoted_lock = threading.Lock()
         results = {}    # tid -> [(remote_path, status, err)]
@@ -5648,7 +5704,7 @@ class NetBusMaster:
                 else:
                     self.panel.update_device(tid, status="上傳中", transfer_label="上傳 data.bin", upload_progress=0)
             
-            max_workers = self.config.get("max_workers", 50)
+            max_workers = max(self.config.get("max_workers", 50), len(final_targets))
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
                 futures = {executor.submit(self._deploy_to_single_slave, tid): tid for tid in final_targets}
                 
@@ -5789,6 +5845,11 @@ class NetBusMaster:
             "block_id": 0,
             "play_mode": self.current_play_mode
         })
+        self.send_pkt_udp_broadcast(self.selected_targets, 0x3009, {
+            "file_name": self._bin_name(),
+            "block_id": 0,
+            "play_mode": self.current_play_mode
+        })
         while True:
             loop_str = "開啟" if self.config.get("loop_play", 0) else "關閉"
             act_fps = self._cfg_int("active_sync_fps", 0)
@@ -5806,6 +5867,11 @@ class NetBusMaster:
                 self.current_play_mode = 1 if self.config["loop_play"] else 0
                 self.save_config()
                 self.send_pkt(self.selected_targets, 0x3009, {
+                    "file_name": self._bin_name(),
+                    "block_id": 0,
+                    "play_mode": self.current_play_mode
+                })
+                self.send_pkt_udp_broadcast(self.selected_targets, 0x3009, {
                     "file_name": self._bin_name(),
                     "block_id": 0,
                     "play_mode": self.current_play_mode
@@ -5860,6 +5926,11 @@ class NetBusMaster:
                 self.save_config()
                 self.current_play_mode = 1 if self.config["loop_play"] else 0
                 self.send_pkt(self.selected_targets, 0x3009, {
+                    "file_name": self._bin_name(),
+                    "block_id": 0,
+                    "play_mode": self.current_play_mode
+                })
+                self.send_pkt_udp_broadcast(self.selected_targets, 0x3009, {
                     "file_name": self._bin_name(),
                     "block_id": 0,
                     "play_mode": self.current_play_mode
@@ -5920,15 +5991,18 @@ class NetBusMaster:
                     time.sleep(delay_sec)
                 self.playback_start_time = time.time()   # 🔧 開燈那一刻才計時
                 self.send_pkt(self.selected_targets, 0x300A, {"start_frame": 0})
+                self.send_pkt_udp_broadcast(self.selected_targets, 0x300A, {"start_frame": 0}, reset_clock=True)
             else:
                 self.playback_start_time = time.time()   # 🔧 開燈那一刻才計時
                 self.send_pkt(self.selected_targets, 0x300A, {"start_frame": 0})
+                self.send_pkt_udp_broadcast(self.selected_targets, 0x300A, {"start_frame": 0}, reset_clock=True)
                 time.sleep(delay_sec)
                 self._start_audio_stream(selected_mp3)
         else:
             # Silent mode: just trigger
             self.playback_start_time = time.time()   # 🔧 開燈那一刻才計時
             self.send_pkt(self.selected_targets, 0x300A, {"start_frame": 0})
+            self.send_pkt_udp_broadcast(self.selected_targets, 0x300A, {"start_frame": 0}, reset_clock=True)
         
         # 🔧 播放進度輪詢: 每秒向 slave 查 0x1101, 用 0x1102 更新面板進度
         self._start_progress_poll()
@@ -6209,6 +6283,7 @@ class NetBusMaster:
         
         if self.selected_targets:
             self.send_pkt(self.selected_targets, 0x3002, {})
+            self.send_pkt_udp_broadcast(self.selected_targets, 0x3002, {})
             
             for tid in self.selected_targets:
                 self.panel.update_device(tid, status="待機")
@@ -6609,6 +6684,7 @@ class NetBusMaster:
         "web_enable", "web_open_browser", "upload_chunk_size",
         "latency_samples", "download_chunk_size", "transfer_retry_count",
         "latency_probe_auto", "latency_probe_samples", "audio_delay_base_ms",
+        "udp_broadcast_play",
     }
     _REMOTE_FLOAT_KEYS = {
         "active_sync_interval_s", "progress_poll_interval_s",
@@ -6752,6 +6828,11 @@ class NetBusMaster:
             "block_id": 0,
             "play_mode": self.current_play_mode,
         })
+        self.send_pkt_udp_broadcast(self.selected_targets, 0x3009, {
+            "file_name": self._bin_name(),
+            "block_id": 0,
+            "play_mode": self.current_play_mode,
+        })
 
         # 等 READY (0x3008) — slave 開檔 + 讀第一幀完成
         ready = set()
@@ -6823,15 +6904,18 @@ class NetBusMaster:
                     time.sleep(delay_sec)
                 self.playback_start_time = time.time()   # 🔧 開燈那一刻才計時
                 self.send_pkt(self.selected_targets, 0x300A, {"start_frame": 0})
+                self.send_pkt_udp_broadcast(self.selected_targets, 0x300A, {"start_frame": 0}, reset_clock=True)
             else:
                 self.playback_start_time = time.time()   # 🔧 開燈那一刻才計時
                 self.send_pkt(self.selected_targets, 0x300A, {"start_frame": 0})
+                self.send_pkt_udp_broadcast(self.selected_targets, 0x300A, {"start_frame": 0}, reset_clock=True)
                 time.sleep(delay_sec)
                 self._start_audio_stream(mp3)
             threading.Thread(target=self._remote_play_watchdog, daemon=True).start()
         else:
             self.playback_start_time = time.time()   # 🔧 開燈那一刻才計時
             self.send_pkt(self.selected_targets, 0x300A, {"start_frame": 0})
+            self.send_pkt_udp_broadcast(self.selected_targets, 0x300A, {"start_frame": 0}, reset_clock=True)
 
         self._start_progress_poll()
         for tid in self.selected_targets:

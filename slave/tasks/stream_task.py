@@ -239,13 +239,31 @@ class StreamTask(Task):
         block_id = int(cmd.get("block_id", 0) or 0)
         play_mode = int(cmd.get("play_mode", 0) or 0)
 
+        # ── 來源分流: /ram/... = RAM 緩衝區 (實時播放), 其餘 = 檔案 ──
+        try:
+            kind, full, _raw = fs.resolve(file_name)
+        except Exception as e:
+            get_log().error("[Stream] 解析失敗 {}: {}".format(file_name, e))
+            self._reset()
+            return
+
+        # 🔧 冪等: 同一個檔、同一模式、且來源已開啟 → 不 close + 重開檔, 直接返回。
+        #    這讓 master 用 UDP 補發 0x3009 時, 已收到 WS 0x3009 的設備不會重新開檔
+        #    (重開檔會把設備跟別人錯開一個 task loop, 是「不同步」的來源);
+        #    只有「檔名/模式不同」或「尚未開檔」的設備才真正載入。
+        if (
+            (self._fp is not None or self._src_kind == "ram")
+            and getattr(self, "_path", None) == full
+            and self._play_mode == play_mode
+        ):
+            self._cur_block = block_id
+            return
+
         # 🔧 重連/中途加入時可能已有開啟中的來源 (舊 stream 還在播) — 先關掉再重開,
         #    否則反覆重連會把檔案描述子耗盡 (RAM 來源則清 fs 串流狀態)。
         self._release_src()
 
-        # ── 來源分流: /ram/... = RAM 緩衝區 (實時播放), 其餘 = 檔案 ──
         try:
-            kind, full, _raw = fs.resolve(file_name)
             if kind == "ram":
                 if fs.begin_read(file_name) <= 0:
                     get_log().error("[Stream] RAM 緩衝區不存在或為空: {}".format(file_name))

@@ -159,13 +159,15 @@ class NetworkTask(Task):
             #    discovery」→ 半開連線(對面靜默消失)時 slave 的 connected 卡在 True,
             #    永遠不讀 UDP, master 敲門叫不回。DISCOVER 收到後 on_connect_request
             #    會依 connected+peer 自行判斷是否要重連。
-            if time.ticks_diff(now, self._last_discv_poll) > 250:
-                self._last_discv_poll = now
-                try:
-                    self.discovery_bus.poll(**ctx_extra)
-                    self.success += 1
-                except Exception as e:
-                    get_log().error("Discovery Poll Error: {}".format(e))
+            # 🔧 每圈都 poll (不節流 250ms): UDP 同時是 master「補發播放指令」的通道,
+            #    250ms 節流會讓漏接 WS 的設備的 0x3009/0x300A 在 socket 裡躺到下一輪
+            #    poll → 慢一拍才起播, 或準備+播放同時被撈起造成播放被丟 → 整台漏掉。
+            #    UDP socket 非阻塞, 沒資料時立即 EAGAIN 返回, 每圈 poll 成本可忽略。
+            try:
+                self.discovery_bus.poll(**ctx_extra)
+                self.success += 1
+            except Exception as e:
+                get_log().error("Discovery Poll Error: {}".format(e))
 
             if self.ctrl_bus.connected:
                 try:
