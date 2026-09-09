@@ -315,6 +315,7 @@ class _WebHandler(BaseHTTPRequestHandler):
             },
             # 🔧 Wi-Fi QR 憑證 (密碼不回傳給前端, 只回是否有設定)
             "wifi": _WebHandler._wifi_public(m),
+            "keepalive": m.remote_keepalive_status(),
         }
 
     @staticmethod
@@ -464,6 +465,11 @@ class _WebHandler(BaseHTTPRequestHandler):
         if action == "show_reset":
             ok, msg = m.remote_show_reset()
             return {"ok": ok, "msg": msg}
+        if action == "shutdown_all":
+            ok, msg = m.remote_shutdown_all()
+            return {"ok": ok, "msg": msg}
+        if action == "keepalive_status":
+            return {"ok": True, "msg": "keepalive", "status": m.remote_keepalive_status()}
         if action == "save_slots":
             ok, msg = m.remote_save_slots(data.get("slots"))
             return {"ok": ok, "msg": msg}
@@ -528,6 +534,13 @@ DEFAULT_CONFIG = {
     "web_enable": 1,          # 1 = 啟動網頁遙控 HTTP 服務
     "web_port": 8080,         # 網頁遙控埠
     "web_open_browser": 1,    # 1 = 啟動時自動開瀏覽器
+    # 🔧 保活機制: 主服務與守護程式互相監督, 一方被關掉另一方會自動救回。
+    #    終端機被關閉 (VS Code/Terminal) 導致服務中斷時特別有用。
+    #    只有網頁技術台的關閉鈕 / netbus_ctl.py stop / console 選單 q 才會真正關閉。
+    "keepalive_enable": 1,          # 1 = 啟用互相監督
+    "keepalive_heartbeat_s": 2.0,   # 心跳間隔 (秒)
+    "keepalive_timeout_s": 10.0,    # 超過此秒數沒心跳 = 對方已死
+    "keepalive_restart_max_delay_s": 30.0,  # 重啟失敗的退避上限 (秒)
     # 🔧 權威播放 fps: 同步計算 / 重連追幀 / 起播廣播共用 (解決重連後落後)
     #    0 = 自動 (用動畫 metadata fps); >0 = 以此 fps 為準。設備實際節拍由
     #    slave config 的 System.frame_interval_ms 決定 (20ms=50fps); 若與動畫
@@ -731,8 +744,56 @@ LOG_DIR = os.path.join(DATA_DIR, "logs")
 DOWNLOAD_DIR = os.path.join(DATA_DIR, "downloads")
 PROFILE_DIR = os.path.join(DATA_DIR, "profiles")
 BINS_DIR = os.path.join(DATA_DIR, "bins")
-for _d in (DATA_DIR, LOG_DIR, DOWNLOAD_DIR, PROFILE_DIR, BINS_DIR):
+# 🔧 保活機制狀態檔 (與 netbus_keepalive.py 共用; 該程式不 import 本檔, 故路徑在此重複定義)
+KA_DIR = os.path.join(DATA_DIR, "keepalive")
+KA_SERVICE_PID = os.path.join(KA_DIR, "service.pid")
+KA_GUARDIAN_PID = os.path.join(KA_DIR, "guardian.pid")
+KA_SERVICE_HB = os.path.join(KA_DIR, "service.heartbeat")
+KA_GUARDIAN_HB = os.path.join(KA_DIR, "guardian.heartbeat")
+KA_STOP_FLAG = os.path.join(KA_DIR, "stop.flag")
+KA_GUARDIAN_SCRIPT = os.path.join(SCRIPT_DIR, "netbus_keepalive.py")
+for _d in (DATA_DIR, LOG_DIR, DOWNLOAD_DIR, PROFILE_DIR, BINS_DIR, KA_DIR):
     os.makedirs(_d, exist_ok=True)
+
+
+def _ka_touch(path):
+    """更新保活心跳檔 mtime (不存在則建立)。"""
+    try:
+        with open(path, "a"):
+            os.utime(path, None)
+    except Exception:
+        pass
+
+
+def _ka_age(path):
+    """心跳檔 mtime 距今秒數; 不存在回 None。"""
+    try:
+        return time.time() - os.path.getmtime(path)
+    except OSError:
+        return None
+
+
+def _ka_read_pid(path):
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return int((f.read() or "").strip())
+    except Exception:
+        return None
+
+
+def _ka_pid_alive(pid):
+    """PID 是否活著 (signal 0 探測)。"""
+    if not pid or pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except Exception:
+        return False
 
 # ==================== 協議層導入 ====================
 try:
@@ -1401,6 +1462,27 @@ class NetBusMaster:
         threading.Thread(target=self.start_ws_server, daemon=True).start()
         # 🔧 網頁遙控與 console 同一行程: 跑 NetBusMaster.py 即同時起 web (預設開啟)。
         self._start_web_server()
+        # 🔧 保活機制: 寫心跳 + 拉起守護程式 (互相監督)。
+        self._ka_start()
+        self._ka_install_signals()
+
+    def _ka_install_signals(self):
+        """SIGTERM → 優雅退出 (netbus_ctl stop 用)。
+
+        🔧 刻意「不」攔截 SIGHUP: 終端機被關閉 (VS Code/Terminal) 就是要靠
+        守護程式把它救回來, 攔截 SIGHUP 反而會讓服務假活著。
+        """
+        import signal as _sig
+
+        def _on_term(signum, _frame):
+            print("\n🛑 [Keepalive] 收到 SIGTERM → 結束")
+            self.running = False
+            self._ka_cleanup()
+            os._exit(0)
+        try:
+            _sig.signal(_sig.SIGTERM, _on_term)
+        except Exception:
+            pass
 
     def _migrate_legacy_config(self):
         """把舊版 tools/slave_map.json 遷移到 tools/PC/slave_map.json (與本程式同目錄)。
@@ -2502,6 +2584,161 @@ class NetBusMaster:
                 except Exception as e:
                     print(f"⚠️ [Web] 自動開瀏覽器失敗: {e}")
             threading.Thread(target=_open, daemon=True).start()
+
+    # ==================== 保活機制 (與 netbus_keepalive.py 互相監督) ====================
+    #  設計: 主服務與守護程式各自寫心跳檔, 互相檢查對方心跳; 一方死亡另一方救回。
+    #  只有 stop.flag 存在 (= 使用者主動關閉) 時雙方都停止救援並退出。
+    def _ka_enabled(self):
+        return bool(self._cfg_int("keepalive_enable", 1))
+
+    def _ka_heartbeat_loop(self):
+        """主服務心跳: 每 N 秒更新 service.heartbeat。"""
+        hb = max(0.5, self._cfg_float("keepalive_heartbeat_s", 2.0))
+        while self.running:
+            if os.path.exists(KA_STOP_FLAG):
+                return
+            _ka_touch(KA_SERVICE_HB)
+            time.sleep(hb)
+
+    def _ka_start_heartbeat(self):
+        """啟動心跳執行緒 + 寫入自己的 PID。"""
+        try:
+            with open(KA_SERVICE_PID, "w", encoding="utf-8") as f:
+                f.write(str(os.getpid()))
+        except Exception as e:
+            print(f"⚠️ [Keepalive] 寫入 service.pid 失敗: {e}")
+        _ka_touch(KA_SERVICE_HB)
+        threading.Thread(target=self._ka_heartbeat_loop, daemon=True).start()
+
+    def _ka_guardian_alive(self):
+        """守護程式是否活著。
+
+        🔧 以 PID 為主要依據, 心跳為輔: 守護程式在跑 osascript 等阻塞操作時
+        心跳可能短暫延遲, 若只看心跳會誤判死亡 → 反覆重生。因此 PID 活著且
+        心跳未超過 3 倍逾時, 就視為存活 (真正 hung 的情況由 3x 逾時兜底)。
+        """
+        pid = _ka_read_pid(KA_GUARDIAN_PID)
+        if not _ka_pid_alive(pid):
+            return False
+        timeout = self._cfg_float("keepalive_timeout_s", 10.0)
+        a = _ka_age(KA_GUARDIAN_HB)
+        if a is None:
+            # PID 在但沒心跳檔 → 給寬限 (剛啟動)
+            pa = _ka_age(KA_GUARDIAN_PID)
+            return pa is None or pa < timeout * 3
+        return a < timeout * 3
+
+    def _ka_start_guardian(self):
+        """拉起守護程式 (detached)。已在跑就不重複啟動。"""
+        if not self._ka_enabled():
+            return
+        if not os.path.isfile(KA_GUARDIAN_SCRIPT):
+            print(f"⚠️ [Keepalive] 找不到守護程式: {KA_GUARDIAN_SCRIPT}")
+            return
+        if self._ka_guardian_alive():
+            print("🛡️ [Keepalive] 守護程式已在執行")
+            return
+        try:
+            out = open(os.path.join(KA_DIR, "guardian.log"), "a", encoding="utf-8")
+            subprocess.Popen(
+                [sys.executable, "-B", KA_GUARDIAN_SCRIPT, "--daemon"],
+                cwd=SCRIPT_DIR, stdin=subprocess.DEVNULL,
+                stdout=out, stderr=out, start_new_session=True,
+            )
+            print("🛡️ [Keepalive] 已啟動守護程式 (互相監督中)")
+        except Exception as e:
+            print(f"⚠️ [Keepalive] 啟動守護程式失敗: {e}")
+
+    def _ka_supervise_guardian_loop(self):
+        """主服務反過來監督守護程式: 發現它死了就重新拉起。"""
+        while self.running:
+            if os.path.exists(KA_STOP_FLAG):
+                return
+            time.sleep(max(1.0, self._cfg_float("keepalive_timeout_s", 10.0) / 2.0))
+            if os.path.exists(KA_STOP_FLAG) or not self.running:
+                return
+            if not self._ka_guardian_alive():
+                print("⚠️ [Keepalive] 守護程式無回應 → 重新拉起")
+                self._ka_start_guardian()
+
+    def _ka_start(self):
+        """保活機制入口: 清除舊 stop.flag、寫心跳、拉起守護程式、監督它。"""
+        if not self._ka_enabled():
+            print("ℹ️ [Keepalive] 已停用 (config keepalive_enable=0)")
+            return
+        # 正常啟動 = 使用者要跑 → 清掉關閉旗標
+        try:
+            os.remove(KA_STOP_FLAG)
+        except OSError:
+            pass
+        self._ka_start_heartbeat()
+        self._ka_start_guardian()
+        threading.Thread(target=self._ka_supervise_guardian_loop, daemon=True).start()
+
+    @staticmethod
+    def _ka_stop_requested():
+        return os.path.exists(KA_STOP_FLAG)
+
+    def _ka_write_stop_flag(self, reason=""):
+        """寫下關閉旗標, 讓雙方都停止救援。"""
+        try:
+            os.makedirs(KA_DIR, exist_ok=True)
+            with open(KA_STOP_FLAG, "w", encoding="utf-8") as f:
+                f.write("stopped at {} by PID {}\n{}\n".format(
+                    datetime.now().strftime("%Y-%m-%d %H:%M:%S"), os.getpid(), reason))
+            print("🛑 [Keepalive] 已寫下 stop.flag (關閉整個系統)")
+        except Exception as e:
+            print(f"⚠️ [Keepalive] 寫入 stop.flag 失敗: {e}")
+
+    def _ka_cleanup(self):
+        """收尾: 清掉自己的 PID 與心跳 (保留 stop.flag 讓守護程式也退出)。"""
+        for p in (KA_SERVICE_PID, KA_SERVICE_HB):
+            try:
+                os.remove(p)
+            except OSError:
+                pass
+
+    def remote_shutdown_all(self):
+        """網頁技術台: 關閉整個系統 (主服務 + 守護程式)。回傳 (ok, msg)。
+
+        🔧 這是唯一能真正停止服務的方式之一 (另有 console q 與 netbus_ctl.py stop)。
+        流程: 先停播放 → 寫 stop.flag (守護程式看到就退出, 不再救回) → 延遲後退出。
+        延遲是為了讓 HTTP 回應先送達瀏覽器。
+        """
+        try:
+            self.stop_all()
+        except Exception:
+            pass
+        self._ka_write_stop_flag("web shutdown")
+        self.panel.log("warn", "🛑 使用者由網頁關閉整個系統")
+
+        def _bye():
+            time.sleep(1.5)
+            self.running = False
+            # 給主迴圈時間退出; 若卡在 input() 則強制結束
+            time.sleep(1.0)
+            self._ka_cleanup()
+            os._exit(0)
+        threading.Thread(target=_bye, daemon=True).start()
+        return True, "已關閉整個系統（含守護程式）"
+
+    def remote_keepalive_status(self):
+        """保活狀態 (供網頁顯示)。回傳 dict。"""
+        def _info(pid_path, hb_path, label):
+            pid = _ka_read_pid(pid_path)
+            a = _ka_age(hb_path)
+            return {
+                "label": label,
+                "pid": pid,
+                "alive": _ka_pid_alive(pid),
+                "heartbeat_age_s": None if a is None else round(a, 1),
+            }
+        return {
+            "enabled": self._ka_enabled(),
+            "stop_requested": os.path.exists(KA_STOP_FLAG),
+            "service": _info(KA_SERVICE_PID, KA_SERVICE_HB, "主服務"),
+            "guardian": _info(KA_GUARDIAN_PID, KA_GUARDIAN_HB, "守護程式"),
+        }
 
     def _restart_web_server(self):
         """重啟網頁伺服器 (換網卡後重綁到新 IP)。WS 伺服器不受影響。"""
@@ -8154,6 +8391,22 @@ class NetBusMaster:
         else:
             print("ℹ️ 尚無設備紀錄 (slave_map.json 為空) — 請用 Step 1 掃描/定向連線")
 
+        # 🔧 無 console 模式: 由 netbus_ctl / 守護程式背景啟動時, stdin 是
+        #    /dev/null, input() 會立刻 EOFError 讓服務秒退 (並觸發守護程式
+        #    誤判重啟 → 無限循環)。此時改為「只跑服務, 不進選單」。
+        if "--no-console" in sys.argv or not sys.stdin or not sys.stdin.isatty():
+            print("🖥️  [Mode] 無 console 模式 (stdin 不可用) — 服務持續運行, 請用網頁操作")
+            print("      停止請用: python3 -B tools/PC/netbus_ctl.py stop")
+            try:
+                while self.running:
+                    if self._ka_stop_requested():
+                        print("🛑 偵測到 stop.flag → 結束")
+                        break
+                    time.sleep(1.0)
+            except KeyboardInterrupt:
+                pass
+            return
+
         self._print_menu()
         
         while self.running:
@@ -8211,7 +8464,9 @@ class NetBusMaster:
                 time.sleep(1)
                 self._print_menu()
             elif ch == 'q':
+                # 🔧 這是正式的「關閉整個系統」: 寫 stop.flag 讓守護程式也退出, 不再救回
                 self.stop_all()
+                self._ka_write_stop_flag("console q")
                 self.running = False
                 break
         
@@ -8220,6 +8475,12 @@ class NetBusMaster:
 
 
 if __name__ == "__main__":
+    # 🔧 保活機制: 由守護程式重啟時會帶 --guardian-restart。
+    #    若使用者已要求關閉 (stop.flag), 就不要再復活 —— 否則會與關閉指令打架。
+    _from_guardian = "--guardian-restart" in sys.argv
+    if _from_guardian and os.path.exists(KA_STOP_FLAG):
+        print("🛑 [Keepalive] 使用者已要求關閉 → 不啟動")
+        sys.exit(0)
     _auto_switch_to_venv()
     app = NetBusMaster()
     try:
@@ -8228,5 +8489,6 @@ if __name__ == "__main__":
         print("\n\n🛑 用戶中斷")
     finally:
         app.panel.stop()
+        app._ka_cleanup()
         ConsoleUI.show_cursor()
         print("\n再見! 👋")

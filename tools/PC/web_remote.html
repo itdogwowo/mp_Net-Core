@@ -357,6 +357,16 @@
       </div>
 
       <div class="card">
+        <h2>系統保活</h2>
+        <div id="kalive" class="hint" style="margin-bottom:10px"></div>
+        <button class="danger btn-lg" id="shutdownall">⛔ 關閉整個系統</button>
+        <div class="hint" style="margin-top:8px">
+          關閉後主服務與守護程式都會停止，不會自動重啟。要再啟動請跑
+          <span class="mono">python3 -B tools/PC/netbus_ctl.py start</span>
+        </div>
+      </div>
+
+      <div class="card">
         <h2>Wi-Fi 設定 (給 QR 掃碼連線用)</h2>
         <div class="field">
           <label>SSID</label>
@@ -964,6 +974,7 @@
     renderBrightPxlds(s.pxlds);
     renderSlots(s.slots);
     renderWifi(s.wifi, typeof s.wifi === 'undefined');
+    renderKeepalive(s.keepalive);
     renderLamps($('#mc_lamps'), show, 'mc');
     renderMcCards(s.script || { cards: [], lang: 'zh' }, show);
     renderAudio(show);
@@ -1236,6 +1247,26 @@
   }
   $('#showreset').addEventListener('click', doShowReset);
   $('#techreset').addEventListener('click', doShowReset);
+
+  // 保活: 狀態顯示 + 關閉整個系統 (僅技術台)
+  function renderKeepalive(ka) {
+    var el = $('#kalive');
+    if (!el) return;
+    ka = ka || {};
+    if (!ka.enabled) { el.textContent = '保活機制：已停用'; return; }
+    var s = ka.service || {}, g = ka.guardian || {};
+    var dot = function (o) {
+      return (o.alive ? '● ' : '○ ') + o.label + (o.alive
+        ? '（心跳 ' + (o.heartbeat_age_s == null ? '?' : o.heartbeat_age_s) + 's）'
+        : '（未運行）');
+    };
+    el.textContent = dot(s) + '　' + dot(g);
+  }
+  $('#shutdownall').addEventListener('click', function () {
+    if (!window.confirm('確定要關閉整個系統嗎？\n\n主服務與守護程式都會停止，不會自動重啟。\n（需要重新啟動才能恢復）')) return;
+    this.disabled = true;
+    post('shutdown_all');
+  });
   $('#edcancel').addEventListener('click', closeEditor);
   $('#edsave').addEventListener('click', function () {
     if (!editDraft) return;
