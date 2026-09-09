@@ -41,15 +41,22 @@ def _rs_generator(nsym):
 
 
 def _rs_encode(data, nsym):
-    """回傳 data + ecc 的完整 codeword 清單。"""
-    gen = _rs_generator(nsym)
-    res = [0] * (len(data) + nsym)
-    for b in data:
-        factor = b ^ res.pop(0)
-        res.append(0)
-        for i in range(nsym):
-            res[i] ^= _gf_mul(gen[i], factor)
-    return data + res[:nsym]
+    """回傳 data + ecc 的完整 codeword 清單。
+
+    🔧 修正 (2026-09-10): 原本的實作把 generator 的次數順序搞反了 ——
+    _rs_generator 回傳「最低次在前」, 但多項式除法要「最高次在前」(monic,
+    gen[0]=1)。原寫法 factor 用 res.pop(0) 再對 res[i] 逐項消去, 等於用
+    反序的 generator, 算出來的 ECC 全錯 → 掃碼器驗證失敗 (iPhone 直接
+    無法識別)。資料段本身正確, 所以肉眼看不出問題。
+    """
+    gen = list(reversed(_rs_generator(nsym)))   # → 最高次在前, gen[0] = 1
+    res = list(data) + [0] * nsym
+    for i in range(len(data)):
+        coef = res[i]
+        if coef:
+            for j in range(len(gen)):
+                res[i + j] ^= _gf_mul(gen[j], coef)
+    return data + res[len(data):]
 
 
 # ── 版本表 (EC level M, 版本 1~10) ──

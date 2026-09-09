@@ -172,24 +172,57 @@ class _WebHandler(BaseHTTPRequestHandler):
             self._send_json({"logs": items, "next": last})
             return
         if path == "/api/qr":
-            self._send_qr_svg()
+            q = parse_qs(urlparse(self.path).query)
+            kind = (q.get("kind", ["page"])[0] or "page").lower()
+            self._send_qr_svg(kind)
             return
         self._send_json({"error": "not found"}, 404)
 
-    def _send_qr_svg(self):
-        """純本地 QR: 編碼目前網頁網址 (綁定網卡 IP:web_port) 成 SVG 回傳。不連外網。"""
+    def _send_qr_svg(self, kind="page"):
+        """純本地 QR (SVG)。不連外網。
+
+        kind="page" → 控制台網址 http://<本機IP>:<web_port>
+        kind="wifi" → Wi-Fi 加入格式 WIFI:T:<auth>;S:<ssid>;P:<pass>;H:<0/1>;;
+        """
         try:
             from qr_local import qr_svg
         except Exception:
             self._send_json({"error": "qr_local.py missing"}, 500)
             return
-        port = self.master.config.get("web_port", 8080)
-        ip = self.master.local_ip
-        url = f"http://{ip}:{port}"
+
+        if kind == "wifi":
+            w = self.master._load_wifi()
+            if not w["ssid"]:
+                self._send_json({"error": "尚未設定 Wi-Fi SSID (請到技術台填寫)"}, 400)
+                return
+            # 標準 Wi-Fi QR 格式: 特殊字元需轉義 (\\ ; , : ")
+            def _esc(s):
+                out = []
+                for ch in s:
+                    if ch in "\\;,:\"":
+                        out.append("\\" + ch)
+                    else:
+                        out.append(ch)
+                return "".join(out)
+            auth = w["auth"]
+            if auth == "NOPASS":
+                data = "WIFI:T:nopass;S:{};;".format(_esc(w["ssid"]))
+            else:
+                data = "WIFI:T:{};S:{};P:{};{};".format(
+                    auth, _esc(w["ssid"]), _esc(w["password"]),
+                    "H:true" if w["hidden"] else "")
+                # 格式尾端需雙分號
+                if not data.endswith(";;"):
+                    data = data.rstrip(";") + ";;"
+        else:
+            port = self.master.config.get("web_port", 8080)
+            ip = self.master.local_ip
+            data = "http://{}:{}".format(ip, port)
+
         try:
-            svg = qr_svg(url).encode("utf-8")
+            svg = qr_svg(data).encode("utf-8")
         except Exception as e:
-            self._send_json({"error": f"qr encode failed: {e}"}, 500)
+            self._send_json({"error": "qr encode failed: {}".format(e)}, 500)
             return
         self.send_response(200)
         self.send_header("Content-Type", "image/svg+xml")
@@ -210,6 +243,28 @@ class _WebHandler(BaseHTTPRequestHandler):
         self._send_json(result)
 
     @staticmethod
+    def _device_summary(m):
+        """設備摘要: 在線 / 離線 / 未連接。
+
+        online  = WS 連線中 (self.slaves)
+        offline = 曾見過但現在斷線 (panel.monitors 有, slaves 沒有)
+        unknown = slave_map.json 有紀錄但本次沒見過
+        """
+        online = set(m.slaves.keys())
+        try:
+            with m.panel.lock:
+                seen = set(m.panel.monitors.keys())
+        except Exception:
+            seen = set()
+        known = set((m.config.get("mapping") or {}).keys())
+        return {
+            "online": len(online),
+            "offline": len(seen - online),
+            "unknown": len(known - seen - online),
+            "known": len(known),
+        }
+
+    @staticmethod
     def _build_state(m):
         playing = bool(m.is_playing) or bool(m.play_session_active)
         paused = bool(m.is_paused)
@@ -217,6 +272,15 @@ class _WebHandler(BaseHTTPRequestHandler):
         cfg_out = {}
         for k in list(NetBusMaster._REMOTE_INT_KEYS) + list(NetBusMaster._REMOTE_FLOAT_KEYS):
             cfg_out[k] = cfg.get(k, None)
+        try:
+            script = m._load_script()
+        except Exception:
+            script = {"version": 2, "lang": "zh", "active": "", "scripts": []}
+        # 🔧 前端只需目前劇本的卡片 + 劇本清單 (不必傳全部劇本內文)
+        scripts_meta = [
+            {"id": s.get("id"), "name": s.get("name"), "count": len(s.get("cards", []))}
+            for s in script.get("scripts", [])
+        ]
         return {
             "local_ip": m.local_ip,
             "ws_port": cfg.get("ws_port", 8000),
@@ -232,6 +296,40 @@ class _WebHandler(BaseHTTPRequestHandler):
             "selected": list(m.selected_targets),
             "config": cfg_out,
             "mp3s": sorted(f for f in os.listdir(SCRIPT_DIR) if f.lower().endswith(".mp3")),
+            # 🔧 演出流程 (MC / 音響 兩頁共用)
+            "show": {
+                "phase": m.show_phase,
+                "slot": m.show_slot,
+                "audio_ready": bool(m.audio_ready),
+            },
+            "slots": {
+                "main": m._slot("main"),
+                "loop": m._slot("loop"),
+            },
+            "device_summary": _WebHandler._device_summary(m),
+            "script": {
+                "lang": script.get("lang", "zh"),
+                "active": script.get("active", ""),
+                "cards": m._active_cards(script),
+                "scripts": scripts_meta,
+            },
+            # 🔧 Wi-Fi QR 憑證 (密碼不回傳給前端, 只回是否有設定)
+            "wifi": _WebHandler._wifi_public(m),
+        }
+
+    @staticmethod
+    def _wifi_public(m):
+        """Wi-Fi 設定的前端可見部分 (不含密碼)。"""
+        try:
+            w = m._load_wifi()
+        except Exception:
+            w = {}
+        return {
+            "ssid": w.get("ssid", ""),
+            "auth": w.get("auth", "WPA"),
+            "hidden": w.get("hidden", 0),
+            "has_password": bool(w.get("password")),
+            "configured": bool(w.get("ssid")),
         }
 
     @staticmethod
@@ -320,6 +418,70 @@ class _WebHandler(BaseHTTPRequestHandler):
         if action == "direct_test":
             threading.Thread(target=m.remote_direct_test, daemon=True).start()
             return {"ok": True, "msg": "Direct 串流測試已啟動 (紅色呼吸→純黑→停止), 請看 Log"}
+        # ── 演出流程 (MC ↔ 音響) ──
+        if action == "show_arm":
+            ok, msg = m.remote_show_arm(data.get("slot"))
+            return {"ok": ok, "msg": msg}
+        if action == "show_request_play":
+            ok, msg = m.remote_show_request_play()
+            return {"ok": ok, "msg": msg}
+        if action == "audio_ready":
+            ok, msg = m.remote_audio_ready()
+            return {"ok": ok, "msg": msg}
+        if action == "audio_reset":
+            ok, msg = m.remote_audio_reset()
+            return {"ok": ok, "msg": msg}
+        if action == "show_play":
+            ok, msg = m.remote_show_play(data.get("slot"))
+            return {"ok": ok, "msg": msg}
+        if action == "show_replay":
+            ok, msg = m.remote_show_replay()
+            return {"ok": ok, "msg": msg}
+        if action == "show_stop":
+            ok, msg = m.remote_show_stop()
+            return {"ok": ok, "msg": msg}
+        if action == "show_end_play":
+            ok, msg = m.remote_show_end_play()
+            return {"ok": ok, "msg": msg}
+        if action == "show_end":
+            ok, msg = m.remote_show_end()
+            return {"ok": ok, "msg": msg}
+        if action == "play_loop":
+            ok, msg = m.remote_play_loop()
+            return {"ok": ok, "msg": msg}
+        if action == "play_slot":
+            ok, msg = m.remote_play_slot(data.get("slot"))
+            return {"ok": ok, "msg": msg}
+        if action == "save_wifi":
+            ok, msg = m.remote_save_wifi(
+                ssid=data.get("ssid"), password=data.get("password"),
+                auth=data.get("auth"), hidden=data.get("hidden"),
+            )
+            return {"ok": ok, "msg": msg}
+        if action == "detect_ssid":
+            ok, msg = m.remote_detect_ssid()
+            return {"ok": ok, "msg": msg, "ssid": msg if ok else ""}
+        if action == "show_reset":
+            ok, msg = m.remote_show_reset()
+            return {"ok": ok, "msg": msg}
+        if action == "save_slots":
+            ok, msg = m.remote_save_slots(data.get("slots"))
+            return {"ok": ok, "msg": msg}
+        if action == "save_script":
+            ok, msg = m.remote_save_script(
+                data.get("cards"), data.get("lang"),
+                script_id=data.get("script_id"), name=data.get("name"),
+            )
+            return {"ok": ok, "msg": msg}
+        if action == "set_script":
+            ok, msg = m.remote_set_script(data.get("script_id"))
+            return {"ok": ok, "msg": msg}
+        if action == "delete_script":
+            ok, msg = m.remote_delete_script(data.get("script_id"))
+            return {"ok": ok, "msg": msg}
+        if action == "set_lang":
+            ok, msg = m.remote_set_lang(data.get("lang"))
+            return {"ok": ok, "msg": msg}
         return {"ok": False, "msg": f"未知動作: {action}"}
 
 # ==================== 全局默認配置 ====================
@@ -389,7 +551,15 @@ DEFAULT_CONFIG = {
     "midjoin_settle_s": 0.5,
     # 🔧 重連追幀的延遲量測樣本數 (平均法): 用「平均單向延遲」補償而非 min RTT。
     #    min RTT 在抖動下會低估 → 補償偏小 → 重連後追不上。平均給足裕量。
-    "midjoin_latency_samples": 3
+    "midjoin_latency_samples": 3,
+    # 🔧 演出媒體槽 (技術台預先設定, MC 頁只按按鈕):
+    #    main = 主媒體 (播一次), loop = 第二媒體 (循環)。
+    #    每槽 = 資源主名 + 音效 + 同步延遲 + 主動同步 fps + 是否循環。
+    #    存在 slave_map.json (load_config 的 dict 合併分支自動支援新增子鍵)。
+    "media_slots": {
+        "main": {"label": "破鏡高達燈光秀", "resource": "", "mp3": "", "delay_ms": 150, "active_sync_fps": 0, "loop": 0},
+        "loop": {"label": "備用媒體", "resource": "", "mp3": "", "delay_ms": 150, "active_sync_fps": 0, "loop": 1},
+    },
 }
 
 # ==================== 垃圾檔過濾 (Python 快取 / macOS / Windows / 編輯器暫存) ====================
@@ -552,6 +722,10 @@ def _auto_switch_to_venv():
 # 🔧 輔助檔案集中存放:
 #   slave_map.json 與本程式同目錄 (tools/PC/); 其餘輔助檔案 (log/下載/profile) 放 data/
 CONFIG_PATH = os.path.join(SCRIPT_DIR, "slave_map.json")
+# 🔧 MC 講稿 / 流程卡片: 獨立檔案 (不塞進 slave_map.json, 免得設定檔被長文撐肥)。
+SCRIPT_PATH = os.path.join(SCRIPT_DIR, "mc_script.json")
+# 🔧 Wi-Fi 憑證 (供 QR 掃碼連線): 獨立檔案且不進版控 (含密碼)。
+WIFI_PATH = os.path.join(SCRIPT_DIR, "wifi_qr.json")
 DATA_DIR = os.path.join(SCRIPT_DIR, "data")
 LOG_DIR = os.path.join(DATA_DIR, "logs")
 DOWNLOAD_DIR = os.path.join(DATA_DIR, "downloads")
@@ -1186,6 +1360,15 @@ class NetBusMaster:
         self.audio_finished = False
         self._dev_finished = set()        # 🔧 本次會話「已自然播完」的設備 (重連不再自動續播)
         self._stop_was_manual = False     # 🔧 本次播放是否由使用者手動停止 (s/q), 決定要不要補「延遲停止」
+        # 🔧 演出狀態機 (MC / 音響 兩頁共用的同步來源, 全部走 _build_state 曝光):
+        #    idle → armed → awaiting_audio → ready → playing → finished → ending → idle
+        self.show_phase = "idle"          # 目前演出階段
+        self.show_slot = "main"           # 目前使用的媒體槽 ("main" / "loop")
+        self.audio_ready = False          # 音響同事是否已按「音響已就緒」
+        self._show_started_at = 0.0       # 本輪演出擊發時刻 (除錯/顯示用)
+        self._show_watch_stop = threading.Event()   # 完成偵測執行緒停止訊號
+        self._show_watch_thread = None
+        self._script_cache = None        # (mtime, dict) — 講稿檔快取 (避免每秒讀檔)
         self._dev_drift = {}              # 🔧 每台設備的「連續進度偏差」次數 (3 次 → SEEK 校正)
         self._dev_heal_misses = {}        # 🔧 每台設備「連續無回應」次數 (半開偵測, 播放中自癒用)
         self._dev_heal_last_knock = {}    # 🔧 每台設備上次自癒敲門時間戳 (rate limit, 防循環)
@@ -1333,7 +1516,362 @@ class NetBusMaster:
             
         with open(self.config_file, 'w', encoding='utf-8') as f:
             json.dump(ordered_config, f, indent=4, ensure_ascii=False)
-    
+
+    # ==================== MC 講稿 / 流程卡片 (mc_script.json) ====================
+    #  卡片流水線: 文字卡 (zh/en 講稿) 與按鈕卡 (限演出動作) 串成一個可編輯的流程。
+    #  MC 頁照順序渲染, 按鈕卡依目前演出階段自動啟用/變灰。
+    _SHOW_ACTIONS = (
+        "show_arm", "show_request_play", "show_play", "show_stop",
+        "show_replay", "show_end_play", "show_end", "play_loop", "play_slot",
+    )
+
+    @staticmethod
+    def _default_script():
+        """預設 (空殼): 一個主劇本, 含基本流程按鈕。實際內容由 mc_script.json 提供。"""
+        return {
+            "version": 2,
+            "lang": "zh",
+            "active": "s1",
+            "scripts": [{
+                "id": "s1",
+                "name": "主劇本",
+                "cards": [
+                    {"id": "c1", "type": "text", "zh": "歡迎各位來賓，演出即將開始。",
+                     "en": "Welcome everyone, the show is about to begin."},
+                    {"id": "c2", "type": "button", "action": "show_arm",
+                     "zh": "邀請觀眾準備", "en": "Invite audience"},
+                    {"id": "c3", "type": "button", "action": "show_request_play",
+                     "zh": "準備播放", "en": "Request playback"},
+                    {"id": "c4", "type": "button", "action": "show_play",
+                     "zh": "播放", "en": "Play"},
+                    {"id": "c5", "type": "button", "action": "show_stop",
+                     "zh": "停止", "en": "Stop"},
+                    {"id": "c6", "type": "button", "action": "show_replay",
+                     "zh": "重播", "en": "Replay"},
+                    {"id": "c7", "type": "button", "action": "show_end",
+                     "zh": "結束流程", "en": "End session"},
+                ],
+            }],
+        }
+
+    @staticmethod
+    def _sanitize_cards(cards):
+        """過濾/正規化前端送來的卡片: 只留合法型別與欄位, 防止寫入垃圾。"""
+        out = []
+        if not isinstance(cards, list):
+            return out
+        for i, c in enumerate(cards):
+            if not isinstance(c, dict):
+                continue
+            ctype = c.get("type")
+            if ctype not in ("text", "button"):
+                continue
+            card = {
+                "id": str(c.get("id") or "c{}".format(i + 1))[:32],
+                "type": ctype,
+                "zh": str(c.get("zh") or "")[:4000],
+                "en": str(c.get("en") or "")[:4000],
+            }
+            if ctype == "button":
+                act = c.get("action")
+                if act not in NetBusMaster._SHOW_ACTIONS:
+                    continue
+                card["action"] = act
+                if act == "play_slot":
+                    slot = c.get("slot")
+                    if slot not in NetBusMaster._SLOT_NAMES:
+                        slot = "main"
+                    card["slot"] = slot
+            out.append(card)
+        return out
+
+    def _load_script(self):
+        """讀 mc_script.json (多劇本) → 正規化後回傳。
+
+        結構: {"version":2, "lang":"zh", "active":"<script_id>",
+               "scripts":[{"id","name","cards":[...]}, ...]}
+        🔧 相容舊格式 (只有頂層 cards) → 自動包成單一劇本。
+        🔧 mtime 快取: /api/state 每秒被輪詢, 不必每秒讀檔。
+        """
+        try:
+            mtime = os.stat(SCRIPT_PATH).st_mtime
+        except OSError:
+            mtime = None
+        cache = getattr(self, "_script_cache", None)
+        if cache is not None and mtime is not None and cache[0] == mtime:
+            return cache[1]
+
+        data = None
+        if mtime is not None:
+            try:
+                with open(SCRIPT_PATH, "r", encoding="utf-8") as f:
+                    loaded = json.load(f)
+                if isinstance(loaded, dict):
+                    data = self._normalize_script(loaded)
+            except OSError:
+                pass
+            except Exception as e:
+                print(f"⚠️ [Script] 讀取失敗, 改用預設: {e}")
+        if data is None:
+            data = self._default_script()
+            try:
+                self._write_script_file(data)
+                mtime = os.stat(SCRIPT_PATH).st_mtime
+            except Exception as e:
+                print(f"⚠️ [Script] 建立預設檔失敗: {e}")
+        self._script_cache = (mtime, data)
+        return data
+
+    def _normalize_script(self, loaded):
+        """把任何版本的講稿檔正規化成 {version, lang, active, scripts:[...]}。"""
+        lang = "en" if loaded.get("lang") == "en" else "zh"
+        scripts = []
+        raw = loaded.get("scripts")
+        if isinstance(raw, list) and raw:
+            for i, s in enumerate(raw):
+                if not isinstance(s, dict):
+                    continue
+                cards = self._sanitize_cards(s.get("cards"))
+                sid = str(s.get("id") or "s{}".format(i + 1))[:32]
+                name = str(s.get("name") or "劇本 {}".format(i + 1))[:64]
+                scripts.append({"id": sid, "name": name, "cards": cards})
+        else:
+            # 舊格式: 頂層 cards → 單一劇本
+            cards = self._sanitize_cards(loaded.get("cards"))
+            if cards:
+                scripts.append({"id": "s1", "name": "主劇本", "cards": cards})
+        if not scripts:
+            return self._default_script()
+        active = loaded.get("active")
+        ids = [s["id"] for s in scripts]
+        if active not in ids:
+            active = ids[0]
+        return {"version": 2, "lang": lang, "active": active, "scripts": scripts}
+
+    def _active_cards(self, data):
+        """取目前選中劇本的卡片。"""
+        for s in data.get("scripts", []):
+            if s.get("id") == data.get("active"):
+                return s.get("cards", [])
+        return data.get("scripts", [{}])[0].get("cards", []) if data.get("scripts") else []
+
+    @staticmethod
+    def _write_script_file(data):
+        """原子寫入: 先寫 .tmp 再 os.replace, 避免寫到一半斷電留下半個檔。"""
+        tmp = SCRIPT_PATH + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+            f.flush()
+            try:
+                os.fsync(f.fileno())
+            except Exception:
+                pass
+        os.replace(tmp, SCRIPT_PATH)
+
+    def remote_save_script(self, cards, lang=None, script_id=None, name=None):
+        """儲存指定劇本的卡片 (編輯器按「儲存」)。回傳 (ok, msg)。
+
+        script_id=None → 存到目前選中的劇本; 若該劇本不存在則新增。
+        """
+        clean = self._sanitize_cards(cards)
+        if not clean:
+            return False, "講稿內容為空或格式不合法, 未儲存"
+        data = self._load_script()
+        sid = script_id or data.get("active")
+        target = None
+        for s in data.get("scripts", []):
+            if s.get("id") == sid:
+                target = s
+                break
+        if target is None:
+            sid = sid or "s{}".format(len(data.get("scripts", [])) + 1)
+            target = {"id": str(sid)[:32], "name": str(name or "新劇本")[:64], "cards": []}
+            data.setdefault("scripts", []).append(target)
+        target["cards"] = clean
+        if name:
+            target["name"] = str(name)[:64]
+        data["active"] = target["id"]
+        if lang in ("zh", "en"):
+            data["lang"] = lang
+        try:
+            self._write_script_file(data)
+        except Exception as e:
+            return False, f"寫入失敗: {e}"
+        self._cache_script(data)
+        return True, "已儲存劇本「{}」共 {} 張卡片".format(target["name"], len(clean))
+
+    def remote_set_script(self, script_id):
+        """切換目前使用的劇本 (存後端, 全裝置同步)。回傳 (ok, msg)。"""
+        data = self._load_script()
+        for s in data.get("scripts", []):
+            if s.get("id") == script_id:
+                data["active"] = script_id
+                try:
+                    self._write_script_file(data)
+                except Exception as e:
+                    return False, f"寫入失敗: {e}"
+                self._cache_script(data)
+                return True, "已切換劇本「{}」".format(s.get("name", script_id))
+        return False, "找不到劇本: {}".format(script_id)
+
+    def remote_delete_script(self, script_id):
+        """刪除劇本 (至少保留一個)。回傳 (ok, msg)。"""
+        data = self._load_script()
+        scripts = data.get("scripts", [])
+        if len(scripts) <= 1:
+            return False, "至少需保留一個劇本"
+        remain = [s for s in scripts if s.get("id") != script_id]
+        if len(remain) == len(scripts):
+            return False, "找不到劇本: {}".format(script_id)
+        data["scripts"] = remain
+        if data.get("active") == script_id:
+            data["active"] = remain[0]["id"]
+        try:
+            self._write_script_file(data)
+        except Exception as e:
+            return False, f"寫入失敗: {e}"
+        self._cache_script(data)
+        return True, "已刪除劇本"
+
+    def _cache_script(self, data):
+        """寫檔後立刻更新 mtime 快取 (st_mtime 解析度可能是秒, 不能只靠它)。"""
+        try:
+            mtime = os.stat(SCRIPT_PATH).st_mtime
+        except OSError:
+            mtime = None
+        self._script_cache = (mtime, data)
+
+    def remote_set_lang(self, lang):
+        """切換中/英講稿顯示 (存後端, 全裝置同步)。回傳 (ok, msg)。"""
+        if lang not in ("zh", "en"):
+            return False, f"不支援的語言: {lang}"
+        data = self._load_script()
+        data["lang"] = lang
+        try:
+            self._write_script_file(data)
+        except Exception as e:
+            return False, f"寫入失敗: {e}"
+        self._cache_script(data)
+        return True, "已切換為{}".format("中文" if lang == "zh" else "English")
+
+    # ==================== Wi-Fi QR 憑證 (wifi_qr.json, 不進版控) ====================
+    def _load_wifi(self):
+        """讀 wifi_qr.json → {ssid, password, auth, hidden}。缺檔回空值 (不自動建檔)。"""
+        out = {"ssid": "", "password": "", "auth": "WPA", "hidden": 0}
+        try:
+            with open(WIFI_PATH, "r", encoding="utf-8") as f:
+                d = json.load(f)
+            if isinstance(d, dict):
+                out["ssid"] = str(d.get("ssid") or "")[:64]
+                out["password"] = str(d.get("password") or "")[:128]
+                auth = str(d.get("auth") or "WPA").upper()
+                out["auth"] = auth if auth in ("WPA", "WEP", "NOPASS") else "WPA"
+                out["hidden"] = 1 if d.get("hidden") else 0
+        except OSError:
+            pass
+        except Exception as e:
+            print(f"⚠️ [WiFi] 讀取失敗: {e}")
+        return out
+
+    def remote_save_wifi(self, ssid=None, password=None, auth=None, hidden=None):
+        """儲存 Wi-Fi QR 憑證 (技術台)。回傳 (ok, msg)。空 ssid 視為清空。"""
+        cur = self._load_wifi()
+        if ssid is not None:
+            cur["ssid"] = str(ssid)[:64]
+        if password is not None:
+            cur["password"] = str(password)[:128]
+        if auth is not None:
+            a = str(auth).upper()
+            cur["auth"] = a if a in ("WPA", "WEP", "NOPASS") else "WPA"
+        if hidden is not None:
+            cur["hidden"] = 1 if hidden else 0
+        try:
+            tmp = WIFI_PATH + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(cur, f, indent=2, ensure_ascii=False)
+                f.flush()
+                try:
+                    os.fsync(f.fileno())
+                except Exception:
+                    pass
+            os.replace(tmp, WIFI_PATH)
+        except Exception as e:
+            return False, f"寫入失敗: {e}"
+        return True, "已儲存 Wi-Fi 設定" + ("" if cur["ssid"] else " (SSID 為空)")
+
+    @staticmethod
+    def _wifi_device():
+        """找出 Wi-Fi 介面名稱 (通常是 en0, 但可能不同)。失敗回 'en0'。"""
+        import re as _re
+        import subprocess
+        try:
+            r = subprocess.run(["networksetup", "-listallhardwareports"],
+                               capture_output=True, text=True, timeout=5)
+            m = _re.search(r"Hardware Port: (?:Wi-Fi|AirPort)\s*\nDevice: (\S+)", r.stdout or "")
+            if m:
+                return m.group(1)
+        except Exception:
+            pass
+        return "en0"
+
+    def remote_detect_ssid(self):
+        """嘗試讀出本機目前連線的 Wi-Fi SSID (macOS)。回傳 (ok, ssid/message)。
+
+        🔧 macOS 的隱私限制: 讀取 SSID 需要「位置服務」授權。未授權時
+        networksetup 會回一句誤導的 "not associated", 而 system_profiler /
+        ipconfig 會把 SSID 顯示成 <redacted>。這裡先判斷「是否真的連線」,
+        再區分「沒連線」與「已連線但被系統遮蔽」兩種情況, 給出可行動的提示。
+        """
+        import subprocess
+        if sys.platform != "darwin":
+            return False, "此平台不支援自動偵測，請手動輸入 SSID"
+        dev = self._wifi_device()
+
+        # 1) 是否真的連線? (en0 有 IP 或 system_profiler 說 Connected)
+        connected = False
+        try:
+            r = subprocess.run(["ipconfig", "getifaddr", dev],
+                               capture_output=True, text=True, timeout=5)
+            if (r.stdout or "").strip():
+                connected = True
+        except Exception:
+            pass
+        if not connected:
+            try:
+                r = subprocess.run(["system_profiler", "SPAirPortDataType"],
+                                   capture_output=True, text=True, timeout=15)
+                connected = "Status: Connected" in (r.stdout or "")
+            except Exception:
+                pass
+
+        # 2) 逐一嘗試取得 SSID (networksetup 最直接 → ipconfig getsummary)
+        try:
+            r = subprocess.run(["networksetup", "-getairportnetwork", dev],
+                               capture_output=True, text=True, timeout=5)
+            out = (r.stdout or "").strip()
+            if ":" in out and "not associated" not in out.lower():
+                ssid = out.split(":", 1)[1].strip()
+                if ssid and "<redacted>" not in ssid:
+                    return True, ssid
+        except Exception:
+            pass
+        try:
+            r = subprocess.run(["ipconfig", "getsummary", dev],
+                               capture_output=True, text=True, timeout=5)
+            for line in (r.stdout or "").splitlines():
+                if line.strip().startswith("SSID") and ":" in line:
+                    ssid = line.split(":", 1)[1].strip()
+                    if ssid and "<redacted>" not in ssid:
+                        return True, ssid
+        except Exception:
+            pass
+
+        # 3) 拿不到 → 分辨原因
+        if connected:
+            return False, ("Wi-Fi 已連線，但 macOS 未授權讀取 SSID（系統設定 → 隱私權與安全性 → "
+                           "位置服務，允許終端機 / Python）。請直接手動輸入 SSID 即可。")
+        return False, "目前未連線 Wi-Fi，請手動輸入 SSID"
+
     def _list_interfaces(self):
         """列出本機所有 IPv4 網卡 [{"name","ip"}, ...]。失敗回 []。
 
@@ -6959,8 +7497,14 @@ class NetBusMaster:
             self.panel.log("warn", f"⚙️ [Prepare] {n_ready}/{n_total} 台已 READY (其餘可能仍在開檔, 播放時會再確認)")
         return True, f"已準備 {n_ready}/{n_total} 台 (data 暖機完成, 可擊發)"
 
-    def remote_fire(self, mp3=None):
-        """擊發播放 (0x300A): 前提是已 remote_prepare。回傳 (ok, message)。"""
+    def remote_fire(self, mp3=None, watchdog=True):
+        """擊發播放 (0x300A): 前提是已 remote_prepare。回傳 (ok, message)。
+
+        watchdog=False: 不啟動 _remote_play_watchdog。演出流程 (MC) 用這個 ——
+        內建 watchdog 會在音檔播完後就收掉 play_session_active / 停掉進度輪詢,
+        把「所有設備播完」的判定蓋掉; 演出改用 _show_finish_watcher 自行收尾。
+        既有呼叫者不傳此參數 → 行為完全不變。
+        """
         if not self.selected_targets:
             return False, "請先掃描並選擇設備"
         if not self.play_session_active and not self.is_playing:
@@ -7012,7 +7556,8 @@ class NetBusMaster:
                 self.send_pkt(self.selected_targets, 0x300A, {"start_frame": 0})
                 time.sleep(delay_sec)
                 self._start_audio_stream(mp3)
-            threading.Thread(target=self._remote_play_watchdog, daemon=True).start()
+            if watchdog:
+                threading.Thread(target=self._remote_play_watchdog, daemon=True).start()
         else:
             self.playback_start_time = time.time()   # 🔧 開燈那一刻才計時
             self.send_pkt(self.selected_targets, 0x300A, {"start_frame": 0})
@@ -7067,6 +7612,296 @@ class NetBusMaster:
     def remote_stop(self):
         self.stop_all()
         return True
+
+    # ==================== 演出流程 (MC ↔ 音響 同步) ====================
+    #  完整流程:
+    #    idle --[MC 邀請觀眾準備]--> armed --[MC 準備播放]--> awaiting_audio
+    #         --[音響按「音響已就緒」]--> ready --[MC 播放]--> playing
+    #         --[自然播完 / MC 停止]--> finished --[MC 結束流程]--> ending
+    #         --[音響按「已重置」]--> idle
+    #  MC 頁的按鈕卡依 phase 自動啟用/變灰; 音響頁只看 phase 顯示對應提示。
+    # 🔧 媒體槽名稱 (固定兩個: 主秀 / 備用)。label 由技術台自訂。
+    _SLOT_NAMES = ("main", "loop")
+
+    def _slot(self, name=None):
+        """取媒體槽設定 (回傳 dict; 不存在則回預設空槽)。"""
+        slots = self.config.get("media_slots") or {}
+        key = name or self.show_slot
+        s = slots.get(key) or {}
+        return {
+            "label": s.get("label", "") or key,
+            "resource": s.get("resource", "") or "",
+            "mp3": s.get("mp3", "") or "",
+            "delay_ms": int(s.get("delay_ms", 150) or 0),
+            "active_sync_fps": int(s.get("active_sync_fps", 0) or 0),
+            "loop": 1 if s.get("loop", 0) else 0,
+        }
+
+    def _set_phase(self, phase, log_msg=None):
+        self.show_phase = phase
+        if log_msg:
+            self.panel.log("info", "[Show] " + log_msg)
+
+    def remote_save_slots(self, slots):
+        """技術台儲存媒體槽設定 (main / loop)。回傳 (ok, msg)。"""
+        if not isinstance(slots, dict):
+            return False, "格式錯誤"
+        cur = self.config.setdefault("media_slots", {})
+        saved = []
+        for name in self._SLOT_NAMES:
+            src = slots.get(name)
+            if not isinstance(src, dict):
+                continue
+            slot = cur.setdefault(name, {})
+            if "label" in src:
+                slot["label"] = str(src.get("label") or "")[:64]
+            if "resource" in src:
+                slot["resource"] = str(src.get("resource") or "")[:128]
+            if "mp3" in src:
+                slot["mp3"] = str(src.get("mp3") or "")[:256]
+            if "delay_ms" in src:
+                try:
+                    slot["delay_ms"] = max(-60000, min(60000, int(src.get("delay_ms"))))
+                except (TypeError, ValueError):
+                    pass
+            if "active_sync_fps" in src:
+                try:
+                    slot["active_sync_fps"] = max(0, int(src.get("active_sync_fps")))
+                except (TypeError, ValueError):
+                    pass
+            if "loop" in src:
+                slot["loop"] = 1 if src.get("loop") else 0
+            saved.append(name)
+        if not saved:
+            return False, "沒有可儲存的槽"
+        self.save_config()
+        return True, "已儲存媒體槽: {}".format(", ".join(saved))
+
+    def remote_show_arm(self, slot=None):
+        """MC: 邀請觀眾準備 —— 自動全選在線裝置並暖機該槽媒體。回傳 (ok, msg)。"""
+        if slot in ("main", "loop"):
+            self.show_slot = slot
+        n = self.remote_select_all()
+        if not n:
+            self._set_phase("idle")
+            return False, "沒有在線裝置 (請先掃描)"
+        s = self._slot()
+        if not s["resource"]:
+            self._set_phase("idle")
+            return False, "媒體槽「{}」尚未設定資源 (請技術台先設定)".format(self.show_slot)
+        ok, msg = self.remote_prepare(
+            resource=s["resource"], loop=bool(s["loop"]),
+            delay_ms=s["delay_ms"], active_sync_fps=s["active_sync_fps"],
+        )
+        if not ok:
+            self._set_phase("idle")
+            return False, msg
+        self.audio_ready = False
+        self._set_phase("armed", "已暖機 {} 台, 媒體={}".format(n, s["resource"]))
+        return True, "{} ({} 台已就緒)".format(msg, n)
+
+    def remote_show_request_play(self):
+        """MC: 準備播放 —— 通知音響同事進入準備 (解除靜音)。回傳 (ok, msg)。
+
+        🔧 音響若已預先舉手 (armed 階段按過「已就緒」), 這裡直接進 ready,
+        不再多等一輪 (MC 按完就能播)。
+        """
+        if self.show_phase not in ("armed", "finished"):
+            return False, "目前階段無法準備播放 (需先「邀請觀眾準備」)"
+        if self.audio_ready:
+            self._set_phase("ready", "準備播放 (音響已預先就緒)")
+            return True, "音響已就緒, 可直接播放"
+        self.audio_ready = False
+        self._set_phase("awaiting_audio", "已通知音響準備")
+        return True, "已通知音響同事準備"
+
+    def remote_audio_ready(self):
+        """音響: 音響已就緒 —— 告知 MC 可以隨時播放。回傳 (ok, msg)。
+
+        🔧 armed 階段也接受: 音響不必等 MC 按「準備播放」才能舉手 (兩人在不同
+        位置時, 音響可先確認好設備並標記就緒)。此時只設 audio_ready=True,
+        階段維持 armed, 等 MC 按「準備播放」後會直接跳過等待 (見 request_play)。
+        """
+        if self.show_phase not in ("awaiting_audio", "ready", "armed"):
+            return False, "目前階段不需要就緒回報"
+        self.audio_ready = True
+        if self.show_phase == "armed":
+            self._set_phase("armed", "音響已預先就緒 (等待 MC 準備播放)")
+            return True, "已預先回報就緒"
+        self._set_phase("ready", "音響已就緒")
+        return True, "已回報就緒"
+
+    def remote_audio_reset(self):
+        """音響: 已重置 —— 結束流程後回到待機。回傳 (ok, msg)。"""
+        if self.show_phase != "ending":
+            return False, "目前階段不需要重置"
+        self.audio_ready = False
+        self.show_slot = "main"
+        self._set_phase("idle", "音響已重置, 回到待機")
+        return True, "已重置"
+
+    def remote_show_reset(self):
+        """手動強制重置流程 → idle (任何階段都可呼叫)。
+
+        逃生門: ending 階段只有音響能解 (按「已重置」), 音響手機沒電/關頁/忘了按
+        就整場卡死, 只能重啟程式。這顆讓 MC 或技術台自己解開。
+        正在播放會先停止; 不動媒體槽設定與講稿。
+        """
+        was = self.show_phase
+        self._stop_show_watcher()
+        if self.show_phase == "playing":
+            self.remote_stop()
+        self.audio_ready = False
+        self.show_slot = "main"
+        self._set_phase("idle", "手動重置流程 (原階段={})".format(was))
+        return True, "已重置流程 (原階段: {})".format(was)
+
+    def _show_do_play(self, slot):
+        """共用: 依槽設定擊發 (watchdog=False, 由 _show_finish_watcher 收尾)。"""
+        s = self._slot(slot)
+        if not s["resource"]:
+            return False, "媒體槽「{}」尚未設定資源".format(slot)
+        # 音效路徑: 槽內 mp3 是檔名, 轉絕對路徑並檢查存在
+        mp3 = None
+        if s["mp3"]:
+            full = os.path.join(SCRIPT_DIR, s["mp3"])
+            if not os.path.isfile(full):
+                return False, "找不到音效檔: {}".format(s["mp3"])
+            mp3 = full
+        # 資源/延遲若與暖機時不同 → 重新 prepare 對齊
+        if (self._prepared_resource != self._slot_stem(s)
+                or not self.play_session_active):
+            ok, msg = self.remote_prepare(
+                resource=s["resource"], loop=bool(s["loop"]),
+                delay_ms=s["delay_ms"], active_sync_fps=s["active_sync_fps"],
+            )
+            if not ok:
+                return False, msg
+        ok, msg = self.remote_fire(mp3=mp3, watchdog=False)
+        if not ok:
+            return False, msg
+        self._show_started_at = time.time()
+        self._set_phase("playing", "擊發播放 (槽={})".format(slot))
+        self._start_show_watcher(slot, has_mp3=bool(mp3), loop=bool(s["loop"]))
+        return True, "播放中"
+
+    @staticmethod
+    def _slot_stem(slot_cfg):
+        r = (slot_cfg or {}).get("resource", "")
+        return os.path.splitext(os.path.basename(r))[0] if r else ""
+
+    def remote_show_play(self, slot=None):
+        """MC: 播放 (需音響已就緒)。回傳 (ok, msg)。"""
+        if slot in ("main", "loop"):
+            self.show_slot = slot
+        if self.show_phase not in ("ready", "armed"):
+            return False, "目前階段無法播放"
+        if self.show_phase == "armed":
+            # 尚未經過「準備播放→音響就緒」, 允許但仍標記 (操作員可能自播自聽)
+            self.audio_ready = True
+        return self._show_do_play(self.show_slot)
+
+    def remote_show_replay(self):
+        """MC: 重播 —— 重新暖機並再次擊發。回傳 (ok, msg)。"""
+        if self.show_phase not in ("playing", "finished"):
+            return False, "目前階段無法重播"
+        slot = self.show_slot
+        self.remote_stop()
+        ok, msg = self._show_do_play(slot)
+        return ok, ("重播中" if ok else msg)
+
+    def remote_show_stop(self):
+        """MC: 停止 —— 停止播放並進入「播放結束」。回傳 (ok, msg)。"""
+        if self.show_phase not in ("playing", "ready", "armed"):
+            return False, "目前階段無法停止"
+        self._stop_show_watcher()
+        self.remote_stop()
+        self._set_phase("finished", "已停止播放")
+        return True, "已停止"
+
+    def remote_show_end_play(self):
+        """MC: 結束播放 —— 停止並回到「播放結束」等待下一步。回傳 (ok, msg)。"""
+        return self.remote_show_stop()
+
+    def remote_show_end(self):
+        """MC: 結束流程 —— 通知音響同事重置。回傳 (ok, msg)。"""
+        if self.show_phase not in ("finished", "playing", "ready", "armed"):
+            return False, "目前階段無法結束流程"
+        self._stop_show_watcher()
+        if self.show_phase == "playing":
+            self.remote_stop()
+        self.audio_ready = False
+        self._set_phase("ending", "已通知音響重置")
+        return True, "已通知音響同事重置"
+
+    def remote_play_loop(self):
+        """MC: 播放備用槽媒體 (切到 loop 槽, 循環播放)。回傳 (ok, msg)。"""
+        if self.show_phase == "playing":
+            self.remote_stop()
+        self.show_slot = "loop"
+        n = self.remote_select_all()
+        if not n:
+            return False, "沒有在線裝置 (請先掃描)"
+        self.audio_ready = True
+        return self._show_do_play("loop")
+
+    def remote_play_slot(self, slot):
+        """MC: 播放指定媒體槽 (main / loop)。回傳 (ok, msg)。"""
+        if slot not in self._SLOT_NAMES:
+            return False, "不支援的媒體槽: {}".format(slot)
+        if self.show_phase == "playing":
+            self.remote_stop()
+        self.show_slot = slot
+        n = self.remote_select_all()
+        if not n:
+            return False, "沒有在線裝置 (請先掃描)"
+        self.audio_ready = True
+        return self._show_do_play(slot)
+
+    def _start_show_watcher(self, slot, has_mp3, loop):
+        """完成偵測: 音效條件 + 設備條件皆成立 → finished。"""
+        self._stop_show_watcher()
+        self._show_watch_stop.clear()
+        t = threading.Thread(
+            target=self._show_finish_watcher,
+            args=(slot, has_mp3, loop),
+            daemon=True,
+        )
+        self._show_watch_thread = t
+        t.start()
+
+    def _stop_show_watcher(self):
+        self._show_watch_stop.set()
+        t = self._show_watch_thread
+        if t:
+            try:
+                t.join(timeout=0.5)
+            except Exception:
+                pass
+        self._show_watch_thread = None
+
+    def _show_finish_watcher(self, slot, has_mp3, loop):
+        """演出完成看守: 音效播完 且 所有選中設備都標「播完」→ phase=finished。
+
+        循環槽不自動結束 (靠 MC 按停止)。
+        """
+        if loop:
+            return
+        while not self._show_watch_stop.is_set():
+            if self.show_phase != "playing":
+                return
+            if not self.play_session_active:
+                # 被外部停止 (stop_all) → 讓停止路徑決定階段
+                return
+            audio_done = (not has_mp3) or bool(self.audio_finished)
+            targets = list(self.selected_targets)
+            dev_done = bool(targets) and all(t in self._dev_finished for t in targets)
+            if audio_done and dev_done:
+                if self.show_phase == "playing":
+                    self._set_phase("finished", "音效與設備皆已播完")
+                    self.panel.log("ok", "[Show] 播放結束 (音效+全部設備)")
+                return
+            self._show_watch_stop.wait(0.5)
 
     def remote_query(self):
         targets = list(self.selected_targets) or list(self.slaves.keys())

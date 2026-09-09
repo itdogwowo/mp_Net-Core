@@ -2,144 +2,317 @@
 <html lang="zh-Hant">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>NetBus 網頁遙控</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0f1216">
+<title>NetBus 演出控制台</title>
 <style>
   :root {
     --bg: #0f1216; --panel: #171c22; --panel2: #1e252e;
     --line: #2a333d; --text: #dbe2ea; --muted: #8b98a6;
     --accent: #3da9fc; --ok: #2fbf71; --warn: #e6b23c; --err: #ef5b5b;
+    --script-fs: 1.15rem;
   }
-  * { box-sizing: border-box; }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; }
   body {
-    margin: 0; background: var(--bg); color: var(--text);
-    font: 14px/1.5 -apple-system, "Segoe UI", "PingFang TC", "Microsoft JhengHei", sans-serif;
+    background: var(--bg); color: var(--text);
+    font: 15px/1.55 -apple-system, "Segoe UI", "PingFang TC", "Microsoft JhengHei", sans-serif;
+    padding-bottom: env(safe-area-inset-bottom);
   }
+
+  /* ── 頁首 + 導航 ── */
   header {
-    display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
-    padding: 12px 18px; background: var(--panel); border-bottom: 1px solid var(--line);
+    position: sticky; top: 0; z-index: 50;
+    background: var(--panel); border-bottom: 1px solid var(--line);
+    padding: 10px 12px calc(10px) 12px;
+    padding-top: calc(10px + env(safe-area-inset-top));
   }
-  header h1 { font-size: 16px; margin: 0; font-weight: 600; }
-  header .meta { color: var(--muted); font-size: 12px; }
+  .head-top { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  header h1 { font-size: 15px; margin: 0; font-weight: 600; }
+  header .meta { color: var(--muted); font-size: 11.5px; }
+  .nav { display: flex; gap: 6px; margin-top: 10px; }
+  .nav button {
+    flex: 1; padding: 11px 6px; font-size: 15px; font-weight: 600;
+    background: var(--panel2); color: var(--muted);
+    border: 1px solid var(--line); border-radius: 9px; cursor: pointer;
+  }
+  .nav button.active { background: var(--accent); border-color: var(--accent); color: #04121f; }
+
+  /* ── 版面: 手機單欄, 寬螢幕才分兩欄 ── */
+  .layout { padding: 12px; max-width: 1400px; margin: 0 auto; }
+  @media (min-width: 900px) {
+    .layout { display: grid; grid-template-columns: 1.05fr .95fr; gap: 14px; align-items: start; }
+    .col-wide { grid-column: 1 / -1; }
+  }
+  .view { display: none; }
+  .view.active { display: block; }
+
+  .card {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
+    padding: 14px; margin-bottom: 12px;
+  }
+  .card h2 {
+    margin: 0 0 10px; font-size: 12px; color: var(--muted);
+    text-transform: uppercase; letter-spacing: .06em; font-weight: 600;
+  }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .row + .row { margin-top: 8px; }
+
+  /* ── 按鈕: 手機可點性優先 ── */
+  button {
+    background: var(--panel2); color: var(--text); border: 1px solid var(--line);
+    padding: 11px 14px; border-radius: 9px; cursor: pointer; font-size: 15px;
+    font-family: inherit; min-height: 44px;
+  }
+  button:active { transform: scale(.985); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #04121f; font-weight: 700; }
+  button.danger { background: var(--err); border-color: var(--err); color: #1c0505; font-weight: 700; }
+  button.warn { background: var(--warn); border-color: var(--warn); color: #241a02; font-weight: 700; }
+  button.ok { background: var(--ok); border-color: var(--ok); color: #04180d; font-weight: 700; }
+  button:disabled { opacity: .4; cursor: not-allowed; }
+  button:disabled:active { transform: none; }
+
+  /* 主要動作: 全寬大字 */
+  .btn-lg { width: 100%; min-height: 56px; font-size: 17px; padding: 14px 16px; }
+  /* 次要動作: 兩欄並排 */
+  .btn-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .btn-grid > button { width: 100%; min-height: 50px; }
+  .btn-grid.cols-1 { grid-template-columns: 1fr; }
+
+  input, select, textarea {
+    background: #0c1014; color: var(--text); border: 1px solid var(--line);
+    border-radius: 9px; padding: 10px 11px; font-size: 15px; font-family: inherit;
+    width: 100%; min-height: 44px;
+  }
+  textarea { min-height: 90px; resize: vertical; line-height: 1.6; }
+  input[type=number] { width: 100%; }
+  label { color: var(--muted); font-size: 12px; display: block; margin-bottom: 4px; }
+  .field { margin-bottom: 10px; }
+
+  /* ── 徽章 / 狀態 ── */
   .badge {
-    padding: 3px 10px; border-radius: 999px; font-size: 12px; font-weight: 600;
+    padding: 4px 11px; border-radius: 999px; font-size: 12.5px; font-weight: 600;
     background: var(--panel2); border: 1px solid var(--line); color: var(--muted);
   }
   .badge.on { background: rgba(47,191,113,.15); border-color: var(--ok); color: var(--ok); }
   .badge.pause { background: rgba(230,178,60,.15); border-color: var(--warn); color: var(--warn); }
-  .layout {
-    display: grid; grid-template-columns: 1.1fr 0.9fr; gap: 14px;
-    padding: 14px; max-width: 1500px; margin: 0 auto;
+  .badge.wait { background: rgba(239,91,91,.15); border-color: var(--err); color: var(--err); }
+
+  /* ── 設備列表 ── */
+  .devsum { display: flex; gap: 10px; flex-wrap: wrap; font-size: 13.5px; }
+  .devsum b { font-size: 16px; }
+  .devsum .s-on { color: var(--ok); }
+  .devsum .s-off { color: var(--warn); }
+  .devsum .s-un { color: var(--muted); }
+  .devscroll { max-height: 130px; overflow-y: auto; margin-top: 10px; border-radius: 8px; }
+  .devmini {
+    display: flex; align-items: center; gap: 8px; padding: 8px 4px;
+    border-bottom: 1px solid var(--line); font-size: 13px;
   }
-  @media (max-width: 980px) { .layout { grid-template-columns: 1fr; } }
-  .card {
-    background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
-    padding: 14px; margin-bottom: 14px;
-  }
-  .card h2 {
-    margin: 0 0 10px; font-size: 13px; color: var(--muted);
-    text-transform: uppercase; letter-spacing: .06em; font-weight: 600;
-  }
-  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
-  button {
-    background: var(--panel2); color: var(--text); border: 1px solid var(--line);
-    padding: 7px 12px; border-radius: 7px; cursor: pointer; font-size: 13px;
-  }
-  button:hover { border-color: var(--accent); }
-  button.primary { background: var(--accent); border-color: var(--accent); color: #04121f; font-weight: 600; }
-  button.danger { background: var(--err); border-color: var(--err); color: #1c0505; font-weight: 600; }
-  button.warn { background: var(--warn); border-color: var(--warn); color: #241a02; font-weight: 600; }
-  button:disabled { opacity: .45; cursor: not-allowed; }
-  input, select {
-    background: #0c1014; color: var(--text); border: 1px solid var(--line);
-    border-radius: 7px; padding: 6px 9px; font-size: 13px;
-  }
-  input[type=number] { width: 90px; }
-  label { color: var(--muted); font-size: 12px; display: inline-flex; align-items: center; gap: 5px; }
+  .devmini:last-child { border-bottom: none; }
+  .devmini .mono { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .devmini .st { color: var(--muted); font-size: 12px; }
   table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
-  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); }
+  th, td { text-align: left; padding: 7px 6px; border-bottom: 1px solid var(--line); }
   th { color: var(--muted); font-weight: 500; }
   tr.offline td { opacity: .45; }
   tr.selected td { background: rgba(61,169,252,.07); }
   .mono { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
-  .progress { height: 6px; background: #0c1014; border-radius: 3px; overflow: hidden; min-width: 80px; }
+  .progress { height: 6px; background: #0c1014; border-radius: 3px; overflow: hidden; min-width: 60px; }
   .progress > span { display: block; height: 100%; background: var(--accent); }
-  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 5px; }
+  .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; flex: 0 0 auto; }
   .dot.on { background: var(--ok); } .dot.off { background: var(--muted); }
+
+  /* ── 狀態燈 (兩邊互看: 音響是否就緒 / MC 階段) ── */
+  .lamps {
+    display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 12px;
+  }
+  .lamp {
+    flex: 1 1 45%; min-width: 140px;
+    display: flex; align-items: center; gap: 9px;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 11px;
+    padding: 11px 13px; font-size: 13.5px;
+  }
+  .lamp .bulb {
+    width: 14px; height: 14px; border-radius: 50%; flex: 0 0 auto;
+    background: #3a444f; box-shadow: none; transition: all .2s;
+  }
+  .lamp.on .bulb { background: var(--ok); box-shadow: 0 0 9px var(--ok); }
+  .lamp.wait .bulb { background: var(--warn); box-shadow: 0 0 9px var(--warn); }
+  .lamp.live .bulb { background: var(--accent); box-shadow: 0 0 9px var(--accent); }
+  .lamp .lname { color: var(--muted); font-size: 11.5px; display: block; }
+  .lamp .lval { font-weight: 600; }
+
+  /* ── Log ── */
   #log {
-    background: #0a0d11; border: 1px solid var(--line); border-radius: 8px;
-    height: 420px; overflow-y: auto; padding: 10px; font-size: 12px;
+    background: #0a0d11; border: 1px solid var(--line); border-radius: 9px;
+    height: 300px; overflow-y: auto; padding: 10px; font-size: 12px;
   }
   #log .line { white-space: pre-wrap; word-break: break-all; padding: 1px 0; }
   #log .ts { color: var(--muted); margin-right: 6px; }
   #log .stderr { color: var(--err); }
+  #log .warn { color: var(--warn); }
   .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
-  .field { display: flex; flex-direction: column; gap: 4px; }
-  .field label { font-size: 11px; }
-  .hint { color: var(--muted); font-size: 11.5px; }
+  .hint { color: var(--muted); font-size: 12px; }
+
+  /* ── MC 演出頁: 卡片流水線 ── */
+  .mctop {
+    display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+    margin-bottom: 12px;
+  }
+  .mctop .spacer { flex: 1; }
+  .pill {
+    background: var(--panel2); border: 1px solid var(--line); border-radius: 9px;
+    padding: 9px 12px; font-size: 14px; min-height: 44px; cursor: pointer;
+  }
+  .pill.on { border-color: var(--accent); color: var(--accent); }
+  .scriptcard {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 14px;
+    padding: 18px; margin-bottom: 12px;
+  }
+  .scriptcard .stext {
+    font-size: var(--script-fs); line-height: 1.75; white-space: pre-wrap;
+    word-break: break-word;
+  }
+  .scriptcard .slabel {
+    font-size: 11px; color: var(--muted); text-transform: uppercase;
+    letter-spacing: .08em; margin-bottom: 8px;
+  }
+  .scriptcard button { width: 100%; min-height: 60px; font-size: 18px; }
+  .scriptcard button .sub { display: block; font-size: 12px; font-weight: 400; opacity: .75; margin-top: 3px; }
+  .cardidx { float: right; color: var(--muted); font-size: 11px; }
+
+  /* ── 音響頁 ── */
+  .audio-stage {
+    border-radius: 16px; padding: 30px 20px; text-align: center;
+    border: 2px solid var(--line); background: var(--panel);
+  }
+  .audio-stage .big { font-size: 26px; font-weight: 700; line-height: 1.4; }
+  .audio-stage .sub { font-size: 15px; color: var(--muted); margin-top: 10px; }
+  .audio-stage.wait { border-color: var(--err); background: rgba(239,91,91,.10); }
+  .audio-stage.wait .big { color: var(--err); }
+  .audio-stage.ready { border-color: var(--ok); background: rgba(47,191,113,.10); }
+  .audio-stage.ready .big { color: var(--ok); }
+  .audio-stage.play { border-color: var(--accent); background: rgba(61,169,252,.10); }
+  .audio-stage.play .big { color: var(--accent); }
+
+  /* ── 全螢幕編輯器 ── */
+  .overlay {
+    display: none; position: fixed; inset: 0; z-index: 200;
+    background: var(--bg); overflow-y: auto;
+    padding: 12px 12px calc(90px + env(safe-area-inset-bottom));
+  }
+  .overlay.open { display: block; }
+  .overlay-bar {
+    position: sticky; top: 0; z-index: 10; background: var(--bg);
+    display: flex; gap: 8px; align-items: center; padding: 10px 0 12px;
+    border-bottom: 1px solid var(--line); margin-bottom: 12px;
+  }
+  .overlay-bar h3 { margin: 0; font-size: 16px; flex: 1; }
+  .editcard {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
+    padding: 12px; margin-bottom: 10px;
+  }
+  .editcard .ehd {
+    display: flex; align-items: center; gap: 6px; margin-bottom: 10px;
+    font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em;
+  }
+  .editcard .ehd .spacer { flex: 1; }
+  .editcard .ehd button { min-height: 36px; padding: 6px 10px; font-size: 13px; }
+  .editcard .langpair { display: grid; gap: 8px; }
+  @media (min-width: 700px) { .editcard .langpair { grid-template-columns: 1fr 1fr; } }
+  .editcard textarea { min-height: 80px; }
+
+  /* ── QR modal ── */
+  #qrmodal {
+    display: none; position: fixed; inset: 0; z-index: 300;
+    background: rgba(0,0,0,.75); align-items: center; justify-content: center; padding: 16px;
+  }
+  #qrmodal .box {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 14px;
+    padding: 20px; text-align: center; max-width: 360px; width: 100%;
+  }
+  #qrimg { width: 100%; max-width: 280px; aspect-ratio: 1; background: #fff; border-radius: 10px; }
 </style>
 </head>
 <body>
+
 <header>
-  <h1>🎬 NetBus 網頁遙控</h1>
-  <span class="meta mono" id="netinfo">載入中…</span>
-  <span class="badge" id="playbadge">待機</span>
+  <div class="head-top">
+    <h1>🎬 NetBus 演出控制台</h1>
+    <span class="badge" id="playbadge">待機</span>
+    <span class="meta mono" id="netinfo" style="flex-basis:100%">載入中…</span>
+  </div>
+  <div class="nav">
+    <button data-view="tech" class="active">技術台</button>
+    <button data-view="mc">MC</button>
+    <button data-view="audio">音響</button>
+  </div>
 </header>
 
-<div class="layout">
-  <div>
-    <div class="card">
-      <h2>掃描設備</h2>
-      <div class="row">
-        <button class="primary" data-action="scan" data-mode="broadcast">廣播掃描</button>
-        <button data-action="scan" data-mode="knock">依紀錄敲門</button>
-        <input id="scan_ips" placeholder="定向 IP, 例 192.168.8.139" style="flex:1; min-width:200px">
-        <button data-action="scan" data-mode="direct" data-ips="#scan_ips">定向掃描</button>
+<!-- ══════════════ 技術台 ══════════════ -->
+<div class="view active" id="view-tech">
+  <div class="layout">
+    <div>
+      <div class="card">
+        <h2>掃描設備</h2>
+        <div class="btn-grid cols-1">
+          <button class="primary" data-action="scan" data-mode="broadcast">廣播掃描</button>
+          <button data-action="scan" data-mode="knock">依紀錄敲門</button>
+        </div>
+        <div class="row" style="margin-top:8px">
+          <input id="scan_ips" placeholder="定向 IP, 例 192.168.8.139">
+          <button data-action="scan" data-mode="direct" data-ips="#scan_ips">定向掃描</button>
+        </div>
       </div>
-    </div>
 
-    <div class="card">
-      <h2>網卡 <span class="hint" id="netcurrent"></span></h2>
-      <div class="row">
-        <select id="netiface" style="flex:1; min-width:200px"></select>
-        <button class="primary" id="netapply">套用網卡</button>
+      <div class="card">
+        <h2>網卡 <span class="hint" id="netcurrent"></span></h2>
+        <div class="field">
+          <select id="netiface"></select>
+        </div>
+        <button class="primary btn-lg" id="netapply">套用網卡</button>
       </div>
-    </div>
 
-    <div class="card">
-      <h2>亮度調整 (產生新 pxld)</h2>
-      <div class="row">
-        <select id="bright_pxld" style="flex:1; min-width:200px"></select>
-        <input type="number" id="bright_factor" value="100" step="1" min="1" style="width:90px" title="%">
-        <span class="hint">%</span>
-        <button class="primary" id="brightapply">產生新檔</button>
+      <div class="card">
+        <h2>設備列表</h2>
+        <div class="devsum" id="devsum">
+          <span>已知 <b>0</b></span><span class="s-on">在線 <b>0</b></span>
+          <span class="s-off">離線 <b>0</b></span><span class="s-un">未連接 <b>0</b></span>
+        </div>
+        <div class="devscroll" id="devscroll"></div>
+        <div class="row" style="margin-top:10px">
+          <button id="devtoggle">展開完整列表</button>
+          <button data-action="select_all">全選</button>
+          <button data-action="query">查詢狀態</button>
+        </div>
+        <div id="devfull" style="display:none; margin-top:10px">
+          <div style="overflow-x:auto">
+            <table id="devtable">
+              <thead>
+                <tr>
+                  <th></th><th>設備</th><th>PlayID</th><th>狀態</th>
+                  <th>幀</th><th>進度</th><th>FPS</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+          <div class="row" style="margin-top:10px">
+            <button data-action="select_clear">清空選擇</button>
+            <button data-action="clear" class="danger">清除設備列表</button>
+          </div>
+        </div>
       </div>
-    </div>
 
-    <div class="card">
-      <h2>設備列表 <span class="hint" id="devcount"></span></h2>
-      <div style="overflow-x:auto">
-        <table id="devtable">
-          <thead>
-            <tr>
-              <th></th><th>設備</th><th>PlayID</th><th>狀態</th>
-              <th>幀</th><th>進度</th><th>FPS</th><th>Mem</th>
-            </tr>
-          </thead>
-          <tbody></tbody>
-        </table>
+      <div class="card">
+        <h2>媒體槽設定 (MC 頁會用到)</h2>
+        <div id="slot_editor"></div>
+        <button class="primary btn-lg" id="slotsave" style="margin-top:6px">儲存媒體槽</button>
       </div>
-      <div class="row" style="margin-top:10px">
-        <button data-action="select_all">全選</button>
-        <button data-action="select_clear">清空選擇</button>
-        <button data-action="clear" class="danger">清除設備列表</button>
-        <button data-action="query">查詢狀態</button>
-      </div>
-    </div>
 
-    <div class="card">
-      <h2>播放控制</h2>
-      <div class="grid2">
+      <div class="card">
+        <h2>手動播放控制</h2>
         <div class="field">
           <label>資源 (pxld 主名 → /sd/{stem}.bin)</label>
           <select id="resource"><option value="">— 目前資源 —</option></select>
@@ -148,57 +321,174 @@
           <label>音檔</label>
           <select id="mp3"><option value="">— 靜音 (僅燈效) —</option></select>
         </div>
+        <div class="grid2">
+          <div class="field">
+            <label>同步延遲 ms (負=先燈後音)</label>
+            <input type="number" id="delay_ms" value="150" step="1" min="-60000" max="60000">
+          </div>
+          <div class="field">
+            <label>主動同步 fps (0=關)</label>
+            <input type="number" id="active_sync_fps" value="0" step="1" min="0">
+          </div>
+        </div>
+        <label style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+          <input type="checkbox" id="loop_play" style="width:auto;min-height:auto"> 循環播放
+        </label>
+        <div class="btn-grid">
+          <button class="primary" data-action="prepare">⏳ 準備</button>
+          <button class="primary" data-action="fire">▶ 播放</button>
+        </div>
+        <div class="btn-grid" style="margin-top:8px">
+          <button class="warn" data-action="pause">⏸ 暫停/繼續</button>
+          <button class="danger" data-action="stop">■ 停止</button>
+        </div>
+        <div class="btn-grid" style="margin-top:8px">
+          <button data-action="verify">🔍 驗證資源</button>
+          <button data-action="latency">📡 延遲偵查</button>
+        </div>
+        <div class="btn-grid" style="margin-top:8px">
+          <button data-action="direct_test">🎬 Direct 測試</button>
+          <button id="qrbtn">🔳 QR Code</button>
+        </div>
+        <div class="row" style="margin-top:8px">
+          <button class="warn" id="techreset" style="flex:1">↺ 重置演出流程</button>
+        </div>
+        <div class="hint" id="latencyres" style="margin-top:8px"></div>
+      </div>
+
+      <div class="card">
+        <h2>Wi-Fi 設定 (給 QR 掃碼連線用)</h2>
         <div class="field">
-          <label>同步延遲 sync_delay_ms (負值=先燈後音, 範圍 -60000~60000)</label>
-          <input type="number" id="delay_ms" value="150" step="1" min="-60000" max="60000">
+          <label>SSID</label>
+          <div class="row">
+            <input id="wifi_ssid" placeholder="Wi-Fi 名稱" style="flex:1;min-width:160px">
+            <button id="wifidetect">讀取目前</button>
+          </div>
         </div>
         <div class="field">
-          <label>主動同步 fps (0=關閉)</label>
-          <input type="number" id="active_sync_fps" value="0" step="1" min="0">
+          <label>密碼 (留空 = 開放網路 / 只編碼 SSID)</label>
+          <input id="wifi_pw" type="password" placeholder="Wi-Fi 密碼">
         </div>
+        <div class="grid2">
+          <div class="field">
+            <label>加密方式</label>
+            <select id="wifi_auth">
+              <option value="WPA">WPA / WPA2</option>
+              <option value="WEP">WEP</option>
+              <option value="NOPASS">無密碼</option>
+            </select>
+          </div>
+          <div class="field">
+            <label>隱藏網路</label>
+            <label style="display:flex;align-items:center;gap:8px;margin-top:8px">
+              <input type="checkbox" id="wifi_hidden" style="width:auto;min-height:auto"> 是
+            </label>
+          </div>
+        </div>
+        <div class="hint" id="wifi_hint" style="margin-bottom:8px"></div>
+        <button class="primary btn-lg" id="wifisave">儲存 Wi-Fi 設定</button>
+      </div>
+
+      <div class="card">
+        <h2>亮度調整 (產生新 pxld)</h2>
         <div class="field">
-          <label>循環播放</label>
-          <label style="margin-top:4px"><input type="checkbox" id="loop_play"> loop_play (準備時套用)</label>
+          <select id="bright_pxld"></select>
         </div>
+        <div class="row">
+          <input type="number" id="bright_factor" value="100" step="1" min="1" style="flex:1">
+          <span class="hint">%</span>
+        </div>
+        <button class="primary btn-lg" id="brightapply" style="margin-top:8px">產生新檔</button>
       </div>
-      <div class="row" style="margin-top:12px">
-        <button class="primary" id="preparebtn" data-action="prepare">⏳ 準備 (選資源 + 暖機)</button>
-        <button class="primary" id="firebtn" data-action="fire">▶ 播放</button>
-        <button id="verifybtn" data-action="verify">🔍 驗證資源</button>
+    </div>
+
+    <div>
+      <div class="card">
+        <h2>參數 (改完按儲存)</h2>
+        <div class="grid2" id="configgrid"></div>
+        <button class="primary btn-lg" id="savecfg" style="margin-top:10px">儲存全部參數</button>
       </div>
-      <div class="row" style="margin-top:8px">
-        <button id="latencybtn" data-action="latency">📡 延遲偵查</button>
-        <button id="latencyapplybtn" data-action="latency" data-apply="1">📡 偵查並套用</button>
-        <span class="hint" id="latencyres"></span>
-      </div>
-      <div class="row" style="margin-top:8px">
-        <button id="directbtn" data-action="direct_test">🎬 Direct 串流測試 (紅呼吸→黑→停)</button>
-      </div>
-      <div class="row" style="margin-top:8px">
-        <button id="pausebtn" data-action="pause" class="warn">⏸ 暫停/繼續</button>
-        <button id="stopbtn" data-action="stop" class="danger">■ 停止</button>
-        <button id="qrbtn" style="margin-left:auto">🔳 QR Code</button>
+
+      <div class="card">
+        <h2>Log</h2>
+        <div class="row" style="margin-bottom:8px">
+          <button id="clearlog">清空畫面</button>
+          <span class="hint">每 0.5s 更新</span>
+        </div>
+        <div id="log" class="mono"></div>
       </div>
     </div>
   </div>
+</div>
 
-  <div>
-    <div class="card">
-      <h2>參數 (改完按儲存)</h2>
-      <div class="grid2" id="configgrid"></div>
-      <div class="row" style="margin-top:10px">
-        <button class="primary" id="savecfg">儲存全部參數</button>
+<!-- ══════════════ MC 演出頁 ══════════════ -->
+<div class="view" id="view-mc">
+  <div class="layout" style="max-width:820px">
+    <div class="col-wide">
+      <div class="mctop">
+        <span class="badge" id="mcphase">待機</span>
+        <span class="spacer"></span>
+        <button class="pill" id="langtoggle" title="切換中/英">中文</button>
+        <button class="pill" id="fsminus" title="縮小字級">A−</button>
+        <button class="pill" id="fsplus" title="放大字級">A+</button>
+        <button class="pill" id="showreset" title="強制把演出流程設回待機">↺ 重置</button>
+        <button class="pill" id="editbtn">✎ 編輯</button>
       </div>
+      <div class="lamps" id="mc_lamps"></div>
+      <div class="field" id="scriptpick" style="display:none">
+        <label>目前劇本</label>
+        <select id="scriptsel"></select>
+      </div>
+      <div id="mccards"></div>
     </div>
+  </div>
+</div>
 
-    <div class="card">
-      <h2>Log</h2>
-      <div class="row" style="margin-bottom:8px">
-        <button id="clearlog">清空畫面</button>
-        <span class="hint">自動捲到底部; 每 0.5s 更新</span>
+<!-- ══════════════ 音響頁 ══════════════ -->
+<div class="view" id="view-audio">
+  <div class="layout" style="max-width:560px">
+    <div class="col-wide">
+      <div class="lamps" id="audio_lamps"></div>
+      <div class="audio-stage" id="audiostage">
+        <div class="big" id="audiobig">待機中</div>
+        <div class="sub" id="audiosub">等待 MC 開始流程</div>
       </div>
-      <div id="log" class="mono"></div>
+      <div id="audiobtns" style="margin-top:14px"></div>
     </div>
+  </div>
+</div>
+
+<!-- ══════════════ 全螢幕編輯器 ══════════════ -->
+<div class="overlay" id="editor">
+  <div class="overlay-bar">
+    <h3>✎ 編輯講稿 / 流程</h3>
+    <button id="edcancel">取消</button>
+    <button class="primary" id="edsave">儲存</button>
+  </div>
+  <div id="edcards"></div>
+  <div class="btn-grid" style="margin-top:6px">
+    <button id="addtext">+ 文字卡</button>
+    <button id="addbutton">+ 按鈕卡</button>
+  </div>
+  <div class="hint" style="margin-top:10px">
+    卡片由上往下依序顯示。文字卡顯示講稿；按鈕卡依演出階段自動啟用。
+  </div>
+</div>
+
+<div id="qrmodal">
+  <div class="box" style="max-width:420px">
+    <h3 style="margin:0 0 14px; font-size:15px;">掃描 QR Code</h3>
+    <div style="margin-bottom:16px">
+      <div class="hint" style="margin-bottom:6px">① 連線 Wi-Fi</div>
+      <img id="qr_wifi_img" alt="Wi-Fi QR" style="width:100%;max-width:220px;aspect-ratio:1;background:#fff;border-radius:10px">
+      <div id="qr_wifi_text" class="mono" style="margin-top:6px;font-size:12px;word-break:break-all;color:#8b98a6"></div>
+    </div>
+    <div>
+      <div class="hint" style="margin-bottom:6px">② 開啟控制台</div>
+      <img id="qr_page_img" alt="頁面 QR" style="width:100%;max-width:220px;aspect-ratio:1;background:#fff;border-radius:10px">
+      <div id="qrtext" class="mono" style="margin-top:6px;font-size:12px;word-break:break-all;color:#8b98a6"></div>
+    </div>
+    <button id="qrclose" style="margin-top:16px; width:100%; min-height:50px">關閉</button>
   </div>
 </div>
 
@@ -208,7 +498,38 @@
   var $$ = function (s) { return Array.prototype.slice.call(document.querySelectorAll(s)); };
   var logEl = $('#log');
   var logSince = 0;
-  var logCleared = false;
+  var qrUrl = '';
+
+  // 按鈕卡可用的演出動作 (與後端 _SHOW_ACTIONS 一致)
+  var SHOW_ACTIONS = [
+    ['show_arm', '邀請觀眾準備', 'Invite audience'],
+    ['show_request_play', '準備播放', 'Request playback'],
+    ['show_play', '播放', 'Play'],
+    ['show_stop', '停止', 'Stop'],
+    ['show_replay', '重播', 'Replay'],
+    ['show_end_play', '結束播放', 'End playback'],
+    ['show_end', '結束流程', 'End session'],
+    ['play_loop', '播放備用媒體', 'Play backup media'],
+    ['play_slot', '播放指定媒體槽', 'Play specific slot']
+  ];
+  var ACTION_LABEL = {};
+  SHOW_ACTIONS.forEach(function (a) { ACTION_LABEL[a[0]] = { zh: a[1], en: a[2] }; });
+
+  // 階段 → 允許的動作 (與後端守衛一致, 前端先擋以減少誤觸)
+  var PHASE_ALLOW = {
+    idle:            ['show_arm', 'play_loop', 'play_slot'],
+    armed:           ['show_request_play', 'show_play', 'show_stop', 'show_end_play', 'show_end', 'play_loop', 'play_slot'],
+    awaiting_audio:  ['show_stop', 'show_end_play', 'show_end'],
+    ready:           ['show_play', 'show_stop', 'show_end_play', 'show_end', 'play_loop', 'play_slot'],
+    playing:         ['show_stop', 'show_replay', 'show_end_play', 'show_end'],
+    finished:        ['show_arm', 'show_request_play', 'show_replay', 'show_end', 'play_loop', 'play_slot'],
+    ending:          []
+  };
+  var PHASE_LABEL = {
+    idle: '待機', armed: '已暖機', awaiting_audio: '等待音響',
+    ready: '可播放', playing: '播放中', finished: '播放結束', ending: '等待音響重置'
+  };
+
   var CONFIG_KEYS = [
     ['sync_delay_ms', '同步延遲 ms'], ['loop_play', '循環播放 0/1'],
     ['play_fps', '權威 fps (0=自動)'], ['active_sync_fps', '主動同步 fps'],
@@ -221,15 +542,75 @@
     ['upload_chunk_size', '上傳 chunk'], ['latency_samples', '延遲樣本數']
   ];
 
+  var state = { script: { cards: [], lang: 'zh' }, show: { phase: 'idle' }, slots: {}, devices: [], mp3s: [], resources: [] };
+  var editDraft = null;   // 編輯器工作副本
+
   function esc(s) {
     return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
       return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];
     });
   }
 
+  // ── 表單「已編輯」保護 ──
+  //   問題: /api/state 每秒輪詢, render 會把後端值寫回輸入框。使用者打完字只要
+  //   焦點離開 (手機鍵盤收起/點別處), 下一輪就被覆寫成舊值 → 永遠存不了。
+  //   解法: 使用者編輯過的欄位標記 data-dirty, 之後 render 不再覆寫, 直到儲存成功。
+  function markDirty(el) {
+    if (!el) return;
+    el.dataset.dirty = '1';
+  }
+  function isDirty(el) {
+    return !!(el && el.dataset && el.dataset.dirty === '1');
+  }
+  // 設定值: 只在「未編輯且非聚焦」時同步
+  function syncVal(el, val) {
+    if (!el || isDirty(el) || el === document.activeElement) return;
+    el.value = (val == null ? '' : val);
+  }
+  function syncChecked(el, val) {
+    if (!el || isDirty(el) || el === document.activeElement) return;
+    el.checked = !!val;
+  }
+  function clearDirty(scope) {
+    // scope 可能就是要清的元素 ('#wifi_ssid') 或容器 ('#slot_editor')
+    $$(scope || 'body').forEach(function (root) {
+      if (root.dataset && root.dataset.dirty) delete root.dataset.dirty;
+      Array.prototype.slice.call(root.querySelectorAll('[data-dirty]')).forEach(function (el) {
+        delete el.dataset.dirty;
+      });
+    });
+  }
+  // 讓某個容器內的表單元件自動標記 dirty
+  function watchDirty(scope) {
+    $$((scope || '') + ' input, ' + (scope || '') + ' select, ' + (scope || '') + ' textarea')
+      .forEach(function (el) {
+        if (el.dataset.dirtyWatched) return;
+        el.dataset.dirtyWatched = '1';
+        var mark = function () { markDirty(el); };
+        el.addEventListener('input', mark);
+        el.addEventListener('change', mark);
+      });
+  }
+
+  // ── 字級 (每台裝置各自記憶) ──
+  var FS_KEY = 'netbus.script.fs';
+  function applyFs() {
+    var v = parseFloat(localStorage.getItem(FS_KEY) || '1.15');
+    if (isNaN(v)) v = 1.15;
+    v = Math.max(0.85, Math.min(2.4, v));
+    document.documentElement.style.setProperty('--script-fs', v + 'rem');
+  }
+  function bumpFs(d) {
+    var v = parseFloat(localStorage.getItem(FS_KEY) || '1.15') + d;
+    localStorage.setItem(FS_KEY, String(Math.max(0.85, Math.min(2.4, v))));
+    applyFs();
+  }
+  applyFs();
+
+  // ── 請求 ──
   function post(action, extra) {
     var body = Object.assign({ action: action }, extra || {});
-    fetch('/api/action', {
+    return fetch('/api/action', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body)
     }).then(function (r) { return r.json(); }).then(function (j) {
@@ -239,20 +620,58 @@
         if (j.applied != null) t += '  → 已套用 sync_delay_ms=' + j.applied + 'ms';
         $('#latencyres').textContent = t;
       }
+      return j;
     }).catch(function (e) { pushLine('請求失敗: ' + e, 'stderr'); });
   }
 
-  function renderDevices(devs, selected) {
+  // ── 導航 ──
+  var activeView = 'tech';
+  $$('.nav button').forEach(function (b) {
+    b.addEventListener('click', function () {
+      $$('.nav button').forEach(function (x) { x.classList.remove('active'); });
+      b.classList.add('active');
+      activeView = b.getAttribute('data-view');
+      $$('.view').forEach(function (x) { x.classList.remove('active'); });
+      $('#view-' + activeView).classList.add('active');
+      if (activeView !== 'audio') document.title = 'NetBus 演出控制台';
+      window.scrollTo(0, 0);
+    });
+  });
+
+  // ── 設備列表 (收合) ──
+  function renderDeviceSummary(sum) {
+    sum = sum || {};
+    var el = $('#devsum');
+    el.innerHTML =
+      '<span>已知 <b>' + (sum.known || 0) + '</b></span>' +
+      '<span class="s-on">在線 <b>' + (sum.online || 0) + '</b></span>' +
+      '<span class="s-off">離線 <b>' + (sum.offline || 0) + '</b></span>' +
+      '<span class="s-un">未連接 <b>' + (sum.unknown || 0) + '</b></span>';
+  }
+
+  function renderDeviceMini(devs) {
+    var box = $('#devscroll');
+    var online = (devs || []).filter(function (d) { return d.online; });
+    if (!online.length) {
+      box.innerHTML = '<div class="devmini"><span class="st">目前沒有在線裝置</span></div>';
+      return;
+    }
+    box.innerHTML = online.map(function (d) {
+      return '<div class="devmini">' +
+        '<span class="dot on"></span>' +
+        '<span class="mono">' + esc(d.id) + '</span>' +
+        '<span class="st">' + esc(d.status) + '</span>' +
+        '</div>';
+    }).join('');
+  }
+
+  function renderDeviceFull(devs, selected) {
     var tb = $('#devtable tbody');
-    tb.innerHTML = '';
     var sel = {};
     (selected || []).forEach(function (s) { sel[s] = true; });
-    devs.forEach(function (d) {
-      var tr = document.createElement('tr');
-      if (!d.online) tr.className = 'offline';
-      if (sel[d.id]) tr.className += ' selected';
+    tb.innerHTML = (devs || []).map(function (d) {
       var prog = d.total_frames > 0 ? Math.min(100, d.progress) : 0;
-      tr.innerHTML =
+      return '<tr class="' + (d.online ? '' : 'offline') + (sel[d.id] ? ' selected' : '') + '">' +
         '<td><span class="dot ' + (d.online ? 'on' : 'off') + '"></span></td>' +
         '<td class="mono">' + esc(d.id) + '</td>' +
         '<td>' + esc(d.play_id == null ? '?' : d.play_id) + '</td>' +
@@ -260,10 +679,57 @@
         '<td class="mono">' + esc(d.current_frame) + '/' + esc(d.total_frames) + '</td>' +
         '<td><div class="progress"><span style="width:' + prog.toFixed(1) + '%"></span></div></td>' +
         '<td class="mono">' + esc(d.fps) + '</td>' +
-        '<td class="mono">' + (d.mem_free ? Math.round(d.mem_free / 1024) + 'K' : '-') + '</td>';
-      tb.appendChild(tr);
+        '</tr>';
+    }).join('');
+  }
+
+  // ── 下拉 / 參數 / 網卡 ──
+  function renderMp3s(mp3s) {
+    var sel = $('#mp3'), cur = sel.value;
+    var opts = '<option value="">— 靜音 (僅燈效) —</option>';
+    (mp3s || []).forEach(function (m) {
+      opts += '<option value="' + esc(m) + '"' + (m === cur ? ' selected' : '') + '>' + esc(m) + '</option>';
     });
-    $('#devcount').textContent = '(' + devs.filter(function (d) { return d.online; }).length + ' 在線 / ' + devs.length + ' 已知)';
+    sel.innerHTML = opts;
+  }
+
+  function renderResources(s) {
+    var sel = $('#resource'), cur = s.resource || '';
+    var stems = [], seen = {};
+    (s.pxlds || []).forEach(function (p) {
+      var st = p.replace(/\.pxld$/i, '');
+      if (!seen[st]) { seen[st] = 1; stems.push(st); }
+    });
+    (s.resources || []).forEach(function (r) {
+      if (!seen[r]) { seen[r] = 1; stems.push(r); }
+    });
+    var opts = '<option value="">— 目前資源 —</option>';
+    stems.forEach(function (st) {
+      opts += '<option value="' + esc(st) + '"' + (st === cur ? ' selected' : '') + '>' + esc(st) + '.bin</option>';
+    });
+    sel.innerHTML = opts;
+  }
+
+  function renderNetwork(n) {
+    if (!n) return;
+    var sel = $('#netiface'), cur = n.current || '';
+    var opts = '<option value="">— 自動偵測 —</option>';
+    (n.interfaces || []).forEach(function (it) {
+      var val = it.name || it.ip;
+      var label = (it.name ? it.name + '  ' : '') + it.ip;
+      opts += '<option value="' + esc(val) + '"' + (val === cur ? ' selected' : '') + '>' + esc(label) + '</option>';
+    });
+    sel.innerHTML = opts;
+    $('#netcurrent').textContent = '目前: ' + (cur || '自動') + '  |  本機 IP: ' + (n.local_ip || '?');
+  }
+
+  function renderBrightPxlds(pxlds) {
+    var sel = $('#bright_pxld'), cur = sel.value;
+    var opts = '<option value="">— 選擇 pxld —</option>';
+    (pxlds || []).forEach(function (p) {
+      opts += '<option value="' + esc(p) + '"' + (p === cur ? ' selected' : '') + '>' + esc(p) + '</option>';
+    });
+    sel.innerHTML = opts;
   }
 
   function renderConfig(cfg) {
@@ -273,89 +739,388 @@
       CONFIG_KEYS.forEach(function (k) {
         var div = document.createElement('div');
         div.className = 'field';
-        div.innerHTML = '<label>' + esc(k[1]) + ' (' + esc(k[0]) + ')</label>' +
+        div.innerHTML = '<label>' + esc(k[1]) + '</label>' +
           '<input type="number" step="any" data-cfg="' + esc(k[0]) + '">';
         g.appendChild(div);
       });
     }
     $$('#configgrid input[data-cfg]').forEach(function (inp) {
       var k = inp.getAttribute('data-cfg');
-      if (cfg && cfg[k] != null && inp !== document.activeElement) inp.value = cfg[k];
+      if (cfg && cfg[k] != null) syncVal(inp, cfg[k]);
     });
+    watchDirty('#configgrid');
   }
 
-  function renderMp3s(mp3s) {
-    var sel = $('#mp3');
-    var cur = sel.value;
-    var opts = '<option value="">— 靜音 (僅燈效) —</option>';
-    mp3s.forEach(function (m) {
-      opts += '<option value="' + esc(m) + '"' + (m === cur ? ' selected' : '') + '>' + esc(m) + '</option>';
-    });
-    sel.innerHTML = opts;
-  }
-
-  function renderResources(s) {
-    var sel = $('#resource');
-    var cur = s.resource || '';
-    var opts = '<option value="">— 目前資源 —</option>';
-    // pxld 主名優先 (test.pxld → test); 也併入已切分但無對應 pxld 的資源
-    var stems = [];
-    (s.pxlds || []).forEach(function (p) { stems.push(p.replace(/\.pxld$/i, '')); });
-    (s.resources || []).forEach(function (r) { if (stems.indexOf(r) < 0) stems.push(r); });
-    stems.forEach(function (st) {
-      opts += '<option value="' + esc(st) + '"' + (st === cur ? ' selected' : '') + '>' + esc(st) + '.bin</option>';
-    });
-    sel.innerHTML = opts;
-  }
-
-  function renderNetwork(n) {
-    var sel = $('#netiface');
-    if (!n) return;
-    var cur = n.current || '';
-    var local = n.local_ip || '';
-    var opts = '<option value="">— 自動偵測 —</option>';
-    (n.interfaces || []).forEach(function (it) {
-      var val = it.name || it.ip;
-      var label = (it.name ? it.name + '  ' : '') + it.ip;
-      opts += '<option value="' + esc(val) + '"' + (val === cur ? ' selected' : '') + '>' + esc(label) + '</option>';
-    });
-    sel.innerHTML = opts;
-    $('#netcurrent').textContent = '目前: ' + (cur || '自動') + '  |  本機 IP: ' + local;
-  }
-
-  function renderBrightPxlds(pxlds) {
-    var sel = $('#bright_pxld');
-    if (!sel.dataset.built) {
-      sel.dataset.built = '1';
+  // ── 媒體槽設定 ──
+  function renderSlots(slots) {
+    var box = $('#slot_editor');
+    if (!box.dataset.built) {
+      box.dataset.built = '1';
+      ['main', 'loop'].forEach(function (name) {
+        var title = name === 'main' ? '主媒體（播一次）' : '備用媒體';
+        var div = document.createElement('div');
+        div.style.marginBottom = '14px';
+        div.innerHTML =
+          '<div class="hint" style="margin-bottom:6px">' + title + '</div>' +
+          '<div class="field"><label>顯示名稱</label>' +
+          '<input type="text" data-slot="' + name + '.label" placeholder="例：破鏡高達燈光秀"></div>' +
+          '<div class="field"><label>資源</label>' +
+          '<select data-slot="' + name + '.resource"></select></div>' +
+          '<div class="field"><label>音效</label>' +
+          '<select data-slot="' + name + '.mp3"></select></div>' +
+          '<div class="grid2">' +
+          '<div class="field"><label>延遲 ms</label>' +
+          '<input type="number" data-slot="' + name + '.delay_ms" step="1" min="-60000" max="60000"></div>' +
+          '<div class="field"><label>同步 fps (0=關)</label>' +
+          '<input type="number" data-slot="' + name + '.active_sync_fps" step="1" min="0"></div>' +
+          '</div>';
+        box.appendChild(div);
+      });
     }
-    var cur = sel.value;
-    var opts = '<option value="">— 選擇 pxld —</option>';
-    (pxlds || []).forEach(function (p) {
-      opts += '<option value="' + esc(p) + '"' + (p === cur ? ' selected' : '') + '>' + esc(p) + '</option>';
+    // 資源 / 音效下拉選項 (沿用技術台已抓到的清單)
+    var resOpts = '<option value="">— 未設定 —</option>';
+    var seen = {};
+    (state.pxlds || []).forEach(function (p) {
+      var st = p.replace(/\.pxld$/i, '');
+      if (!seen[st]) { seen[st] = 1; resOpts += '<option value="' + esc(st) + '">' + esc(st) + '.bin</option>'; }
     });
-    sel.innerHTML = opts;
+    (state.resources || []).forEach(function (r) {
+      if (!seen[r]) { seen[r] = 1; resOpts += '<option value="' + esc(r) + '">' + esc(r) + '.bin</option>'; }
+    });
+    var mp3Opts = '<option value="">— 靜音 (僅燈效) —</option>';
+    (state.mp3s || []).forEach(function (m) {
+      mp3Opts += '<option value="' + esc(m) + '">' + esc(m) + '</option>';
+    });
+
+    ['main', 'loop'].forEach(function (name) {
+      var s = (slots || {})[name] || {};
+      var resSel = box.querySelector('[data-slot="' + name + '.resource"]');
+      var mp3Sel = box.querySelector('[data-slot="' + name + '.mp3"]');
+      var dly = box.querySelector('[data-slot="' + name + '.delay_ms"]');
+      var lbl = box.querySelector('[data-slot="' + name + '.label"]');
+      var fps = box.querySelector('[data-slot="' + name + '.active_sync_fps"]');
+      if (!resSel) return;
+      if (resSel.dataset.src !== resOpts) { resSel.dataset.src = resOpts; resSel.innerHTML = resOpts; }
+      if (mp3Sel.dataset.src !== mp3Opts) { mp3Sel.dataset.src = mp3Opts; mp3Sel.innerHTML = mp3Opts; }
+      // 🔧 使用者改過的欄位不被輪詢覆寫
+      syncVal(resSel, s.resource || '');
+      syncVal(mp3Sel, s.mp3 || '');
+      syncVal(dly, s.delay_ms != null ? s.delay_ms : 150);
+      syncVal(lbl, s.label || '');
+      syncVal(fps, s.active_sync_fps != null ? s.active_sync_fps : 0);
+      watchDirty('#slot_editor');
+    });
   }
 
+  // ── 狀態燈 (兩邊互看) ──
+  //   MC 頁看: 音響是否就緒 + 自己(MC)的階段
+  //   音響頁看: MC 是否已備妥(armed 以後) + 自己(音響)是否就緒
+  function renderLamps(el, show, who) {
+    var phase = (show && show.phase) || 'idle';
+    var ready = !!(show && show.audio_ready);
+    // MC 端「已備妥」= 已暖機且尚未回到待機
+    var mcArmed = phase !== 'idle';
+    var audioLamp, mcLamp;
+    if (ready) audioLamp = ['on', '已就緒'];
+    else if (phase === 'awaiting_audio') audioLamp = ['wait', '等待回報'];
+    else audioLamp = ['', '尚未就緒'];
+    if (phase === 'playing') mcLamp = ['live', '播放中'];
+    else if (phase === 'finished') mcLamp = ['on', '播放結束'];
+    else if (phase === 'ending') mcLamp = ['wait', '結束中'];
+    else if (mcArmed) mcLamp = ['on', '已備妥'];
+    else mcLamp = ['', '待機'];
+
+    var items = who === 'audio'
+      ? [['MC 主控', mcLamp], ['音響 (你)', audioLamp]]
+      : [['音響同事', audioLamp], ['MC (你)', mcLamp]];
+    el.innerHTML = items.map(function (it) {
+      return '<div class="lamp ' + it[1][0] + '">' +
+        '<span class="bulb"></span><span>' +
+        '<span class="lname">' + esc(it[0]) + '</span>' +
+        '<span class="lval">' + esc(it[1][1]) + '</span></span></div>';
+    }).join('');
+  }
+
+  // ── MC 卡片流水線 ──
+  function renderMcCards(script, show) {
+    var box = $('#mccards');
+    var lang = script.lang === 'en' ? 'en' : 'zh';
+    var phase = (show && show.phase) || 'idle';
+    var allowed = PHASE_ALLOW[phase] || [];
+    var cards = script.cards || [];
+    // 劇本切換器 (多於一個劇本才顯示)
+    var sel = $('#scriptsel'), metas = script.scripts || [];
+    $('#scriptpick').style.display = metas.length > 1 ? 'block' : 'none';
+    if (metas.length) {
+      var opts = metas.map(function (m) {
+        return '<option value="' + esc(m.id) + '"' + (m.id === script.active ? ' selected' : '') + '>' +
+          esc(m.name) + ' (' + m.count + ')</option>';
+      }).join('');
+      if (sel.dataset.src !== opts) { sel.dataset.src = opts; sel.innerHTML = opts; }
+    }
+    if (!cards.length) {
+      box.innerHTML = '<div class="scriptcard"><div class="hint">尚未設定流程，請點右上「✎ 編輯」新增卡片。</div></div>';
+      return;
+    }
+    box.innerHTML = cards.map(function (c, i) {
+      var idx = '<span class="cardidx">#' + (i + 1) + '</span>';
+      if (c.type === 'text') {
+        var txt = (lang === 'en' ? c.en : c.zh) || (lang === 'en' ? c.zh : c.en) || '';
+        return '<div class="scriptcard">' + idx +
+          '<div class="slabel">講稿</div>' +
+          '<div class="stext">' + esc(txt) + '</div></div>';
+      }
+      var act = c.action;
+      var slot = c.slot || '';
+      var label = ACTION_LABEL[act] ? ACTION_LABEL[act][lang] : act;
+      var custom = (lang === 'en' ? c.en : c.zh) || '';
+      var on = allowed.indexOf(act) >= 0;
+      var cls = !on ? '' :
+        (act === 'show_play' || act === 'play_loop' || act === 'play_slot') ? 'primary' :
+        (act === 'show_stop' || act === 'show_end') ? 'danger' :
+        (act === 'show_replay' || act === 'show_end_play') ? 'warn' : 'primary';
+      var attrs = 'data-show="' + esc(act) + '"' + (slot ? ' data-slot="' + esc(slot) + '"' : '');
+      return '<div class="scriptcard">' + idx +
+        '<div class="slabel">' + esc(act) + (slot ? ' · ' + esc(slot) : '') + '</div>' +
+        '<button class="' + cls + '" ' + attrs + (on ? '' : ' disabled') + '>' +
+        esc(custom || label) +
+        '<span class="sub">' + (on ? '' : '（目前階段不可用）') + '</span>' +
+        '</button></div>';
+    }).join('');
+    $$('#mccards button[data-show]').forEach(function (b) {
+      b.addEventListener('click', function () {
+        b.disabled = true;
+        var act = b.getAttribute('data-show');
+        var slot = b.getAttribute('data-slot');
+        var extra = slot ? { slot: slot } : {};
+        post(act, extra).then(pollState);
+      });
+    });
+  }
+
+  // ── 音響頁 ──
+  function renderAudio(show) {
+    var phase = (show && show.phase) || 'idle';
+    var ready = !!(show && show.audio_ready);
+    var stage = $('#audiostage'), big = $('#audiobig'), sub = $('#audiosub'), btns = $('#audiobtns');
+    // 狀態燈: 音響頁看 MC 與自己
+    renderLamps($('#audio_lamps'), show, 'audio');
+
+    // armed 階段若已舉手 → 顯示已就緒
+    var map = {
+      idle:           ['', '待機中', '等待 MC 開始流程', ''],
+      armed:          ready
+                        ? ['ready', '已就緒', '等待 MC 開始播放', '']
+                        : ['', '準備中', 'MC 正在暖機，可先按下方按鈕舉手', 'audio_ready'],
+      awaiting_audio: ['wait', '請準備', '請解除靜音，完成後按下方按鈕', 'audio_ready'],
+      ready:          ['ready', '已就緒', '等待 MC 開始播放', ''],
+      playing:        ['play', '播放中', '音效正在播放', ''],
+      finished:       ['', '播放結束', '等待 MC 下一步', ''],
+      ending:         ['wait', '請重置', '請將音響設備恢復原狀', 'audio_reset']
+    };
+    var cfg = map[phase] || map.idle;
+    stage.className = 'audio-stage ' + cfg[0];
+    big.textContent = cfg[1];
+    sub.textContent = cfg[2];
+    // 只有停在音響頁時才改標題 (避免技術台/MC 頁被蓋掉)
+    if (activeView === 'audio') {
+      document.title = (cfg[1] ? '【' + cfg[1] + '】' : '') + 'NetBus 音響';
+    }
+    if (cfg[3]) {
+      var isReady = cfg[3] === 'audio_ready';
+      btns.innerHTML = '<button class="' + (isReady ? 'ok' : 'warn') + ' btn-lg" id="audiobtn">' +
+        (isReady ? '✓ 音響已就緒' : '✓ 已重置') + '</button>';
+      $('#audiobtn').addEventListener('click', function () {
+        this.disabled = true;
+        post(cfg[3]).then(pollState);
+      });
+    } else {
+      btns.innerHTML = '';
+    }
+  }
+
+  // ── 狀態總渲染 ──
   function renderState(s) {
+    state = s || state;
     $('#netinfo').textContent = '本機 ' + (s.local_ip || '?') + '  |  WS :' + (s.ws_port || 8000) + '  |  Web :' + (s.web_port || 8080);
-    refreshQrUrl(s);
+    if (s.local_ip && s.web_port) qrUrl = 'http://' + s.local_ip + ':' + s.web_port;
     var badge = $('#playbadge');
     if (s.playing && s.paused) { badge.textContent = '已暫停'; badge.className = 'badge pause'; }
     else if (s.playing) { badge.textContent = '播放中'; badge.className = 'badge on'; }
     else { badge.textContent = '待機'; badge.className = 'badge'; }
-    renderDevices(s.devices, s.selected);
+
+    var show = s.show || {};
+    $('#mcphase').textContent = PHASE_LABEL[show.phase] || show.phase || '待機';
+    $('#mcphase').className = 'badge' +
+      (show.phase === 'playing' ? ' on' : (show.phase === 'awaiting_audio' || show.phase === 'ending') ? ' wait' : '');
+
+    renderDeviceSummary(s.device_summary);
+    renderDeviceMini(s.devices);
+    renderDeviceFull(s.devices, s.selected);
     renderConfig(s.config);
     renderMp3s(s.mp3s);
     renderResources(s);
     renderNetwork(s.network);
     renderBrightPxlds(s.pxlds);
-    if (s.config && s.config.active_sync_fps != null) $('#active_sync_fps').value = s.config.active_sync_fps;
+    renderSlots(s.slots);
+    renderWifi(s.wifi, typeof s.wifi === 'undefined');
+    renderLamps($('#mc_lamps'), show, 'mc');
+    renderMcCards(s.script || { cards: [], lang: 'zh' }, show);
+    renderAudio(show);
+
+    if (s.script && s.script.lang) {
+      $('#langtoggle').textContent = s.script.lang === 'en' ? 'EN' : '中文';
+    }
+    if (s.config && s.config.active_sync_fps != null && $('#active_sync_fps') !== document.activeElement) {
+      $('#active_sync_fps').value = s.config.active_sync_fps;
+    }
     if (s.loop_play != null) $('#loop_play').checked = !!s.loop_play;
   }
 
+  // ── 編輯器 ──
+  function openEditor() {
+    editDraft = JSON.parse(JSON.stringify(state.script || { cards: [], lang: 'zh' }));
+    if (!editDraft.cards) editDraft.cards = [];
+    editDraft.active = editDraft.active || '';
+    editDraft.name = '';
+    (editDraft.scripts || []).forEach(function (m) {
+      if (m.id === editDraft.active) editDraft.name = m.name;
+    });
+    renderEditor();
+    $('#editor').classList.add('open');
+    document.body.style.overflow = 'hidden';
+  }
+  function closeEditor() {
+    $('#editor').classList.remove('open');
+    document.body.style.overflow = '';
+    editDraft = null;
+  }
+  function renderEditor() {
+    var box = $('#edcards');
+    var cards = (editDraft && editDraft.cards) || [];
+    var metas = (editDraft && editDraft.scripts) || [];
+    // 劇本名稱 + 切換/新增/刪除
+    var bar =
+      '<div class="editcard">' +
+      '<div class="field"><label>劇本名稱</label>' +
+      '<input id="edname" value="' + esc(editDraft.name || '') + '" placeholder="例：三作品導賞"></div>' +
+      '<div class="row">' +
+      '<select id="edswitch" style="flex:1">' + metas.map(function (m) {
+        return '<option value="' + esc(m.id) + '"' + (m.id === editDraft.active ? ' selected' : '') + '>' +
+          esc(m.name) + ' (' + m.count + ')</option>';
+      }).join('') + '</select>' +
+      '<button id="ednew">＋ 新劇本</button>' +
+      '<button id="eddel" class="danger"' + (metas.length <= 1 ? ' disabled' : '') + '>刪除</button>' +
+      '</div></div>';
+    if (!cards.length) {
+      box.innerHTML = bar + '<div class="hint" style="padding:12px 0">這個劇本還沒有卡片，用下方按鈕新增。</div>';
+      bindEditorBar();
+      return;
+    }
+    box.innerHTML = bar + cards.map(function (c, i) {
+      var head = '<div class="ehd"><span>' + (c.type === 'text' ? '文字卡' : '按鈕卡') +
+        ' #' + (i + 1) + '</span><span class="spacer"></span>' +
+        '<button data-ed="up" data-i="' + i + '"' + (i === 0 ? ' disabled' : '') + '>↑</button>' +
+        '<button data-ed="down" data-i="' + i + '"' + (i === cards.length - 1 ? ' disabled' : '') + '>↓</button>' +
+        '<button data-ed="del" data-i="' + i + '" class="danger">刪除</button></div>';
+      if (c.type === 'text') {
+        return '<div class="editcard">' + head +
+          '<div class="langpair">' +
+          '<div><label>中文講稿</label><textarea data-ed="zh" data-i="' + i + '">' + esc(c.zh) + '</textarea></div>' +
+          '<div><label>English</label><textarea data-ed="en" data-i="' + i + '">' + esc(c.en) + '</textarea></div>' +
+          '</div></div>';
+      }
+      var opts = SHOW_ACTIONS.map(function (a) {
+        return '<option value="' + a[0] + '"' + (c.action === a[0] ? ' selected' : '') + '>' + esc(a[0]) + ' — ' + esc(a[1]) + '</option>';
+      }).join('');
+      // 只有 play_slot 需要指定媒體槽
+      var slotSel = '';
+      if (c.action === 'play_slot') {
+        slotSel = '<div class="field"><label>媒體槽</label><select data-ed="slot" data-i="' + i + '">' +
+          ['main', 'loop'].map(function (s) {
+            return '<option value="' + s + '"' + (c.slot === s ? ' selected' : '') + '>' + s + '</option>';
+          }).join('') + '</select></div>';
+      }
+      return '<div class="editcard">' + head +
+        '<div class="field"><label>動作</label><select data-ed="action" data-i="' + i + '">' + opts + '</select></div>' +
+        slotSel +
+        '<div class="langpair">' +
+        '<div><label>按鈕文字（中文，可留空用預設）</label><textarea data-ed="zh" data-i="' + i + '" style="min-height:56px">' + esc(c.zh) + '</textarea></div>' +
+        '<div><label>Button text (English)</label><textarea data-ed="en" data-i="' + i + '" style="min-height:56px">' + esc(c.en) + '</textarea></div>' +
+        '</div></div>';
+    }).join('');
+
+    bindEditorBar();
+    $$('#edcards [data-ed]').forEach(function (el) {
+      var kind = el.getAttribute('data-ed');
+      if (kind === 'up' || kind === 'down' || kind === 'del') {
+        el.addEventListener('click', function () {
+          var i = parseInt(el.getAttribute('data-i'), 10);
+          if (kind === 'del') editDraft.cards.splice(i, 1);
+          else if (kind === 'up' && i > 0) {
+            var t = editDraft.cards[i - 1]; editDraft.cards[i - 1] = editDraft.cards[i]; editDraft.cards[i] = t;
+          } else if (kind === 'down' && i < editDraft.cards.length - 1) {
+            var t2 = editDraft.cards[i + 1]; editDraft.cards[i + 1] = editDraft.cards[i]; editDraft.cards[i] = t2;
+          }
+          renderEditor();
+        });
+        return;
+      }
+      var handler = function () {
+        var i = parseInt(el.getAttribute('data-i'), 10);
+        if (!editDraft.cards[i]) return;
+        editDraft.cards[i][kind] = el.value;
+      };
+      el.addEventListener('input', handler);
+      el.addEventListener('change', handler);
+    });
+  }
+  function addCard(type) {
+    if (!editDraft) return;
+    var id = 'c' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5);
+    if (type === 'text') editDraft.cards.push({ id: id, type: 'text', zh: '', en: '' });
+    else editDraft.cards.push({ id: id, type: 'button', action: 'show_play', zh: '', en: '' });
+    renderEditor();
+    var box = $('#edcards');
+    box.scrollTop = box.scrollHeight;
+    window.scrollTo(0, document.body.scrollHeight);
+  }
+
+  // 編輯器頂部 (劇本名稱 / 切換 / 新增 / 刪除)
+  function bindEditorBar() {
+    var nm = $('#edname');
+    if (nm) nm.addEventListener('input', function () { editDraft.name = this.value; });
+    var sw = $('#edswitch');
+    if (sw) sw.addEventListener('change', function () {
+      // 切換編輯對象: 直接向後端切換 active, 再重載
+      post('set_script', { script_id: sw.value }).then(function (j) {
+        if (j && j.ok) pollState().then(function () { closeEditor(); openEditor(); });
+      });
+    });
+    var nb = $('#ednew');
+    if (nb) nb.addEventListener('click', function () {
+      if (!editDraft) return;
+      var n = prompt('新劇本名稱：', '新劇本');
+      if (n == null) return;
+      editDraft.active = '';
+      editDraft.name = n || '新劇本';
+      editDraft.cards = [];
+      renderEditor();
+    });
+    var db = $('#eddel');
+    if (db) db.addEventListener('click', function () {
+      if (!editDraft || !editDraft.active) return;
+      if (!confirm('確定刪除這個劇本？')) return;
+      post('delete_script', { script_id: editDraft.active }).then(function (j) {
+        if (j && j.ok) pollState().then(function () { closeEditor(); openEditor(); });
+      });
+    });
+  }
+
+  // ── Log ──
   function pushLine(text, stream) {
     var div = document.createElement('div');
-    div.className = 'line' + (stream === 'stderr' ? ' stderr' : '');
+    div.className = 'line' + (stream === 'stderr' ? ' stderr' : stream === 'warn' ? ' warn' : '');
     div.innerHTML = '<span class="ts">' + new Date().toTimeString().slice(0, 8) + '</span>' + esc(text);
     logEl.appendChild(div);
     while (logEl.children.length > 1500) logEl.removeChild(logEl.firstChild);
@@ -363,9 +1128,8 @@
   }
 
   function pollState() {
-    fetch('/api/state').then(function (r) { return r.json(); }).then(renderState).catch(function () {});
+    return fetch('/api/state').then(function (r) { return r.json(); }).then(renderState).catch(function () {});
   }
-
   function pollLogs() {
     fetch('/api/logs?since=' + logSince).then(function (r) { return r.json(); }).then(function (j) {
       if (j && j.logs) {
@@ -375,7 +1139,7 @@
     }).catch(function () {});
   }
 
-  // 按鈕綁定
+  // ── 事件綁定 ──
   $$('button[data-action]').forEach(function (btn) {
     btn.addEventListener('click', function () {
       var action = btn.getAttribute('data-action');
@@ -393,30 +1157,52 @@
         if (isNaN(extra.active_sync_fps)) extra.active_sync_fps = 0;
       } else if (action === 'fire') {
         extra.mp3 = $('#mp3').value;
-      } else if (action === 'play') {
-        extra.mp3 = $('#mp3').value;
-        extra.resource = $('#resource').value;
-        extra.delay_ms = parseInt($('#delay_ms').value, 10);
-        extra.loop = btn.getAttribute('data-loop') === '1';
-        extra.active_sync_fps = parseInt($('#active_sync_fps').value, 10);
-        if (isNaN(extra.delay_ms)) extra.delay_ms = 150;
-        if (isNaN(extra.active_sync_fps)) extra.active_sync_fps = 0;
       } else if (action === 'verify') {
         extra.resource = $('#resource').value;
-      } else if (action === 'latency') {
-        extra.apply = btn.getAttribute('data-apply') === '1';
       }
       post(action, extra);
     });
   });
 
+  $('#devtoggle').addEventListener('click', function () {
+    var full = $('#devfull'), open = full.style.display !== 'none';
+    full.style.display = open ? 'none' : 'block';
+    this.textContent = open ? '展開完整列表' : '收合完整列表';
+  });
+
+  $('#slotsave').addEventListener('click', function () {
+    var slots = {};
+    ['main', 'loop'].forEach(function (name) {
+      var res = document.querySelector('[data-slot="' + name + '.resource"]');
+      var mp3 = document.querySelector('[data-slot="' + name + '.mp3"]');
+      var dly = document.querySelector('[data-slot="' + name + '.delay_ms"]');
+      var fps = document.querySelector('[data-slot="' + name + '.active_sync_fps"]');
+      var lbl = document.querySelector('[data-slot="' + name + '.label"]');
+      slots[name] = {
+        label: lbl ? lbl.value : '',
+        resource: res ? res.value : '',
+        mp3: mp3 ? mp3.value : '',
+        delay_ms: dly ? parseInt(dly.value, 10) || 0 : 150,
+        active_sync_fps: fps ? parseInt(fps.value, 10) || 0 : 0,
+        loop: name === 'loop' ? 1 : 0
+      };
+    });
+    post('save_slots', { slots: slots }).then(function (j) {
+      if (j && j.ok) { clearDirty('#slot_editor'); pollState(); }
+    });
+  });
+
   $('#savecfg').addEventListener('click', function () {
+    var jobs = [];
     $$('#configgrid input[data-cfg]').forEach(function (inp) {
       var k = inp.getAttribute('data-cfg');
       var v = parseFloat(inp.value);
       if (isNaN(v)) return;
-      post('config', { key: k, value: v });
+      jobs.push(post('config', { key: k, value: v }));
     });
+    if (jobs.length) {
+      Promise.all(jobs).then(function () { clearDirty('#configgrid'); pollState(); });
+    }
   });
 
   $('#netapply').addEventListener('click', function () {
@@ -431,20 +1217,125 @@
     post('brightness', { pxld: p, factor: f / 100 });
   });
 
-  // ── QR Code: 掃碼即可連到正確 URL ──
-  var qrUrl = '';
-  function refreshQrUrl(s) {
-    if (s && s.local_ip && s.web_port) {
-      qrUrl = 'http://' + s.local_ip + ':' + s.web_port;
-    }
+  // MC 工具列
+  $('#fsplus').addEventListener('click', function () { bumpFs(0.1); });
+  $('#fsminus').addEventListener('click', function () { bumpFs(-0.1); });
+  $('#langtoggle').addEventListener('click', function () {
+    var cur = (state.script && state.script.lang) || 'zh';
+    post('set_lang', { lang: cur === 'zh' ? 'en' : 'zh' }).then(pollState);
+  });
+  $('#editbtn').addEventListener('click', openEditor);
+  // MC 頁劇本切換
+  $('#scriptsel').addEventListener('change', function () {
+    post('set_script', { script_id: this.value }).then(pollState);
+  });
+  // 手動強制重置 (任何階段都能解開死結: 例如 ending 時音響沒按)
+  function doShowReset() {
+    if (!window.confirm('確定要把演出流程重置回待機嗎？\n（正在播放會先停止）')) return;
+    post('show_reset').then(pollState);
   }
+  $('#showreset').addEventListener('click', doShowReset);
+  $('#techreset').addEventListener('click', doShowReset);
+  $('#edcancel').addEventListener('click', closeEditor);
+  $('#edsave').addEventListener('click', function () {
+    if (!editDraft) return;
+    this.disabled = true;
+    var self = this;
+    post('save_script', {
+      cards: editDraft.cards,
+      lang: editDraft.lang,
+      script_id: editDraft.active || null,
+      name: editDraft.name || null
+    }).then(function (j) {
+      self.disabled = false;
+      if (j && j.ok) { closeEditor(); pollState(); }
+    });
+  });
+  $('#addtext').addEventListener('click', function () { addCard('text'); });
+  $('#addbutton').addEventListener('click', function () { addCard('button'); });
+
+  // QR: 兩個 (Wi-Fi + 頁面)
   $('#qrbtn').addEventListener('click', function () {
     if (!qrUrl) { pushLine('尚未取得本機 IP/埠', 'stderr'); return; }
-    var qrImg = document.getElementById('qrimg');
-    // 純本地: 後端 /api/qr 產生 SVG, 不連外網
-    qrImg.src = '/api/qr';
-    document.getElementById('qrtext').textContent = qrUrl;
-    document.getElementById('qrmodal').style.display = 'flex';
+    // 🔧 後端若為舊版 (state 沒有 wifi 欄位), 明確提示重啟, 而不是留一張壞圖
+    var backendOld = (typeof state.wifi === 'undefined');
+    var w = state.wifi || {};
+    // 頁面 QR
+    $('#qr_page_img').src = '/api/qr?kind=page';
+    $('#qrtext').textContent = qrUrl;
+    // Wi-Fi QR
+    var img = $('#qr_wifi_img');
+    if (w.configured) {
+      img.style.display = 'block';
+      img.onerror = function () {
+        img.style.display = 'none';
+        $('#qr_wifi_text').textContent = 'Wi-Fi QR 產生失敗（請確認後端已重啟）';
+      };
+      img.src = '/api/qr?kind=wifi&t=' + Date.now();
+      $('#qr_wifi_text').textContent = w.ssid + (w.has_password ? '  (含密碼)' : '  (無密碼)');
+    } else {
+      img.style.display = 'none';
+      img.removeAttribute('src');
+      $('#qr_wifi_text').textContent = backendOld
+        ? '後端版本過舊：請重啟 NetBusMaster 後再到技術台設定 Wi-Fi'
+        : '尚未設定 Wi-Fi（請到技術台填寫）';
+    }
+    $('#qrmodal').style.display = 'flex';
+  });
+  $('#qrclose').addEventListener('click', function () { $('#qrmodal').style.display = 'none'; });
+  $('#qrmodal').addEventListener('click', function (e) { if (e.target === this) this.style.display = 'none'; });
+
+  // Wi-Fi 設定
+  function renderWifi(w, backendOld) {
+    w = w || {};
+    // 🔧 靜態欄位只需綁一次 (動態欄位由各自的 render 綁)
+    watchDirty('#view-tech');
+    // 🔧 用 syncVal/syncChecked: 使用者改過就不再被輪詢覆寫 (原本的 bug)
+    syncVal($('#wifi_ssid'), w.ssid || '');
+    syncVal($('#wifi_auth'), w.auth || 'WPA');
+    syncChecked($('#wifi_hidden'), w.hidden);
+    if (backendOld) {
+      $('#wifi_hint').textContent = '⚠️ 後端版本過舊（讀不到 Wi-Fi 設定），請重啟 NetBusMaster';
+      return;
+    }
+    $('#wifi_hint').textContent = w.configured
+      ? ('已設定: ' + w.ssid + (w.has_password ? ' (含密碼)' : ' (無密碼)') + ' — QR 可掃')
+      : '尚未設定 SSID，QR Code 只會顯示頁面網址';
+  }
+  $('#wifisave').addEventListener('click', function () {
+    var auth = $('#wifi_auth').value;
+    // 無密碼模式不送密碼 (避免殘留舊值)
+    var pw = auth === 'NOPASS' ? '' : $('#wifi_pw').value;
+    post('save_wifi', {
+      ssid: $('#wifi_ssid').value,
+      password: pw,
+      auth: auth,
+      hidden: $('#wifi_hidden').checked ? 1 : 0
+    }).then(function (j) {
+      if (j && j.ok) {
+        $('#wifi_pw').value = '';
+        clearDirty('#wifi_ssid');
+        clearDirty('#wifi_auth');
+        clearDirty('#wifi_hidden');
+        pollState();
+      }
+    });
+  });
+  $('#wifidetect').addEventListener('click', function () {
+    var self = this;
+    self.disabled = true;
+    post('detect_ssid').then(function (j) {
+      self.disabled = false;
+      if (j && j.ok && j.ssid) {
+        var el = $('#wifi_ssid');
+        el.value = j.ssid;
+        markDirty(el);   // 🔧 標記已編輯, 否則下一輪輪詢會把它清回空值
+        $('#wifi_hint').textContent = '已帶入目前 SSID：' + j.ssid + '（記得按下方「儲存 Wi-Fi 設定」）';
+      } else {
+        // 失敗: 把後端給的具體原因顯示在提示區 (不是只丟到 log)
+        $('#wifi_hint').textContent = (j && j.msg) ? ('⚠️ ' + j.msg) : '⚠️ 讀取失敗，請手動輸入 SSID';
+      }
+    });
   });
 
   $('#clearlog').addEventListener('click', function () { logEl.innerHTML = ''; });
@@ -454,23 +1345,6 @@
   setInterval(pollState, 1000);
   setInterval(pollLogs, 500);
 })();
-</script>
-
-<div id="qrmodal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,.7); align-items:center; justify-content:center; z-index:999;">
-  <div style="background:#171c22; border:1px solid #2a333d; border-radius:12px; padding:22px; text-align:center; max-width:360px;">
-    <h3 style="margin:0 0 10px; font-size:15px;">掃描以連到控制台</h3>
-    <img id="qrimg" alt="QR" style="width:300px; height:300px; background:#fff; border-radius:8px;">
-    <div id="qrtext" class="mono" style="margin-top:12px; font-size:13px; word-break:break-all; color:#8b98a6;"></div>
-    <button id="qrclose" style="margin-top:14px;">關閉</button>
-  </div>
-</div>
-<script>
-  document.getElementById('qrclose').addEventListener('click', function () {
-    document.getElementById('qrmodal').style.display = 'none';
-  });
-  document.getElementById('qrmodal').addEventListener('click', function (e) {
-    if (e.target === this) this.style.display = 'none';
-  });
 </script>
 </body>
 </html>

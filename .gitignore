@@ -220,3 +220,10 @@ temp/old/
 # NetBusMaster 執行期輔助檔案 (logs/下載/profile/切分動畫)
 tools/PC/data/
 
+# Wi-Fi QR 憑證 (含密碼, 不可進版控)
+tools/PC/wifi_qr.json
+
+# MC 講稿 / 流程卡片 (私人內容, 不進版控)
+tools/PC/mc_script.json
+
+test
