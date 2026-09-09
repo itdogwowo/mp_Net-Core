@@ -80,11 +80,7 @@ def launcher():
     tm.register_task("circuit", CircuitTask, default_affinity=(1, 0), layer=0)
     tm.register_task("bus_decode", BusDecodeTask, default_affinity=(1, 0), layer=0)
     tm.register_task("now", NowTask, default_affinity=(1, 0), layer=0)
-    # 🔧 stream（讀 SD data.bin → pixel_stream hub 的生產者）搬到 core1：
-    #    它只做「讀檔 + 寫 hub」，跟 dj_task(讀音檔) 同型；留在 core0 會被
-    #    network + lvgl(TFT) 餓死 → FPS 崩到 0.x。core1 幾乎閒置，放這裡才餵得動
-    #    RenderTask(消費端)。
-    tm.register_task("stream", StreamTask, default_affinity=(0, 1), layer=1)
+    tm.register_task("stream", StreamTask, default_affinity=(1, 0), layer=0)
     tm.register_task("fs_scan", FsScanTask,  default_affinity=(0, 1), layer=0)
     from tasks.hw_sample_task import HwSampleTask
     tm.register_task("hw_sample", HwSampleTask, default_affinity=(0, 1), layer=0)
@@ -100,7 +96,7 @@ def launcher():
     #   core0（播放核）RenderTask：固定 fps（20ms/50fps）從 hub 取幀推硬體（tasks/render.py）──
     from tasks.pixel_task import PixelTask
     from tasks.render import RenderTask
-    tm.register_task("pixel", PixelTask, default_affinity=(1, 0), layer=-1)
+    tm.register_task("pixel", PixelTask, default_affinity=(1, 0), layer=1)
     tm.register_task("render", RenderTask, default_affinity=(0, 1), layer=1)
 
     # ── 音訊子系統（兩任務：合成端 dj + 播放端 audio_player，對稱 pixel）──
@@ -111,8 +107,8 @@ def launcher():
     #   無 audio_dac（I2S/PCM5102 未啟用）時兩者 on_start 自行停用（disabled）。
     from tasks.dj_task import DjTask
     from tasks.audio_player_task import AudioPlayerTask
-    tm.register_task("dj", DjTask, default_affinity=(0, 1), layer=-1)
-    tm.register_task("audio_player", AudioPlayerTask, default_affinity=(1, 0), layer=-1)
+    tm.register_task("dj", DjTask, default_affinity=(0, 1), layer=1)
+    tm.register_task("audio_player", AudioPlayerTask, default_affinity=(1, 0), layer=1)
 
     # ── Layer 1: LVGL UI（依賴 TFT/LCD，沒 LCD 整段跳過）──
     # affinity=(1,0)=CPU0: LVGL 完整 UI 不能在 _thread(CPU1)裡跑
@@ -133,8 +129,8 @@ def launcher():
     #     - 執行裝置(無 LCD):在 temp/motor 的 Core_Manager 啟用 motor。
     #   預設全關，要用才把註解打開。
     # ═══════════════════════════════════════════════════════════════════
-    tm.register_task("cpanel", ControlPanelTask, default_affinity=(1, 0), layer=-1)
-    tm.register_task("pixel_cpanel", PixelControlPanelTask, default_affinity=(1, 0), layer=-1)
+    tm.register_task("cpanel", ControlPanelTask, default_affinity=(1, 0), layer=1)
+    tm.register_task("pixel_cpanel", PixelControlPanelTask, default_affinity=(1, 0), layer=1)
     # tm.register_task("motor", ActionTask1, default_affinity=(1, 0), layer=0)
     # tm.register_task("action", ActionTask, default_affinity=(1, 0), layer=0)
 
@@ -142,7 +138,7 @@ def launcher():
     #   找到就依時間軸把 NC4 指令寫進 vBus（內部虛擬總線）→ 走解碼/執行鏈路；
     #   檔案不存在時第一次啟動自動產生空範本，之後 idle。
     from tasks.schedule import ScheduleTask
-    tm.register_task("schedule", ScheduleTask, default_affinity=(1, 0), layer=-1)
+    tm.register_task("schedule", ScheduleTask, default_affinity=(1, 0), layer=1)
 
     tm.finalize()
 
