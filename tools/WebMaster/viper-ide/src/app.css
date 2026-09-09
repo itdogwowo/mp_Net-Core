@@ -1,0 +1,552 @@
+/*
+ * SPDX-FileCopyrightText: 2024 Volodymyr Shymanskyy
+ * SPDX-License-Identifier: MIT
+ *
+ * The software is provided "as is", without any warranties or guarantees (explicit or implied).
+ * This includes no assurances about being fit for any specific purpose.
+ */
+
+:root {
+    --side-menu-width: 300px;
+}
+
+body {
+    display: flex;
+    flex-direction: column;
+    opacity: 0;
+}
+
+body.loaded {
+    opacity: 1;
+}
+
+.github-fork-ribbon:before {
+    background-color: #666;
+}
+
+.logo {
+    font-weight: normal;
+}
+
+#tool-panel {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex: 0 0 auto;
+    padding: 1px 1px 0px 1px;
+    user-select: none;
+}
+
+#container {
+    display: flex;
+    flex: 1;
+    min-height: 0;
+    overflow: hidden;
+    position: relative;
+}
+
+#side-menu {
+    flex: 0 0 var(--side-menu-width);
+    display: flex;
+    flex-direction: column-reverse;
+    background-color: var(--bg-color-menu);
+    /* The active tab-content is the scroller; the menu itself must not scroll,
+       otherwise the tab strip drifts out of view. */
+    overflow: hidden;
+    transition: margin-left var(--animation),
+                left var(--animation);
+    user-select: none;
+}
+
+#side-menu.hidden {
+    margin-left: calc(-1 * var(--side-menu-width));
+}
+
+#main-editor {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+}
+
+.editor {
+    background: var(--bg-color-edit);
+    height: 100%;
+}
+
+#editor-tabs {
+    flex: 0 0 auto;
+    justify-content: flex-start;
+    padding: 0px 1px 0px 0px;
+    overflow-x: auto;
+    overflow-y: hidden;
+}
+
+#editor-tabs .tab {
+    flex: 0 0 auto;
+    cursor: pointer;
+    padding: 2px 10px;
+}
+
+/* The unsaved marker is set on the tab for new files and on the title for
+   edited ones; both have to render. */
+#editor-tabs .tab.changed .tab-title::after,
+#editor-tabs .tab .tab-title.changed::after {
+    content: " ●";
+    color: var(--fg-color-highlight);
+}
+
+/* Changed on the device under unsaved edits - takes precedence over the plain
+   unsaved marker, since this is the one that needs a decision. */
+#editor-tabs .tab .tab-title.conflict::after {
+    content: " ▲";
+    color: var(--fg-color-highlight);
+}
+
+#editor-tabs .menu-action {
+    font-size: 0.9rem;
+}
+
+#editor-tabs .tab-title {
+    pointer-events: none;
+    text-wrap: nowrap;
+}
+
+#toast-container.toast-top-right {
+    top: 2.75rem;
+}
+
+#toast-container > div {
+    border-radius: 0px;
+    -webkit-border-radius: 0px;
+    opacity: 0.95;
+    box-shadow: none;
+    -webkit-box-shadow: none;
+}
+
+.editor-tab-pane {
+    display: none;
+}
+
+.editor-tab-pane.active {
+    display: block;
+    flex: 1;
+    min-height: 0;
+    overflow: auto;
+}
+
+.editor-tab-pane.active .editor {
+    overflow: auto;
+}
+
+#terminal-container {
+    height: 200px;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    box-sizing: content-box;
+}
+
+#terminal-tabs {
+    flex: 0 0 auto;
+    cursor: row-resize;
+    padding: 2px 1px 0px 0px;
+    background: var(--bg-color);
+}
+
+#menu-tabs {
+    flex: 0 0 auto;
+    padding: 5px 0;
+}
+
+#menu-about {
+    position: relative;
+}
+
+#side-menu .tab-content {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    overflow-x: hidden;
+    padding: 10px 10px;
+}
+
+#xterm {
+    height: 0px;
+    background: var(--bg-color-edit);
+}
+
+.marked-viewer {
+    min-height: 100%;
+    width: 100%;
+    max-width: 920px;
+    /* margin: 0 auto; */
+    padding: 20px;
+    color: var(--fg-color);
+    line-height: 1.55;
+    overflow-wrap: anywhere;
+}
+
+.marked-viewer > :first-child {
+    margin-top: 0;
+}
+
+.marked-viewer > :last-child {
+    margin-bottom: 0;
+}
+
+.marked-viewer h1,
+.marked-viewer h2,
+.marked-viewer h3,
+.marked-viewer h4,
+.marked-viewer h5,
+.marked-viewer h6 {
+    line-height: 1.25;
+    margin: 1.5em 0 0.55em;
+}
+
+.marked-viewer h1 {
+    font-size: 1.75rem;
+    padding-bottom: 0.25em;
+    border-bottom: 1px solid #ffffff20;
+}
+
+.marked-viewer h2 {
+    font-size: 1.35rem;
+    padding-bottom: 0.2em;
+    border-bottom: 1px solid #ffffff18;
+}
+
+.marked-viewer h3 {
+    font-size: 1.1rem;
+}
+
+.marked-viewer p,
+.marked-viewer ul,
+.marked-viewer ol,
+.marked-viewer blockquote,
+.marked-viewer pre,
+.marked-viewer table {
+    margin: 0.8em 0;
+}
+
+.marked-viewer ul,
+.marked-viewer ol {
+    padding-left: 1.5em;
+}
+
+.marked-viewer li + li {
+    margin-top: 0.25em;
+}
+
+.marked-viewer blockquote {
+    padding: 0 0 0 1em;
+    border-left: 2px solid var(--accent-color);
+    color: #ffffffc8;
+}
+
+.marked-viewer code {
+    padding: 0.1em 0.3em;
+    border-radius: 3px;
+    background: #ffffff12;
+    font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+    font-size: 0.9em;
+}
+
+.marked-viewer pre {
+    max-width: 100%;
+    padding: 0.85em 1em;
+    border: 1px solid #ffffff16;
+    border-radius: 4px;
+    background: #00000028;
+    overflow: auto;
+}
+
+.marked-viewer pre code {
+    display: block;
+    padding: 0;
+    background: none;
+    white-space: pre;
+}
+
+/*.marked-viewer img {
+    max-width: 100%;
+    height: auto;
+}*/
+
+.marked-viewer table {
+    display: block;
+    max-width: 100%;
+    border-collapse: collapse;
+    overflow-x: auto;
+}
+
+.marked-viewer th,
+.marked-viewer td {
+    padding: 0.4em 0.65em;
+    border: 1px solid #ffffff20;
+}
+
+.marked-viewer th {
+    background: #ffffff0d;
+}
+
+.hexed-viewer {
+}
+.hexed-line {
+    display: flex;
+}
+.hexed-address, .hexed-hex-part, .hexed-ascii-part {
+    padding: 0 8px;
+}
+.hexed-address {
+    font-weight: 300;
+    border-right: 1px solid var(--bg-color);
+}
+.hexed-hex-part {
+    color: #f8f8f2;
+}
+.hexed-ascii-part {
+    color: #e6db74;
+}
+
+.cm-editor {
+    height: 100%;
+    width: 100%;
+    font-size: 0.9rem;
+}
+
+/* Fix touch interaction on iOS */
+.cm-editor, .cm-scroller, .cm-content, .tab-content, #side-menu {
+    touch-action: pan-x pan-y !important;
+    overscroll-behavior: none !important;
+}
+
+#menu-file-title, #menu-pkg-title, #menu-settings-title, #menu-tools-title {
+    font-weight: 600;
+}
+
+/* File tree & package list rows */
+
+.tree-row {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    min-width: 0;
+    margin: 5px 0;
+    line-height: 1.2em;
+}
+
+/* Indentation comes from the nesting itself. The hairline shows which folder a
+   row - or the blank space next to it, which is also a drop target - sits in,
+   now that the folder icon alone carries the expanded/collapsed state. */
+.tree-children {
+    margin-left: 0.5em;
+    padding-left: 0.25em;
+    border-left: 1px dotted #ffffff00;
+}
+
+.tree-children:hover {
+    border-left: 1px dotted #ffffff20;
+}
+
+/* The name shrinks (and ellipsizes) before it ever reaches the trailing
+   actions, which stay pinned to the right via the auto margin. */
+.tree-row > .name {
+    flex: 0 1 auto;
+    min-width: 0;
+    margin-right: auto;
+    overflow-x: clip;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.tree-row.dragging {
+    opacity: 40%;
+}
+
+/* While a row is being renamed, the name slot grows to fill the space between
+   the icon and the trailing actions instead of shrinking to fit its content */
+.tree-row > .name.renaming {
+    flex: 1 1 auto;
+    overflow: visible;
+}
+
+.tree-rename-input {
+    box-sizing: border-box;
+    width: 100%;
+    font: inherit;
+    color: inherit;
+    background: transparent;
+    border: none;
+    outline: none;
+    padding: 0;
+}
+
+.tree-rename-input.folder-rename-input {
+    outline: 1px solid var(--accent-color);
+}
+
+.tree-node.drop-target,
+.tree-row.drop-target,
+#menu-file-tree.drop-target {
+    outline: 1px dashed var(--accent-color);
+    outline-offset: 1px;
+    border-radius: 2px;
+}
+
+#menu-pkg-list > .title-lines {
+    margin: 5px 0;
+}
+
+#menu-file-tree .open::after {
+    content: "●";
+    color: #666;
+}
+
+#menu-file-tree .changed::after {
+    content: "●";
+    color: var(--fg-color-highlight);
+}
+
+/* The file changed on the device while unsaved edits were open here. Wins over
+   the plain unsaved marker: it is the one that needs a decision. */
+#menu-file-tree .changed.conflict::after,
+#menu-file-tree .conflict::after {
+    content: "▲";
+    color: var(--fg-color-highlight);
+}
+
+#menu-file-tree .fs-stale {
+    color: var(--fg-color-highlight);
+}
+
+/* The rename input carries the row's own classes along (open/changed/conflict),
+   so its status dot would otherwise render right after the text box */
+#menu-file-tree .name.renaming::after {
+    content: none;
+}
+
+/* Disconnected, or busy running code of its own: the tree is the last known state
+   of the board and stays readable, but nothing on it - nor in the package manager,
+   which would have to interrupt the board to install anything - can be acted on
+   until the board is back and free. */
+.inert {
+    pointer-events: none;
+}
+
+#menu-file-tree .selected {
+    color: var(--bg-color);
+    background: var(--fg-color);
+    border-radius: 1px;
+    outline: 2px solid var(--fg-color);
+}
+
+.menu-action {
+    flex: 0 0 auto;
+    font-weight: normal;
+    font-size: 0.8rem;
+    white-space: nowrap;
+    opacity: 60%;
+}
+
+#menu-settings-list div, #menu-tools-list div {
+    margin: 5px 0;
+    line-height: 1.2em;
+}
+
+/* About */
+
+.about-header {
+    text-align: center;
+    padding: 50px 0 0 0;
+}
+
+.about-logo {
+    width: 30%;
+    height: auto;
+}
+
+.about-title {
+    font-size: 1.5em;
+}
+
+.about-build {
+    font-size: 0.8em;
+}
+
+.about-footer {
+    text-align: center;
+}
+
+/* No JS script banner */
+
+.no-js-banner {
+    box-sizing: border-box;
+    width: 100%;
+    padding: 12px 16px;
+    color: #ffffff;
+    background: #8a3b00;
+    border-bottom: 1px solid #ffb25c;
+    font: 14px/1.4 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    text-align: center;
+}
+
+.no-js-banner strong {
+    font-weight: 600;
+}
+
+@media (max-width: 768px) {
+    #side-menu {
+        position: absolute;
+        left: -100%;
+        width: 75%;
+        top: 0;
+        bottom: 0;
+        z-index: 1000;
+    }
+
+    #side-menu.show {
+        left: 0;
+    }
+
+    #overlay {
+        position: absolute;
+        top: 0;
+        bottom: 0;
+        left: 0;
+        right: 0;
+        z-index: 999;
+        background-color: transparent;
+        overflow: hidden;
+        visibility: hidden;
+    }
+
+    #overlay.show {
+        visibility: visible;
+        background-color: #00000088;
+        backdrop-filter: blur(3px);
+        -webkit-backdrop-filter: blur(3px);
+        transition: visibility 0s,
+                    background-color var(--animation),
+                    backdrop-filter var(--animation),
+                    -webkit-backdrop-filter var(--animation);
+    }
+
+    #overlay:not(.show) {
+        transition: visibility var(--animation),
+                    background-color var(--animation),
+                    backdrop-filter var(--animation),
+                    -webkit-backdrop-filter var(--animation);
+    }
+
+    #editor-tabs {
+        display: none;
+    }
+}
+
+@media (max-width: 768px) and (display-mode: standalone) {
+    #app-expand {
+        display: none;
+    }
+}

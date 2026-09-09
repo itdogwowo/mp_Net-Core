@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "id": 4,
+  "name": "motor_test_cycle",
+  "index": 4,
+  "play_loop": 1,
+  "play_count": 1,
+  "play_interval": 0,
+  "maxF": 0,
+  "mapping": "matrix",
+  "map": [
+    {"group": "matrix.motors", "effect": "motor_test_cycle", "write": "w"}
+  ]
+}

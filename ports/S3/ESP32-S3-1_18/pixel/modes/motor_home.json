@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "id": 3,
+  "name": "motor_home",
+  "index": 3,
+  "play_loop": 1,
+  "play_count": 1,
+  "play_interval": 0,
+  "maxF": 0,
+  "mapping": "matrix",
+  "map": [
+    {"group": "matrix.motors", "effect": "motor_home", "write": "w"}
+  ]
+}

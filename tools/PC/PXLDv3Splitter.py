@@ -532,6 +532,56 @@ class PXLDv3Splitter:
             if not file_obj.closed:
                 file_obj.close()
 
+# ==================== 亮度調整 ====================
+def adjust_pxld_brightness(src_path, dst_path, factor):
+    """依比例調整 PXLD v3 的亮度, 產生一個新的 pxld 檔。
+
+    factor: 0.0~1.0 (或 >1 增強)。每個 LED 的 R/G/B/W 四通道都乘上 factor,
+    超過 255 截斷。除 pixel data 外, 其餘 (file header / frame header / slave
+    table) 位元組原樣保留, 只改像素值 —— 這樣產出的檔結構與原檔完全一致。
+    回傳被調整的 LED 數量。
+    """
+    factor = float(factor)
+    if factor < 0:
+        factor = 0.0
+
+    with open(src_path, 'rb') as fin:
+        header = fin.read(V3_HEADER_SIZE)
+        if len(header) < V3_HEADER_SIZE or header[0:4] != b'PXLD':
+            raise ValueError("不是有效的 PXLD 檔案: {}".format(src_path))
+        if header[4] != 3:
+            raise ValueError("不支援版本 {}, 僅支援 v3".format(header[4]))
+        total_frames = struct.unpack('<I', header[9:13])[0]
+
+        with open(dst_path, 'wb') as fout:
+            fout.write(header)
+            offset = V3_HEADER_SIZE
+            scaled_leds = 0
+            for _ in range(total_frames):
+                fin.seek(offset)
+                fh = fin.read(V3_FRAME_HEADER_SIZE)
+                if len(fh) < V3_FRAME_HEADER_SIZE:
+                    break
+                slave_table_size = struct.unpack('<I', fh[8:12])[0]
+                pixel_data_size = struct.unpack('<I', fh[12:16])[0]
+                slave_table = fin.read(slave_table_size)
+                pixel_data = bytearray(fin.read(pixel_data_size))
+
+                # 每 4 bytes 一個 LED (R,G,B,W), 四通道同步乘 factor
+                for i in range(0, len(pixel_data) - 3, 4):
+                    for k in range(4):
+                        nv = int(round(pixel_data[i + k] * factor))
+                        pixel_data[i + k] = 255 if nv > 255 else nv
+                    scaled_leds += 1
+
+                fout.write(fh)
+                fout.write(slave_table)
+                fout.write(pixel_data)
+                offset += V3_FRAME_HEADER_SIZE + slave_table_size + pixel_data_size
+
+    return scaled_leds
+
+
 # ==================== 驗證工具 ====================
 def verify_bin_file(filepath: str) -> Dict:
     """

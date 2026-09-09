@@ -1,0 +1,24 @@
+{
+  "version": 1,
+  "id": 1,
+  "name": "gundam",
+  "groups": [
+    {
+      "id": 1,
+      "name": "gundam_body",
+      "sel": [
+        {"type": "pwm",    "sel": "10:15"},
+        {"type": "ws2812", "sel": "40:200"},
+        {"type": "ws2812", "sel": ":10"},
+        {"type": "pwm",    "sel": "15:10:-1"}
+      ]
+    },
+    {
+      "id": 2,
+      "name": "motors",
+      "sel": [
+        {"type": "uartMotor1", "sel": ":"}
+      ]
+    }
+  ]
+}

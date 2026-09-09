@@ -53,7 +53,8 @@
 | `0` | 系統模式（自檢、UNKNOWN、DEV） | `0`=UNKNOWN、`1`=DEV |
 | `1` | LED 組模式（原 `STORY_SET.set_type=0`） | LED 模式表內索引 |
 | `2` | SERVO 組模式（原 `STORY_SET.set_type=1`） | SERVO 模式表內索引 |
-| 3–255 | 保留 | — |
+| `3` | **AUDIO 組模式（純音效，gmode 貫通新增）** | AUDIO 模式表內索引（`/audio/modes/*.json`） |
+| 4–255 | 保留 | — |
 
 - `mode_type=0` 只出現在 `MODE_GET_RSP`（Slave 回報 DEV／UNKNOWN）；Master **不能**用 `MODE_SET` 指定它。
 - 原 `STORY_SET`（LED/SERVO 切換）已併入：LED=`1`、SERVO=`2`，不再有獨立指令。
@@ -86,7 +87,7 @@
 ]}
 ```
 
-- `MODE_LIST_QUERY.mode_type` 指定查哪一組：`0`=全部（LED+SERVO 一次過）、`1`=LED、`2`=SERVO；其餘保留。（目前 slave 未依此過濾，一律回全部。）
+- `MODE_LIST_QUERY.mode_type` 指定查哪一組：`0`=全部（LED+SERVO+AUDIO 一次過）、`1`=LED、`2`=SERVO、`3`=AUDIO；其餘保留。（slave 依 16-bit id 高 byte 過濾。）
 - `MODE_LIST_RSP.mode_type` **回音** query 嘅組別（0/1/2），Master 可核對回覆對應邊個查詢。
 - `entries` 自訂子格式（schema 無 list 型別），每筆**固定 2 bytes** = 內部 16-bit 模式 id：
 
@@ -146,6 +147,10 @@ entry (固定 2 bytes, little-endian):
 - `mode_id`：與 `mode_type` 綁定，該組內模式索引；`(mode_type, mode_id)` 須在 `MODE_LIST_RSP` 清單內；超出 → Slave 忽略並維持原模式。
 - `start_delay_ms`：**收到指令後延遲多少毫秒開始**（相對時間，`0`=立即；u16，上限 65535ms ≈ 65 秒）。
   Master 廣播時全部 Slave 同時收到、同時延遲、同時開始，同步度只取決於傳輸 jitter，**不需要時鐘同步即可起步**。
+- **gmode 貫通（音訊綁定）**：mode JSON 可帶 `audio` 段（`tracks[{file,loop,volume,start_ms}]` + `limit`）。
+  Slave 收 `MODE_SET` 後經 GlobalMode（gmode）解析：燈效與綁定音軌用**同一個 start_delay_ms** 同步起播
+  （音軌的 `start_ms` 平移 delay，相對 PLAY 起播時刻）；純音效模式（mode_type=3）不帶燈效、
+  純燈效模式自動停音 —— 模式是原子表演單元。設計詳見 `doc/03_notes/13_audio_wav_stream_plan.md` §6。
 - `brightness`：**亮度設定**（`0`–`30`，`0`=最暗/關、`30`=最亮）；`0xFF`（255）= **不設置**（保留目前亮度，0 是合法值，不能用 0 當「不改」）。
 - 收到 `MODE_SET` 即離開 DEV、離開省電、解除暫停；若在暫停中則**重頭開始**播放新模式。
 - Slave 執行後回 `MODE_GET_RSP` 作為 ACK。

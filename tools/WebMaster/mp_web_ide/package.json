@@ -1,0 +1,22 @@
+{
+  "name": "mp-web-ide",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "mp_Net-Core Web IDE（白室重建）：第一步＝燒錄 (.bin) UI",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build --base=./",
+    "preview": "vite preview",
+    "test": "vitest run --pool=threads"
+  },
+  "dependencies": {
+    "esptool-js": "^0.6.1"
+  },
+  "devDependencies": {
+    "@types/w3c-web-serial": "^1.0.8",
+    "typescript": "^7.0.2",
+    "vite": "^8.2.2",
+    "vitest": "^4.1.11"
+  }
+}

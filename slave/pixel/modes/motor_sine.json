@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "id": 2,
+  "name": "motor_sine",
+  "index": 2,
+  "play_loop": 1,
+  "play_count": 1,
+  "play_interval": 0,
+  "maxF": 0,
+  "mapping": "matrix",
+  "map": [
+    {"group": "matrix.motors", "effect": "uart_motor_sine", "write": "w"}
+  ]
+}

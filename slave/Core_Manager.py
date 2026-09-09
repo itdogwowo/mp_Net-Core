@@ -19,6 +19,7 @@ from tasks.fs_scan_task import FsScanTask
 from tasks.log_task import LogTask
 from tasks.web_ui import WebUITask
 from tasks.control_panel import ControlPanelTask
+from tasks.pixel_control_panel import PixelControlPanelTask
 from tasks.action_task_1 import ActionTask1
 from tasks.action_task import ActionTask
 from tasks.stream_task import StreamTask
@@ -98,13 +99,24 @@ def launcher():
     tm.register_task("pixel", PixelTask, default_affinity=(1, 0), layer=1)
     tm.register_task("render", RenderTask, default_affinity=(0, 1), layer=1)
 
+    # ── 音訊子系統（兩任務：合成端 dj + 播放端 audio_player，對稱 pixel）──
+    #   dj（_thread core1）= 合成端：playlist + 讀檔 + 混音 → audio_stream hub
+    #   audio_player（主線程 core0）= 播放端：hub → audio_dac.write（I2S DMA 節拍）
+    #   ⚠️ I2S write 必須在 core0（主線程）：放 core1 會 DMA 餵資料失步 → 播放
+    #      超快/拆聲（與 LCD/SPI 同為 core0-only 週邊）。實測交換核心後修復。
+    #   無 audio_dac（I2S/PCM5102 未啟用）時兩者 on_start 自行停用（disabled）。
+    from tasks.dj_task import DjTask
+    from tasks.audio_player_task import AudioPlayerTask
+    tm.register_task("dj", DjTask, default_affinity=(0, 1), layer=1)
+    tm.register_task("audio_player", AudioPlayerTask, default_affinity=(1, 0), layer=1)
+
     # ── Layer 1: LVGL UI（依賴 TFT/LCD，沒 LCD 整段跳過）──
     # affinity=(1,0)=CPU0: LVGL 完整 UI 不能在 _thread(CPU1)裡跑
     # (MicroPython threading 限制:完整 UI 的 widget 操作在 thread 裡會崩潰)。
     # CPU1 跑其他 task(採樣等)。
     if bus.has_lcd():
         from tasks.lvgl_task import LvglTask
-        tm.register_task("lvgl", LvglTask, default_affinity=(1, 0), layer=-1)
+        tm.register_task("lvgl", LvglTask, default_affinity=(1, 0), layer=1)
     else:
         log.info("⏭ [CoreManager] lvgl skipped — no LCD/TFT on bus")
 
@@ -117,21 +129,25 @@ def launcher():
     #     - 執行裝置(無 LCD):在 temp/motor 的 Core_Manager 啟用 motor。
     #   預設全關，要用才把註解打開。
     # ═══════════════════════════════════════════════════════════════════
-    # tm.register_task("cpanel", ControlPanelTask, default_affinity=(1, 0), layer=1)
+    tm.register_task("cpanel", ControlPanelTask, default_affinity=(1, 0), layer=1)
+    tm.register_task("pixel_cpanel", PixelControlPanelTask, default_affinity=(1, 0), layer=1)
     # tm.register_task("motor", ActionTask1, default_affinity=(1, 0), layer=0)
     # tm.register_task("action", ActionTask, default_affinity=(1, 0), layer=0)
 
+    # ── 定時指令排程 Schedule：任務自行找 /schedule.json，無 config 開關 ──
+    #   找到就依時間軸把 NC4 指令寫進 vBus（內部虛擬總線）→ 走解碼/執行鏈路；
+    #   檔案不存在時第一次啟動自動產生空範本，之後 idle。
+    from tasks.schedule import ScheduleTask
+    tm.register_task("schedule", ScheduleTask, default_affinity=(1, 0), layer=1)
+
     tm.finalize()
 
-    # ── 看門狗（config System.watchdog）──
-    #   enable=0（預設）或開機按住 btn_bypass_gpio → 不建立（None）；測試模式
-    #   下自動重新武裝的倒數由 TaskManager.runner_loop(0) 每圈 poll_rearm()
-    #   檢查（大循環的一步，無獨立任務）。
-    #   enable=1 → 建立 WDT，由 core0 runner 主線程直接餵狗（無額外執行緒/跨核心）。
+    # ── 看門狗（config System.watchdog）—— lazy-arm：全部 on_start 運行完才建狗 ──
+    #   看門狗只在「第一輪全部運行完（各 task 的 on_start 級聯完成）」之後才建立：
+    #   TaskManager.runner_loop(0) 偵測 boot 完成（_boot_done 首次 True）那一圈才
+    #   呼叫 init_watchdog()，之後每圈餵狗。因此不在此建狗。
     #   Ctrl+C → auto_disable_on_interrupt()：存 enable=0 + 立即重啟一次
     #   （硬食一次，可預測；不讓 WDT timeout 後偷襲打斷 REPL），之後測試模式無狗。
-    from lib.sys.watchdog import init_watchdog
-    init_watchdog()
 
     try:
         log.info("✨ Starting Core 1 Runner...")

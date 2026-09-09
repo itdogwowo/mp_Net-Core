@@ -1,0 +1,210 @@
+# ViperIDE.html totalLines=222
+2:<html> lang=en translate=no
+3:<head>
+4:<meta> charset=UTF-8
+5:<meta> name=viewport content=<v>
+6:<meta> name=description content=<v>
+7:<meta> property=og:description content=<v>
+8:<title> <title>
+9:<link> rel=icon type=image/png sizes=512x512 href=<v>
+10:<link> rel=apple-touch-icon sizes=512x512 href=<v>
+11:<link> rel=manifest href=manifest.json
+13:<link> rel=stylesheet href=./app.css
+14:<noscript>
+15:<style>
+18:</style>
+19:<noscript>
+20:<head>
+21:<body> id=app
+22:<noscript>
+23:<div> class=no-js-banner role=alert
+24:<strong> <strong>
+25:<div>
+26:<noscript>
+27:<div> id=tool-panel
+28:<div>
+29:<button> onclick=<v> <i> class=<v> <i> <button>
+30:<span> class=logo <span>
+31:<button> title=<v> onclick=<v> id=btn-save <i> class=<v> <i> <button>
+32:<button> title=<v> onclick=<v> id=btn-run <i> class=<v> id=btn-run-icon <i> <button>
+33:<div>
+34:<div>
+35:<button> title=<v> onclick=<v> id=btn-conn-ws <i> class=<v> <i> <button>
+36:<button> title=<v> onclick=<v> id=btn-conn-ble <i> class=<v> <i> <button>
+37:<button> title=<v> onclick=<v> id=btn-conn-usb <i> class=<v> <i> <button>
+38:<button> title=<v> onclick=<v> id=app-expand <i> class=<v> <i> <button>
+39:<div>
+40:<div>
+41:<div> id=container
+42:<div> id=overlay onclick=<v> <div>
+43:<div> id=side-menu
+44:<div> class=tabs id=menu-tabs
+45:<div>
+46:<a> class=<v> data-target=menu-files <i> class=<v> <i> <a>
+47:<a> class=tab data-target=menu-pkg onclick=<v> <i> class=<v> <i> <a>
+48:<a> class=tab data-target=menu-tools <i> class=<v> <i> <a>
+49:<div>
+50:<div>
+51:<a> class=tab data-target=menu-settings <i> class=<v> <i> <a>
+52:<a> class=tab data-target=menu-about <i> class=<v> <i> <a>
+53:<!-- <i> class=<v> <i> <button>
+54:<button> onclick=TODO <i> class=<v> <i> <button>
+55:<div>
+56:<div>
+58:<div> id=menu-files class=<v>
+59:<div> id=menu-file-title <div>
+60:<div> id=menu-file-tree
+61:<div> class=tree-node
+62:<div> class=tree-row <span> class=name <i> class=<v> <i> <span> <div>
+63:<div> class=tree-children
+64:<div> class=tree-row
+65:<a> href=# class=name onclick=<v> <span> id=no-files <span> <a>
+66:<a> href=# class=menu-action onclick=<v> <i> class=<v> <i> <a>
+67:<div>
+68:<div>
+69:<div>
+70:<div>
+71:<div>
+72:<div> id=menu-pkg class=tab-content
+73:<div> id=menu-pkg-title <div>
+74:<div> id=menu-pkg-list
+75:<div>
+76:<div>
+77:<div> id=menu-tools class=tab-content
+78:<div> id=menu-tools-title <div>
+79:<div> id=menu-tools-list
+80:<div> class=title-lines id=menu-tools-line-conn <div>
+81:<div> <a> href=https://github.com/vshymanskyy/ViperIDE/blob/main/docs/Web-REPL-Relay.md target=_blank <i> class=<v> <i> <a> <div>
+82:<div> <a> href=https://github.com/vshymanskyy/ViperIDE/blob/main/docs/Web-REPL-Server.md target=_blank <i> class=<v> <i> <a> <div>
+83:<div> <a> href=https://github.com/vshymanskyy/ViperIDE/blob/main/docs/Bluetooth-REPL.md target=_blank <i> class=<v> <i> <a> <div>
+84:<div> <a> href=bridge.html target=_blank <i> class=<v> <i> <a> <div>
+85:<div> <a> href=benchmark.html target=_blank <i> class=<v> <i> <a> <div>
+87:<div> class=title-lines id=menu-line-pkg-mgr <div>
+88:<div> <a> href=# onclick=<v> id=install-via-url <a> <div>
+90:<div> class=title-lines id=menu-tools-python <div>
+91:<div> <a> href=# onclick=<v> id=py-prettify <a> <div>
+92:<div> <a> href=# onclick=<v> id=py-minify <a> <div>
+93:<div> <a> href=# onclick=<v> id=py-save-compile <a> <div>
+94:<div> <a> href=# onclick=<v> id=py-disassemble <a> <div>
+96:<!-- <a> href=# onclick=<v> id=download-all <a> <div>
+97:<div> <a> href=# onclick=<v> id=publish <a> <div>
+99:<div> class=title-lines id=menu-tools-blynk <div>
+100:<div> <a> href=# onclick=<v> id=blynk-ota-package <a> <div>
+101:<div>
+102:<div>
+103:<div> id=menu-settings class=tab-content
+104:<div> id=menu-settings-title <div>
+105:<div> id=menu-settings-list
+106:<div> <input> type=checkbox id=advanced-mode <label> for=advanced-mode <label> <a> href=https://github.com/vshymanskyy/ViperIDE/blob/main/docs/Advanced-Mode.md target=_blank <a> <div>
+107:<div> class=title-lines id=menu-line-conn <div>
+108:<div> <input> type=checkbox id=interrupt-running-code <label> for=interrupt-running-code <label> <div>
+109:<div> <input> type=checkbox id=force-serial-poly <label> for=force-serial-poly <label> <div>
+110:<div> class=title-lines id=menu-line-editor <div>
+111:<div> <input> type=checkbox id=expand-minify-json <label> for=expand-minify-json <label> <div>
+112:<div> <input> type=checkbox id=use-word-wrap <label> for=use-word-wrap <label> <div>
+113:<div> <input> type=checkbox id=render-markdown <label> for=render-markdown <label> <div>
+114:<div> <input> type=checkbox id=refresh-after-run <label> for=refresh-after-run <label> <div>
+115:<div> <input> type=checkbox id=auto-soft-reset <label> for=auto-soft-reset <label> <div>
+116:<div> class=title-lines id=menu-line-pkg-mgr <div>
+117:<div> <input> type=checkbox id=install-package-source <label> for=install-package-source <label> <div>
+118:<div> class=title-lines id=menu-line-other <div>
+119:<div> class=space-between
+120:<label> for=lang <label>
+121:<select> id=lang
+122:<!--
+123:<option> value=en <option>
+124:<option> value=es <option>
+125:<option> value=hi <option>
+126:<option> value=fr <option>
+127:<option> value=pt <option>
+128:<option> value=de <option>
+129:<option> value=pl <option>
+130:<option> value=it <option>
+131:<option> value=uk <option>
+132:<option> value=ro <option>
+133:<option> value=nl <option>
+134:<option> value=sv <option>
+135:<option> value=el <option>
+136:<option> value=ru <option>
+138:<!--
+139:<option> value=zh-CN <option>
+140:<option> value=zh-TW <option>
+142:<!--
+143:<option> value=ar <option>
+144:<option> value=he <option>
+146:<!--
+147:<option> value=ja <option>
+148:<option> value=ko <option>
+150:<!--
+151:<option> value=id <option>
+152:<select>
+153:<div>
+154:<div> class=space-between
+155:<label> for=zoom <label>
+156:<select> id=zoom
+157:<option> value=0.80 <option>
+158:<option> value=1.00 <option>
+159:<option> value=1.10 <option>
+160:<option> value=1.25 <option>
+161:<option> value=1.50 <option>
+162:<select>
+163:<div>
+164:<div> <input> type=checkbox id=use-natural-sort <label> for=use-natural-sort <label> <div>
+165:<div>
+166:<div>
+167:<div> id=menu-about class=tab-content
+168:<a> class=<v> href=https://github.com/vshymanskyy/ViperIDE target=_blank data-ribbon=<v> title=<v> <a>
+169:<div> class=about-header
+170:<img> class=about-logo src=assets/logo_1024.png alt=Logo
+171:<div> class=about-title <div>
+172:<div> id=viper-ide-version <div>
+173:<div> class=about-build id=viper-ide-build <div>
+174:<p>
+175:<br>
+176:<a> class=link href=https://x.com/vshymanskyy target=_blank <a>
+177:<p>
+178:<div>
+179:<div>
+180:<hr>
+181:<p> id=about-cta
+182:<a> class=link id=gh-star <a>
+183:<p>
+184:<p> id=report-bug
+185:<a> class=link id=gh-issues <a>
+186:<p>
+187:<hr>
+188:<div>
+189:<p> class=about-footer
+190:<a> class=link href=https://github.com/vshymanskyy/ViperIDE target=_blank <a>
+191:<p>
+192:<div>
+193:<div>
+194:<div> id=main-editor
+195:<div> class=tabs id=editor-tabs <div>
+196:<div> id=terminal-container
+197:<div> class=tabs id=terminal-tabs onmousedown=<v> ontouchstart=<v>
+198:<div>
+199:<a> class=<v> data-target=xterm <i> class=<v> <i> <span> id=tab-term <span> <a>
+200:<!-- <i> class=<v> <i> <a>
+201:<div>
+202:<div>
+203:<button> title=Clear onclick=<v> id=term-clear <i> class=<v> <i> <button>
+204:<button> title=<v> onclick=<v> id=btn-reset-soft <i> class=<v> <i> <button>
+205:<button> title=<v> onclick=<v> id=btn-reset-hard <i> class=<v> <i> <button>
+206:<button> title=<v> onclick=<v> id=term-expand <i> class=<v> <i> <button>
+207:<div>
+208:<div>
+209:<div> id=xterm class=<v>
+210:<!--
+211:<div>
+212:<div> id=logs class=tab-content
+213:<!--
+214:<div>
+215:<div>
+216:<div>
+217:<div>
+218:<div> id=dpi-ruler style=<v> <div>
+220:<script> src=./app.js <script>
+221:<body>
+222:<html>
+STYLE_BLOCKS: 15-18

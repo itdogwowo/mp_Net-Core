@@ -7,7 +7,7 @@
     "boot_strict": 0,
     "c_lum": 1.0,
     "hostname": "",
-    "cID": "",
+    "cID": "62C0",
     "refresh_rate_ms": 1,
     "master_IP": "",
     "master_port": 0,
@@ -297,7 +297,7 @@
           "uart": 1
         },
         "address": [
-          "51"
+          "18"
         ],
         "version": 1,
         "dStay": 2048

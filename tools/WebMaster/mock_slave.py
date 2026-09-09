@@ -37,6 +37,8 @@ class MockSlave:
         self.store = SchemaStore(dir_path=os.path.join(_SLAVE, "schema"))
         self.store.finalize()
         self.parser = StreamParser()
+        # 檔案區：存「上傳的資料」+ 一份預設 /config.json 供下載
+        self.files = {"/config.json": b'{"System":{"master_port":8000,"debug_level":1}}'}
         self.buf = bytearray()
         self.total = 0
         self.sha_expect = b""
@@ -65,9 +67,11 @@ class MockSlave:
                 self.total = int(args.get("total_size", 0))
                 self.sha_expect = args.get("sha256", b"")
             elif cmd == 0x2005:
+                p = args.get("path", "")
+                data = self.files.get(p, bytes(self.buf)) if p in self.files else bytes(self.buf)
                 await send(self.pack(0x2006, {
-                    "exists": 1, "sha256": self.sha_expect, "size": self.total,
-                    "path": args.get("path", ""), "free": 1 << 20, "pending": 0,
+                    "exists": 1, "sha256": hashlib.sha256(data).digest(),
+                    "size": len(data), "path": p, "free": 1 << 20, "pending": 0,
                 }))
             elif cmd == 0x2002:
                 off = int(args.get("offset", 0))
@@ -84,6 +88,15 @@ class MockSlave:
                     "path": "/mock", "free": 1 << 20, "pending": 0,
                 }))
                 print(f"    → FILE_END sha={sha.hex()[:8]} size={len(self.buf)}")
+            elif cmd == 0x2007:
+                # FILE_READ: 回檔案分塊 (0x2002 FILE_CHUNK)
+                off = int(args.get("offset", 0))
+                length = int(args.get("length", 2048))
+                p = args.get("path", "")
+                data = self.files.get(p, bytes(self.buf))
+                chunk = data[off:off + length]
+                await send(self.pack(0x2002, {"file_id": 0, "offset": off, "data": chunk}))
+
             elif cmd == 0x1101:
                 await send(self.pack(0x1102, {
                     "status_json": json.dumps({

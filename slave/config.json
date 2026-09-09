@@ -21,7 +21,7 @@
     "watchdog": {
       "enable": 0,
       "timeout_ms": 8000,
-      "btn_bypass_gpio": null,
+      "btn_bypass_gpio": -1,
       "auto_rearm_ms": 60000
     }
   },
@@ -91,7 +91,22 @@
   },
   "I2S": {
     "enable": 0,
-    "list": []
+    "list": [
+      {
+        "GPIO": {"sck": 9, "ws": 10, "sd": 11, "xsmt": 12,
+                 "_comment": "S3 Octal-SPIRAM 33-37 不可用；與 TFT/其他外設同板衝突時另挑，見 doc/02_guides/14_audio_bringup.md"},
+        "config": {"mode": "tx", "bits": 16, "format": "stereo", "rate": 44100, "ibuf": 40000}
+      }
+    ]
+  },
+  "PCM5102": {
+    "enable": 0,
+    "list": [
+      {"GPIO": {"i2s": 0, "xsmt": 12}}
+    ]
+  },
+  "Audio": {
+    "mode": "block"
   },
   "SDcard": {
     "enable": 1,

@@ -1,0 +1,51 @@
+{
+    "translation": {
+        "example": {
+            "hello": "Hello",
+            "comment-colors": "Print each letter with a different color",
+            "comment-count": "Count 1 to 10"
+        },
+        "tool": {
+            "run": "Run File",
+            "save": "Save File",
+            "fullscreen": "Full Screen",
+            "clear": "Clear",
+            "conn": {
+                "ws": "Connect WebREPL",
+                "ble": "Connect Bluetooth",
+                "usb": "Connect USB/Serial"
+            },
+            "terminal": "Terminal"
+        },
+        "menu": {
+            "package-mgr": "Package Manager",
+            "file-mgr": "File Manager",
+            "settings": "Settings"
+        },
+        "files": {
+            "no-files": "no files",
+            "connect": "connect",
+            "used": "used"
+        },
+        "settings": {
+            "conn": "connection",
+            "editor": "editor",
+            "other": "other",
+            "interrupt-running-code": "Interrupt execution",
+            "force-serial-poly": "Use WebUSB instead of WebSerial",
+            "expand-minify-json": "Auto-minification of JSON",
+            "use-word-wrap": "Word wrap",
+            "render-markdown": "Markdown viewer",
+            "refresh-after-run": "Refresh files after run",
+            "auto-soft-reset": "Soft Reset before run",
+            "use-natural-sort": "Natural sorting",
+            "lang": "Language",
+            "zoom": "Zoom",
+            "install-package-source": "Skip compiling .py → .mpy"
+        },
+        "about": {
+            "cta": "If you like ViperIDE, please <a id='gh-star'>give it a GitHub star</a> ⭐ and spread the word on social media 📢",
+            "report-bug": "You can also <a id='gh-issues'>report a bug</a> 🐞"
+        }
+    }
+}

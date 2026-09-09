@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "id": 769,
+  "name": "bgm_battle",
+  "map": [],
+  "audio": {
+    "tracks": [
+      {"file": "battle_44100_16_2.wav", "loop": true, "volume": 70, "start_ms": 0},
+      {"file": "melody_44100_16_2.wav", "loop": false, "volume": 50, "start_ms": 2000}
+    ],
+    "limit": 80
+  },
+  "play_loop": -1,
+  "play_count": 1,
+  "play_interval": 0
+}

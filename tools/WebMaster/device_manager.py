@@ -10,10 +10,15 @@
 注意: NC4 的 Proto.pack 回傳共享 memoryview, 本模組一律立刻 bytes() 拷貝再 await 送出。
 """
 import asyncio
+import json
+import os
 import time
 import logging
 
 from protocol import protocol, StreamParser
+
+# 保留路徑：這些不是設備，別當成 slave 註冊/列入 known
+RESERVED = {"ui", "static", "media", "api"}
 
 log = logging.getLogger("webmaster.device")
 
@@ -85,37 +90,106 @@ class Device:
 
 
 class DeviceManager:
-    def __init__(self):
-        self.devices = {}          # slave_id -> Device
+    def __init__(self, known_path=None):
+        self.devices = {}          # slave_id -> Device (目前已連線)
         self.ui_clients = set()    # 瀏覽器 WS (WebSocket 物件)
+        self.known = {}            # slave_id -> {addr, last_seen, play_id} (所有已知設備)
+        self.known_path = known_path or os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), "devices.json")
+        self._load_known()
+
+    # ── 已知設備註冊 (跨連線累積, 供「所有 slave 概況」) ────
+    def _load_known(self):
+        # 1. WebMaster 自己的 devices.json
+        try:
+            if os.path.isfile(self.known_path):
+                with open(self.known_path, "r", encoding="utf-8") as f:
+                    self.known = json.loads(f.read())
+        except Exception:
+            self.known = {}
+        # 清掉保留路徑殘留（舊 bug 把 /ws/ui 誤註冊成 "ui" 設備）
+        for k in list(self.known.keys()):
+            if k in RESERVED:
+                del self.known[k]
+        # 2. 種子: NetBusMaster 的 slave_map.json (若有)
+        try:
+            smap = os.path.abspath(os.path.join(
+                os.path.dirname(os.path.abspath(__file__)), "..", "PC", "slave_map.json"))
+            if os.path.isfile(smap):
+                with open(smap, "r", encoding="utf-8") as f:
+                    cfg = json.loads(f.read())
+                for sid, info in (cfg.get("mapping") or {}).items():
+                    self.known.setdefault(sid, {})
+                    if info.get("ip"):
+                        self.known[sid]["addr"] = info["ip"]
+                    if "play_id" in info:
+                        self.known[sid]["play_id"] = info["play_id"]
+        except Exception:
+            pass
+
+    def _save_known(self):
+        try:
+            with open(self.known_path, "w", encoding="utf-8") as f:
+                json.dump(self.known, f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
 
     # ── 註冊/移除 ─────────────────────────────────────────
     def register(self, slave_id, ws, addr=None):
+        # 保留路徑（如 /ws/ui 被誤導到這裡）不是設備，直接拒掉
+        if slave_id in RESERVED:
+            log.warning("拒絕保留路徑連線: %s", slave_id)
+            return None
         dev = Device(slave_id, ws, addr)
         self.devices[slave_id] = dev
+        # 更新已知設備清單
+        self.known.setdefault(slave_id, {})
+        if addr:
+            self.known[slave_id]["addr"] = addr
+        self.known[slave_id]["last_seen"] = time.time()
+        self._save_known()
         log.info("slave 上線: %s", slave_id)
         return dev
 
-    def unregister(self, slave_id):
-        dev = self.devices.pop(slave_id, None)
-        if dev:
+    def unregister(self, slave_id, dev=None):
+        """移除設備。若傳入 dev，只移除「當下這條連線」註冊的那個（避免舊連線的 finally
+        把「同 id 新連線」踢掉造成假離線）。"""
+        cur = self.devices.get(slave_id)
+        if cur is not None and (dev is None or cur is dev):
+            self.devices.pop(slave_id, None)
             log.info("slave 離線: %s", slave_id)
 
     def get(self, slave_id):
         return self.devices.get(slave_id)
 
     def list_devices(self):
+        """回傳「所有已知設備」概況，依 slave_id 排序，標 online 狀態。
+
+        offline 的設備 (只進過已知清單、目前未連線) 也會列出，方便看全貌。
+        """
         now = time.time()
-        return [
-            {
-                "slave_id": sid,
-                "addr": d.addr,
-                "online": True,
-                "uptime_s": int(now - d.connected_at),
-                "status": d.status,
-            }
-            for sid, d in sorted(self.devices.items())
-        ]
+        result = []
+        for sid, rec in sorted(self.known.items()):
+            d = self.devices.get(sid)
+            if d is not None:
+                result.append({
+                    "slave_id": sid,
+                    "addr": d.addr,
+                    "online": True,
+                    "uptime_s": int(now - d.connected_at),
+                    "status": d.status,
+                    "play_id": rec.get("play_id"),
+                })
+            else:
+                result.append({
+                    "slave_id": sid,
+                    "addr": rec.get("addr"),
+                    "online": False,
+                    "uptime_s": 0,
+                    "status": {},
+                    "play_id": rec.get("play_id"),
+                })
+        return result
 
     # ── 瀏覽器 UI 廣播 ────────────────────────────────────
     async def broadcast_ui(self, message: dict):
@@ -129,15 +203,19 @@ class DeviceManager:
         for ws in dead:
             self.ui_clients.discard(ws)
 
-    # ── 心跳 / 離線偵測 (背景迴圈) ────────────────────────
-    async def heartbeat_loop(self, interval=5.0, offline_after=30.0):
+    # ── UI 廣播迴圈 (不向設備發任何封包) ────────────────────
+    async def heartbeat_loop(self, interval=2.0, offline_after=30.0):
+        """定期廣播 device_list 給 UI (純 UI 刷新, 無定時 health 檢查)。
+
+        連線狀態以 WS 通道本身為準 (設計原則見 doc/03_notes/12_upload_wdt_diagnosis.md):
+          - slave 斷線 → /ws/{slave_id} 的 finally → unregister → 離線;
+          - 不再做「N 秒無回應 → 標離線」的逾時判定, 也不再定時向設備
+            送 0x1101 STATUS_GET 保活 (那是「頻繁 health 檢查」, 已移除)。
+        需要設備最新狀態時由操作者手動查詢 (Console 0x1101), 或播放期間
+        slave 自己推 0x1102。
+        """
         while True:
             await asyncio.sleep(interval)
-            now = time.time()
-            for sid, d in list(self.devices.items()):
-                if now - d.last_seen > offline_after:
-                    log.warning("slave %s 心跳逾時, 標記離線", sid)
-                    self.unregister(sid)
             await self.broadcast_ui({"type": "device_list", "data": self.list_devices()})
 
 

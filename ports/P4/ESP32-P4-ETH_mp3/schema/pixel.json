@@ -1,0 +1,132 @@
+{
+  "group": "pixel",
+  "cmds": [
+    {
+      "cmd": "0x3101",
+      "name": "MODE_LIST_QUERY",
+      "payload": [
+        {
+          "name": "mode_type",
+          "type": "u8"
+        }
+      ]
+    },
+    {
+      "cmd": "0x3102",
+      "name": "MODE_LIST_RSP",
+      "payload": [
+        {
+          "name": "mode_type",
+          "type": "u8"
+        },
+        {
+          "name": "count",
+          "type": "u8"
+        },
+        {
+          "name": "entries",
+          "type": "bytes_rest"
+        }
+      ]
+    },
+    {
+      "cmd": "0x3103",
+      "name": "MODE_GET",
+      "payload": []
+    },
+    {
+      "cmd": "0x3104",
+      "name": "MODE_GET_RSP",
+      "payload": [
+        {
+          "name": "mode_type",
+          "type": "u8"
+        },
+        {
+          "name": "mode_id",
+          "type": "u8"
+        },
+        {
+          "name": "elapsed_ms",
+          "type": "u32"
+        },
+        {
+          "name": "total_ms",
+          "type": "u32"
+        },
+        {
+          "name": "running",
+          "type": "u8"
+        }
+      ]
+    },
+    {
+      "cmd": "0x3105",
+      "name": "MODE_SET",
+      "payload": [
+        {
+          "name": "mode_type",
+          "type": "u8"
+        },
+        {
+          "name": "mode_id",
+          "type": "u8"
+        },
+        {
+          "name": "start_delay_ms",
+          "type": "u16"
+        },
+        {
+          "name": "brightness",
+          "type": "u8"
+        }
+      ]
+    },
+    {
+      "cmd": "0x3106",
+      "name": "MODE_STOP",
+      "payload": [
+        {
+          "name": "action",
+          "type": "u8"
+        }
+      ]
+    },
+    {
+      "cmd": "0x3107",
+      "name": "MODE_DETAIL_QUERY",
+      "payload": [
+        {
+          "name": "mode_type",
+          "type": "u8"
+        },
+        {
+          "name": "mode_id",
+          "type": "u8"
+        }
+      ]
+    },
+    {
+      "cmd": "0x3108",
+      "name": "MODE_DETAIL_RSP",
+      "payload": [
+        {
+          "name": "mode_type",
+          "type": "u8"
+        },
+        {
+          "name": "mode_id",
+          "type": "u8"
+        },
+        {
+          "name": "total_ms",
+          "type": "u32"
+        },
+        {
+          "name": "name",
+          "type": "str_u16len"
+        }
+      ]
+    }
+  ]
+}

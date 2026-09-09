@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "id": 3,
+  "name": "matrix",
+  "groups": [
+    {
+      "id": 1,
+      "name": "full",
+      "sel": [
+        {"type": "ws2812", "sel": ":"}
+      ]
+    },
+    {
+      "id": 2,
+      "name": "motors",
+      "sel": [
+        {"type": "uartMotor1", "sel": ":"}
+      ]
+    }
+  ]
+}

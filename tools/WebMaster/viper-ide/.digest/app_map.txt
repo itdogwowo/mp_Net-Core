@@ -1,0 +1,295 @@
+# app.js totalLines=2671
+9:IMPORT:import '@xterm/xterm/css/xterm.css'
+10:IMPORT:import 'toastr/build/toastr.css'
+11:IMPORT:import 'github-fork-ribbon-css/gh-fork-ribbon.css'
+12:IMPORT:import './app_common.css'
+13:IMPORT:import './app.css'
+15:IMPORT:import toastr from 'toastr'
+16:IMPORT:import i18next from 'i18next'
+17:IMPORT:import LanguageDetector from 'i18next-browser-languagedetector'
+19:IMPORT:import { Terminal } from '@xterm/xterm'
+20:IMPORT:import { WebLinksAddon } from '@xterm/addon-web-links'
+21:IMPORT:import { FitAddon } from '@xterm/addon-fit'
+23:IMPORT:import { isStandalonePWA } from 'is-standalone-pwa';
+24:IMPORT:import { addUpdateHandler, createNewEditor, getEditorFromElement } from './editor.js'
+25:IMPORT:import { displayOpenFile, createTab, getTabFileName, getTabEditorElement } from './editor_tabs.js'
+26:IMPORT:import { serial as webSerialPolyfill } from 'web-serial-polyfill'
+27:IMPORT:import { WebSerial, WebBluetooth, WebSocketREPL, WebRTCTransport } from './transports/index.js'
+28:IMPORT:import { MpRawMode, getActivePrompt } from './rawmode.js'
+29:IMPORT:import { ReplMonitor } from './repl_monitor.js'
+30:IMPORT:import { getPkgIndexes, rawInstallPkg, fetchPkgReadme } from './package_mgr.js'
+31:IMPORT:import { ConnectionUID } from './connection_uid.js'
+32:IMPORT:import translations from '../build/translations.json'
+33:IMPORT:import { parseStackTrace, validatePython, disassembleMPY, minifyPython, prettifyPython, compilePython } from './python_utils.js'
+34:IMPORT:import { createBrowserVM, SYSTEM_DIRS } from './emulator.js'
+35:IMPORT:import { getSetting, onSettingChange, updateSetting } from './settings.js'
+36:IMPORT:import { renderMarkdown } from './markdown.js'
+38:IMPORT:import { UAParser } from 'ua-parser-js'
+39:IMPORT:import * as amplitude from '@amplitude/analytics-browser'
+41:IMPORT:import { splitPath, joinPath, sleep, fetchJSON, escapeCSS, sizeFmt, report } from './utils.js'
+42:IMPORT:import { getUserUID, getScreenInfo, IdleMonitor, getCssPropertyValue, QSA, QS, QID, iOS,
+46:IMPORT:import { TreeView, parentDir, TREE_DRAG_TYPE } from './tree_view.js'
+47:IMPORT:import fsCache from './fs_cache.js'
+48:IMPORT:import { createZipSync } from './zip.js'
+50:IMPORT:import { initControlClient } from './control_client.js'
+52:IMPORT:import { library, dom } from '@fortawesome/fontawesome-svg-core'
+53:IMPORT:import { faUsb, faBluetoothB } from '@fortawesome/free-brands-svg-icons'
+54:IMPORT:import { faLink, faBars, faDownload, faCirclePlay, faCircleStop, faFolder, faFile, faFileCircleExclamation, faCubes, faGear,
+60:IMPORT:import { faMessage, faCircleDown } from '@fortawesome/free-regular-svg-icons'
+71:FUNC:getBuildDate
+75:CONST:T
+77:CONST:isLocalhost
+78:CONST:host
+120:CONST:isBusyState
+121:CONST:portReady
+132:FUNC:updateDeviceUI
+134:CONST:btn
+135:CONST:mine
+143:CONST:busy
+144:CONST:panelsBlocked
+146:CONST:el
+160:FUNC:setDeviceState
+161:CONST:prev
+176:FUNC:setRunMode
+190:FUNC:teardownSession
+217:FUNC:showReconnectingToast
+225:FUNC:hideReconnectingToast
+236:FUNC:handleTransientDrop
+245:FUNC:handlePortDisconnect
+257:FUNC:disconnectDevice
+281:FUNC:startReconnectLoop
+282:CONST:p
+283:CONST:token
+307:FUNC:stopReconnectLoop
+315:CONST:replMonitor
+325:FUNC:onSoftResetDetected
+335:CONST:responding
+357:FUNC:onPromptSettled
+361:CONST:responding
+373:FUNC:prepareNewPort
+403:CONST:info
+406:CONST:blynkAuthPattern
+420:CONST:pass
+430:CONST:id
+484:FUNC:wirePort
+493:FUNC:connectDevice
+495:CONST:msg
+502:CONST:new_port
+527:FUNC:initDeviceSession
+549:FUNC:completeDeviceInit
+551:CONST:firstTime
+568:CONST:pkg
+624:CONST:openFiles
+627:FUNC:refreshFileTree
+629:CONST:raw
+637:FUNC:createNewFile
+639:CONST:fn
+646:CONST:raw
+649:CONST:full
+653:CONST:full
+671:FUNC:removeFile
+674:CONST:raw
+685:FUNC:removeDir
+687:CONST:inside
+690:CONST:raw
+702:FUNC:moveToDir
+705:CONST:dst
+710:CONST:fileExt
+711:CONST:i
+718:FUNC:renamePath
+723:CONST:makesPath
+730:CONST:base
+731:CONST:oldExt
+737:CONST:dst
+742:FUNC:_movePath
+747:CONST:raw
+765:FUNC:uploadDroppedFiles
+766:CONST:dropped
+773:CONST:items
+774:CONST:files
+775:CONST:clashes
+780:CONST:raw
+831:CONST:downloadsInFlight
+835:CONST:canDragOut
+839:FUNC:downloadName
+840:CONST:name
+844:CONST:now
+845:CONST:pad
+847:CONST:t
+866:FUNC:downloadType
+872:FUNC:stageDownload
+874:CONST:bytes
+879:FUNC:stageBytes
+880:CONST:type
+889:FUNC:prepareDownload
+894:CONST:task
+897:CONST:gen
+898:CONST:raw
+914:FUNC:zipEntries
+915:CONST:entries
+916:CONST:base
+917:CONST:strip
+918:CONST:pack
+919:CONST:name
+934:FUNC:_raw_readForDownload
+938:CONST:entries
+948:FUNC:stageFolderFromCache
+949:CONST:entries
+952:CONST:bytes
+959:FUNC:fileTreeDragStart
+966:CONST:entry
+975:FUNC:fileTreeDragMissed
+978:CONST:name
+989:FUNC:execReplNoFollow
+999:CONST:isSpecialPath
+1002:CONST:isDirPath
+1004:FUNC:fileIcon
+1005:CONST:fnuc
+1017:FUNC:isSelectedFile
+1027:FUNC:_rerenderFileTree
+1031:FUNC:_updateFileTree
+1037:FUNC:sorted
+1040:CONST:collator
+1050:FUNC:dirNode
+1051:CONST:special
+1070:FUNC:fileNode
+1074:CONST:classes
+1095:FUNC:treeNodes
+1101:CONST:listingStale
+1103:CONST:root
+1136:CONST:fileTreeView
+1158:CONST:renamed
+1179:CONST:types
+1180:CONST:lowerTypes
+1195:FUNC:_raw_updateFileTree
+1210:CONST:fs_tree
+1211:CONST:delta
+1226:FUNC:_raw_ensureDevInfo
+1237:FUNC:fileTreeSelect
+1247:FUNC:fileTreeRow
+1253:FUNC:markFile
+1262:FUNC:setDirty
+1268:FUNC:setConflict
+1275:FUNC:warnBackupsDisabled
+1284:FUNC:makeCoalesced
+1293:FUNC:fileClick
+1296:CONST:raw
+1306:FUNC:pyMinify
+1312:CONST:input
+1313:CONST:res
+1323:FUNC:pyPrettify
+1329:CONST:res
+1341:FUNC:saveAndCompile
+1349:CONST:savedFn
+1350:CONST:savedText
+1354:CONST:mpy
+1355:CONST:mpyFn
+1357:CONST:raw
+1375:FUNC:showDisassembly
+1380:CONST:mpy
+1390:CONST:raw
+1405:CONST:disFn
+1407:CONST:view
+1415:CONST:editorElement
+1427:FUNC:_raw_loadFile
+1460:FUNC:_raw_reconcileOpenTabs
+1461:CONST:gone
+1462:CONST:reloaded
+1487:FUNC:_reloadView
+1488:CONST:editorElement
+1490:CONST:kind
+1498:CONST:text
+1512:CONST:view
+1523:CONST:cursor
+1538:FUNC:_raw_restoreDrafts
+1542:CONST:drafts
+1548:CONST:when
+1549:CONST:what
+1572:CONST:view
+1589:FUNC:decodeText
+1598:FUNC:_loadContent
+1602:CONST:tabFn
+1603:CONST:willDisasm
+1641:CONST:scheduleSync
+1645:CONST:key
+1654:FUNC:saveCurrentFile
+1666:CONST:savedFn
+1667:CONST:savedText
+1679:CONST:backtrace
+1686:CONST:raw
+1711:FUNC:openWelcomeTab
+1712:CONST:fn
+1713:CONST:content
+1737:FUNC:clearTerminal
+1747:FUNC:deviceRanCode
+1761:FUNC:reboot
+1766:CONST:release
+1782:FUNC:runCurrentFile
+1799:CONST:soft_reboot
+1800:CONST:timeout
+1814:CONST:emit
+1821:CONST:backtrace
+1852:FUNC:loadAllPkgIndexes
+1853:CONST:nodes
+1857:CONST:byName
+1859:CONST:keywords
+1895:CONST:pkgTreeView
+1901:FUNC:_raw_installPkg
+1904:CONST:dev_info
+1905:CONST:pkg_info
+1917:FUNC:installPkg
+1922:CONST:raw
+1945:FUNC:openPkgReadmeTab
+1946:CONST:readme
+1948:CONST:fn
+1961:FUNC:startQuickInstall
+1968:CONST:ready
+1989:FUNC:handleLaunchUrl
+1997:CONST:pkg
+2018:FUNC:initLaunchHandler
+2024:CONST:target
+2031:FUNC:installPkgFromUrl
+2036:CONST:url
+2046:CONST:fileTree
+2047:CONST:overlay
+2049:FUNC:toggleSideMenu
+2065:FUNC:autoHideSideMenu
+2072:FUNC:hexViewer
+2073:CONST:containerDiv
+2076:CONST:dataView
+2077:CONST:numBytes
+2079:FUNC:toHex
+2083:FUNC:toPrintableAscii
+2088:CONST:hexLine
+2091:CONST:addressSpan
+2095:CONST:hexPartSpan
+2102:CONST:byte
+2114:CONST:asciiPartSpan
+2149:FUNC:toggleFullScreen
+2150:CONST:element
+2160:FUNC:applyTranslation
+2235:CONST:offlineReadyMessage
+2238:FUNC:showOfflineReadyToast
+2245:CONST:urlParams
+2266:CONST:currentLang
+2289:CONST:id
+2299:CONST:ua
+2300:CONST:scr
+2309:CONST:userUID
+2338:CONST:idleMonitor
+2354:CONST:size
+2372:CONST:xtermTheme
+2435:CONST:wasStale
+2439:CONST:release
+2451:CONST:fitAddon
+2529:CONST:connID
+2536:CONST:connID
+2585:FUNC:checkForUpdates
+2586:CONST:now
+2592:CONST:current_version
+2618:FUNC:updateApp
+2637:FUNC:initDrag
+2652:FUNC:doDrag
+2661:CONST:terminalContainer
+2662:CONST:height
+2666:FUNC:stopDrag

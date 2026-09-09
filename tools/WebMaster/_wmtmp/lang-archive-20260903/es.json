@@ -1,0 +1,51 @@
+{
+    "translation": {
+        "example": {
+            "hello": "Hola",
+            "comment-colors": "Imprime cada letra con un color diferente",
+            "comment-count": "Cuenta del 1 al 10"
+        },
+        "tool": {
+            "run": "Ejecutar archivo",
+            "save": "Guardar archivo",
+            "fullscreen": "Pantalla completa",
+            "clear": "Limpiar",
+            "conn": {
+                "ws": "Conectar WebREPL",
+                "ble": "Conectar Bluetooth",
+                "usb": "Conectar USB/Serial"
+            },
+            "terminal": "Terminal"
+        },
+        "menu": {
+            "package-mgr": "Administrador de paquetes",
+            "file-mgr": "Administrador de archivos",
+            "settings": "Configuraciones"
+        },
+        "files": {
+            "no-files": "sin archivos",
+            "connect": "conectar",
+            "used": "usado"
+        },
+        "settings": {
+            "conn": "conexión",
+            "editor": "editor",
+            "other": "otros",
+            "interrupt-running-code": "Interrumpir ejecución",
+            "force-serial-poly": "Usar WebUSB en lugar de WebSerial",
+            "expand-minify-json": "Minificación automática de JSON",
+            "use-word-wrap": "Ajuste de línea",
+            "render-markdown": "Visualizador de Markdown",
+            "refresh-after-run": "Actualizar archivos después de ejecutar",
+            "auto-soft-reset": "Soft Reset antes de ejecutar",
+            "use-natural-sort": "Ordenación natural",
+            "lang": "Idioma",
+            "zoom": "Zoom",
+            "install-package-source": "Omitir la compilación .py → .mpy"
+        },
+        "about": {
+            "cta": "Si te gusta ViperIDE, por favor <a id='gh-star'>dale una estrella en GitHub</a> ⭐ y difúndelo en las redes sociales 📢",
+            "report-bug": "También puedes <a id='gh-issues'>reportar un error</a> 🐞"
+        }
+    }
+}

@@ -14,6 +14,475 @@ from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from collections import defaultdict, deque
+import re
+import webbrowser
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import urlparse, parse_qs
+
+# ==================== 網頁遙控 (Web Remote) — 與 console 共用同一行程 ====================
+# 直接內建在本程式: 跑 NetBusMaster.py 就同時起一個 HTTP 服務, 瀏覽器操作的就是
+# 這個正在跑的實例 (同一份 self.slaves / selected_targets / config), 不是第二個行程。
+_ANSI_RE = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
+# 終端面板整幀重繪用的重 box-drawing 字元 (正常 log 不會用) → 從 web log 過濾掉,
+# 網頁有 /api/state 的結構化設備表, 不需要把整片面板畫框塞進 log。
+_PANEL_CHARS = frozenset("╔╠╚║┌└┐┘╪")
+
+
+class _WebLogRing:
+    def __init__(self, maxlen=1200):
+        self.lock = threading.Lock()
+        self.entries = deque(maxlen=maxlen)
+        self._seq = 0
+        self._pending = {"stdout": "", "stderr": ""}
+
+    def _push(self, stream, text):
+        text = _ANSI_RE.sub("", text).rstrip()
+        if not text.strip():
+            return
+        if any(ch in _PANEL_CHARS for ch in text):
+            return
+        self._seq += 1
+        self.entries.append({
+            "seq": self._seq,
+            "ts": datetime.now().strftime("%H:%M:%S"),
+            "stream": stream,
+            "text": text,
+        })
+
+    def write(self, stream, s):
+        if not s:
+            return
+        with self.lock:
+            self._pending[stream] += s
+            while "\n" in self._pending[stream]:
+                head, self._pending[stream] = self._pending[stream].split("\n", 1)
+                self._push(stream, head)
+
+    def log(self, level, msg):
+        """panel.log() 專用: 面板在跑時 print 會被跳過, 這裡補進 web log 確保不遺漏。"""
+        stream = {"err": "stderr", "warn": "warn", "ok": "ok"}.get(level, "stdout")
+        with self.lock:
+            self._push(stream, str(msg))
+
+    def flush(self):
+        with self.lock:
+            for k in list(self._pending):
+                if self._pending[k]:
+                    self._push(k, self._pending[k])
+                    self._pending[k] = ""
+
+    def get_since(self, since):
+        with self.lock:
+            items = [e for e in self.entries if e["seq"] > since]
+            last = self.entries[-1]["seq"] if self.entries else since
+            return items, last
+
+
+class _WebTeeStream:
+    def __init__(self, name, ring, orig):
+        self.name = name
+        self.ring = ring
+        self.orig = orig
+
+    def write(self, s):
+        if s:
+            self.ring.write(self.name, s)
+        try:
+            return self.orig.write(s)
+        except Exception:
+            return len(s)
+
+    def flush(self):
+        self.ring.flush()
+        try:
+            self.orig.flush()
+        except Exception:
+            pass
+
+    def isatty(self):
+        return getattr(self.orig, "isatty", lambda: False)()
+
+    @property
+    def encoding(self):
+        return getattr(self.orig, "encoding", "utf-8")
+
+
+_WEB_LOG = _WebLogRing()
+sys.stdout = _WebTeeStream("stdout", _WEB_LOG, sys.stdout)
+sys.stderr = _WebTeeStream("stderr", _WEB_LOG, sys.stderr)
+
+
+class _WebHandler(BaseHTTPRequestHandler):
+    """網頁遙控 HTTP 服務 (跑在 NetBusMaster 同一行程, master 設為本實例)。"""
+    master = None   # 由 NetBusMaster._start_web_server 設定
+
+    server_version = "NetBusWeb/1.0"
+
+    def _send_json(self, obj, code=200):
+        body = json.dumps(obj, ensure_ascii=False).encode("utf-8")
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _send_html(self):
+        try:
+            with open(os.path.join(SCRIPT_DIR, "web_remote.html"), "rb") as f:
+                body = f.read()
+        except OSError:
+            body = b"<h1>web_remote.html not found</h1>"
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _read_json_body(self):
+        try:
+            ln = int(self.headers.get("Content-Length", "0") or 0)
+        except ValueError:
+            ln = 0
+        if ln <= 0:
+            return {}
+        try:
+            return json.loads(self.rfile.read(ln).decode("utf-8"))
+        except Exception:
+            return {}
+
+    def log_message(self, fmt, *args):
+        pass  # 關掉每筆 request 的 stderr 雜訊
+
+    def do_GET(self):
+        path = urlparse(self.path).path
+        if path in ("/", "/index.html"):
+            self._send_html()
+            return
+        if path == "/api/state":
+            self._send_json(self._build_state(self.master))
+            return
+        if path == "/api/logs":
+            q = parse_qs(urlparse(self.path).query)
+            try:
+                since = int(q.get("since", ["0"])[0] or 0)
+            except ValueError:
+                since = 0
+            items, last = _WEB_LOG.get_since(since)
+            self._send_json({"logs": items, "next": last})
+            return
+        if path == "/api/qr":
+            q = parse_qs(urlparse(self.path).query)
+            kind = (q.get("kind", ["page"])[0] or "page").lower()
+            self._send_qr_svg(kind)
+            return
+        self._send_json({"error": "not found"}, 404)
+
+    def _send_qr_svg(self, kind="page"):
+        """純本地 QR (SVG)。不連外網。
+
+        kind="page" → 控制台網址 http://<本機IP>:<web_port>
+        kind="wifi" → Wi-Fi 加入格式 WIFI:T:<auth>;S:<ssid>;P:<pass>;H:<0/1>;;
+        """
+        try:
+            from qr_local import qr_svg
+        except Exception:
+            self._send_json({"error": "qr_local.py missing"}, 500)
+            return
+
+        if kind == "wifi":
+            w = self.master._load_wifi()
+            if not w["ssid"]:
+                self._send_json({"error": "尚未設定 Wi-Fi SSID (請到技術台填寫)"}, 400)
+                return
+            # 標準 Wi-Fi QR 格式: 特殊字元需轉義 (\\ ; , : ")
+            def _esc(s):
+                out = []
+                for ch in s:
+                    if ch in "\\;,:\"":
+                        out.append("\\" + ch)
+                    else:
+                        out.append(ch)
+                return "".join(out)
+            auth = w["auth"]
+            if auth == "NOPASS":
+                data = "WIFI:T:nopass;S:{};;".format(_esc(w["ssid"]))
+            else:
+                data = "WIFI:T:{};S:{};P:{};{};".format(
+                    auth, _esc(w["ssid"]), _esc(w["password"]),
+                    "H:true" if w["hidden"] else "")
+                # 格式尾端需雙分號
+                if not data.endswith(";;"):
+                    data = data.rstrip(";") + ";;"
+        else:
+            port = self.master.config.get("web_port", 8080)
+            ip = self.master.local_ip
+            data = "http://{}:{}".format(ip, port)
+
+        try:
+            svg = qr_svg(data).encode("utf-8")
+        except Exception as e:
+            self._send_json({"error": "qr encode failed: {}".format(e)}, 500)
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", "image/svg+xml")
+        self.send_header("Content-Length", str(len(svg)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(svg)
+
+    def do_POST(self):
+        if urlparse(self.path).path != "/api/action":
+            self._send_json({"error": "not found"}, 404)
+            return
+        data = self._read_json_body()
+        try:
+            result = self._dispatch(self.master, data)
+        except Exception as e:  # noqa: BLE001
+            result = {"ok": False, "msg": f"處理失敗: {e}"}
+        self._send_json(result)
+
+    @staticmethod
+    def _device_summary(m):
+        """設備摘要: 在線 / 離線 / 未連接。
+
+        online  = WS 連線中 (self.slaves)
+        offline = 曾見過但現在斷線 (panel.monitors 有, slaves 沒有)
+        unknown = slave_map.json 有紀錄但本次沒見過
+        """
+        online = set(m.slaves.keys())
+        try:
+            with m.panel.lock:
+                seen = set(m.panel.monitors.keys())
+        except Exception:
+            seen = set()
+        known = set((m.config.get("mapping") or {}).keys())
+        return {
+            "online": len(online),
+            "offline": len(seen - online),
+            "unknown": len(known - seen - online),
+            "known": len(known),
+        }
+
+    @staticmethod
+    def _build_state(m):
+        playing = bool(m.is_playing) or bool(m.play_session_active)
+        paused = bool(m.is_paused)
+        cfg = m.config or {}
+        cfg_out = {}
+        for k in list(NetBusMaster._REMOTE_INT_KEYS) + list(NetBusMaster._REMOTE_FLOAT_KEYS):
+            cfg_out[k] = cfg.get(k, None)
+        try:
+            script = m._load_script()
+        except Exception:
+            script = {"version": 2, "lang": "zh", "active": "", "scripts": []}
+        # 🔧 前端只需目前劇本的卡片 + 劇本清單 (不必傳全部劇本內文)
+        scripts_meta = [
+            {"id": s.get("id"), "name": s.get("name"), "count": len(s.get("cards", []))}
+            for s in script.get("scripts", [])
+        ]
+        return {
+            "local_ip": m.local_ip,
+            "ws_port": cfg.get("ws_port", 8000),
+            "web_port": cfg.get("web_port", 8080),
+            "playing": playing,
+            "paused": paused,
+            "loop_play": int(cfg.get("loop_play", 0)),
+            "resource": m.resource_stem or m._default_stem(),
+            "resources": m._list_resources(),
+            "pxlds": m._list_pxld_files(),
+            "network": m.remote_network_info(),
+            "devices": m.remote_devices(),
+            "selected": list(m.selected_targets),
+            "config": cfg_out,
+            "mp3s": sorted(f for f in os.listdir(SCRIPT_DIR) if f.lower().endswith(".mp3")),
+            # 🔧 演出流程 (MC / 音響 兩頁共用)
+            "show": {
+                "phase": m.show_phase,
+                "slot": m.show_slot,
+                "audio_ready": bool(m.audio_ready),
+            },
+            "slots": {
+                "main": m._slot("main"),
+                "loop": m._slot("loop"),
+            },
+            "device_summary": _WebHandler._device_summary(m),
+            "script": {
+                "lang": script.get("lang", "zh"),
+                "active": script.get("active", ""),
+                "cards": m._active_cards(script),
+                "scripts": scripts_meta,
+            },
+            # 🔧 Wi-Fi QR 憑證 (密碼不回傳給前端, 只回是否有設定)
+            "wifi": _WebHandler._wifi_public(m),
+        }
+
+    @staticmethod
+    def _wifi_public(m):
+        """Wi-Fi 設定的前端可見部分 (不含密碼)。"""
+        try:
+            w = m._load_wifi()
+        except Exception:
+            w = {}
+        return {
+            "ssid": w.get("ssid", ""),
+            "auth": w.get("auth", "WPA"),
+            "hidden": w.get("hidden", 0),
+            "has_password": bool(w.get("password")),
+            "configured": bool(w.get("ssid")),
+        }
+
+    @staticmethod
+    def _dispatch(m, data):
+        action = data.get("action", "")
+        if action == "scan":
+            threading.Thread(target=m.remote_scan, args=(data.get("mode", "broadcast"), data.get("ips", "")), daemon=True).start()
+            return {"ok": True, "msg": f"掃描已啟動 (模式 {data.get('mode', 'broadcast')}), 進度請看 Log"}
+        if action == "select_all":
+            n = m.remote_select_all()
+            return {"ok": True, "msg": f"已全選 {n} 台"}
+        if action == "select_clear":
+            m.remote_select_clear()
+            return {"ok": True, "msg": "已清空選擇"}
+        if action == "select_ids":
+            n = m.remote_select_ids(data.get("ids", []))
+            return {"ok": True, "msg": f"已選擇 {n} 台"}
+        if action == "clear":
+            m.remote_clear()
+            return {"ok": True, "msg": "已清除設備列表"}
+        if action == "play":
+            mp3 = data.get("mp3") or None
+            if mp3:
+                full = os.path.join(SCRIPT_DIR, mp3)
+                if not os.path.isfile(full):
+                    return {"ok": False, "msg": f"找不到音檔: {mp3}"}
+                mp3 = full
+            ok, msg = m.remote_sync_play(
+                mp3=mp3,
+                delay_ms=data.get("delay_ms"),
+                loop=data.get("loop"),
+                active_sync_fps=data.get("active_sync_fps"),
+                resource=data.get("resource"),
+            )
+            return {"ok": ok, "msg": msg}
+        if action == "prepare":
+            ok, msg = m.remote_prepare(
+                resource=data.get("resource"),
+                loop=data.get("loop"),
+                delay_ms=data.get("delay_ms"),
+                active_sync_fps=data.get("active_sync_fps"),
+            )
+            return {"ok": ok, "msg": msg}
+        if action == "fire":
+            mp3 = data.get("mp3") or None
+            if mp3:
+                full = os.path.join(SCRIPT_DIR, mp3)
+                if not os.path.isfile(full):
+                    return {"ok": False, "msg": f"找不到音檔: {mp3}"}
+                mp3 = full
+            ok, msg = m.remote_fire(mp3=mp3)
+            return {"ok": ok, "msg": msg}
+        if action == "verify":
+            ok, results = m._verify_resource(data.get("resource") or m.resource_stem)
+            n_bad = sum(1 for r in results if not r.get("match"))
+            if ok:
+                return {"ok": True, "msg": f"驗證通過: {len(results)} 台全部一致", "results": results}
+            return {"ok": False, "msg": f"驗證未通過: {n_bad}/{len(results)} 台不一致 (詳見 Log)", "results": results}
+        if action == "pause":
+            paused = m.remote_pause_toggle()
+            return {"ok": True, "msg": "已暫停" if paused else "已繼續", "paused": paused}
+        if action == "stop":
+            m.remote_stop()
+            return {"ok": True, "msg": "已停止"}
+        if action == "query":
+            threading.Thread(target=m.remote_query, daemon=True).start()
+            return {"ok": True, "msg": "查詢已啟動, 結果請看 Log"}
+        if action == "config":
+            ok, msg = m.remote_config_set(data.get("key"), data.get("value"))
+            return {"ok": ok, "msg": msg}
+        if action == "network":
+            ok, msg = m.remote_set_network(data.get("selector", ""))
+            return {"ok": ok, "msg": msg}
+        if action == "brightness":
+            ok, msg, out_name = m.remote_brightness(data.get("pxld"), data.get("factor"))
+            return {"ok": ok, "msg": msg, "out": out_name}
+        if action == "latency":
+            stats, applied = m.latency_probe(apply=bool(data.get("apply", False)))
+            if stats is None:
+                return {"ok": False, "msg": "延遲偵查無結果 (無設備/無回應)"}
+            base = m._cfg_int("audio_delay_base_ms", 0)
+            msg = f"延遲 min {stats['min_ms']}ms / avg {stats['avg_ms']}ms / max {stats['max_ms']}ms"
+            if applied is not None:
+                msg += f"  → 套用 {base}ms(基線) + {stats['max_ms']}ms(網路) = {applied}ms"
+            return {"ok": True, "msg": msg, "stats": stats, "applied": applied, "base": base}
+        if action == "direct_test":
+            threading.Thread(target=m.remote_direct_test, daemon=True).start()
+            return {"ok": True, "msg": "Direct 串流測試已啟動 (紅色呼吸→純黑→停止), 請看 Log"}
+        # ── 演出流程 (MC ↔ 音響) ──
+        if action == "show_arm":
+            ok, msg = m.remote_show_arm(data.get("slot"))
+            return {"ok": ok, "msg": msg}
+        if action == "show_request_play":
+            ok, msg = m.remote_show_request_play()
+            return {"ok": ok, "msg": msg}
+        if action == "audio_ready":
+            ok, msg = m.remote_audio_ready()
+            return {"ok": ok, "msg": msg}
+        if action == "audio_reset":
+            ok, msg = m.remote_audio_reset()
+            return {"ok": ok, "msg": msg}
+        if action == "show_play":
+            ok, msg = m.remote_show_play(data.get("slot"))
+            return {"ok": ok, "msg": msg}
+        if action == "show_replay":
+            ok, msg = m.remote_show_replay()
+            return {"ok": ok, "msg": msg}
+        if action == "show_stop":
+            ok, msg = m.remote_show_stop()
+            return {"ok": ok, "msg": msg}
+        if action == "show_end_play":
+            ok, msg = m.remote_show_end_play()
+            return {"ok": ok, "msg": msg}
+        if action == "show_end":
+            ok, msg = m.remote_show_end()
+            return {"ok": ok, "msg": msg}
+        if action == "play_loop":
+            ok, msg = m.remote_play_loop()
+            return {"ok": ok, "msg": msg}
+        if action == "play_slot":
+            ok, msg = m.remote_play_slot(data.get("slot"))
+            return {"ok": ok, "msg": msg}
+        if action == "save_wifi":
+            ok, msg = m.remote_save_wifi(
+                ssid=data.get("ssid"), password=data.get("password"),
+                auth=data.get("auth"), hidden=data.get("hidden"),
+            )
+            return {"ok": ok, "msg": msg}
+        if action == "detect_ssid":
+            ok, msg = m.remote_detect_ssid()
+            return {"ok": ok, "msg": msg, "ssid": msg if ok else ""}
+        if action == "show_reset":
+            ok, msg = m.remote_show_reset()
+            return {"ok": ok, "msg": msg}
+        if action == "save_slots":
+            ok, msg = m.remote_save_slots(data.get("slots"))
+            return {"ok": ok, "msg": msg}
+        if action == "save_script":
+            ok, msg = m.remote_save_script(
+                data.get("cards"), data.get("lang"),
+                script_id=data.get("script_id"), name=data.get("name"),
+            )
+            return {"ok": ok, "msg": msg}
+        if action == "set_script":
+            ok, msg = m.remote_set_script(data.get("script_id"))
+            return {"ok": ok, "msg": msg}
+        if action == "delete_script":
+            ok, msg = m.remote_delete_script(data.get("script_id"))
+            return {"ok": ok, "msg": msg}
+        if action == "set_lang":
+            ok, msg = m.remote_set_lang(data.get("lang"))
+            return {"ok": ok, "msg": msg}
+        return {"ok": False, "msg": f"未知動作: {action}"}
 
 # ==================== 全局默認配置 ====================
 DEFAULT_CONFIG = {
@@ -21,8 +490,12 @@ DEFAULT_CONFIG = {
     "mapping": {},
     "ws_port": 8000,
     "upt_port": 9000,
+    # 🔧 網卡選擇: 空 = 自動偵測; 否則可填網卡名(en0)/IP(192.168.8.131)/子網前綴(192.168.8.)。
+    #    同一台機器同時接網際網路 + 設備本地網時, 自動偵測(連 8.8.8.8)會抓錯網卡,
+    #    讓 DISCOVER 的 ws_url 指向錯的 IP → slave 連不回。設定此欄即可指定用哪張網卡。
+    "network_interface": "",
     "deploy_timeout": 120,
-    "max_workers": 50,
+    "max_workers": 128,
     "download_chunk_size": 1024 *2,
     "download_chunk_min": 1024,
     "upload_chunk_size": 4096,
@@ -41,13 +514,52 @@ DEFAULT_CONFIG = {
     "active_sync_interval_s": 10.0,       # 廣播間隔 (秒)
     # 🔧 播放會話 / 離線自癒: 播放期間定期向 slave 查詢播放進度 (0x1101→0x1102)
     "progress_poll_interval_s": 1.0,      # 進度輪詢間隔 (秒)
+    # 🔧 連線穩定 (半開自癒, 純 master 端, 不需改韌體):
+    "preplay_liveness_check": 1,          # 進入播放/準備前並行 ping, 半開設備敲門叫回重連
+    "midplay_auto_heal": 1,               # 播放中設備連續無回應 → 敲門一次叫回 (mid-join 追幀接回)
+    "midplay_heal_miss_threshold": 3,     # 連續多少次無回應才判定半開
+    "midplay_heal_cooldown_s": 60.0,      # 同一設備兩次自癒敲門的最小間隔 (秒, 避免 ECONNABORTED 循環)
     # 🔧 播放完全自然結束後 (非循環音檔播完), 延遲多少秒才送 0x3002 停止指令
     #    (slave 端會在檔尾保持最後一幀亮著, 這段延遲 = 最後姿勢定格時間)
     "post_play_stop_delay_s": 10.0,
-    # 🔧 離線裝置自動敲門 (unicast 0x1001 DISCOVER) 間隔: 裝置斷線後被自動叫回
-    "reconnect_knock_interval_s": 10.0,   # 敲門間隔 (秒)
     # 🔧 中途加入 (mid-join) 的 prepare/READY 握手重試次數
-    "join_retry_count": 3
+    "join_retry_count": 3,
+    # 🔧 網頁遙控: 與 console 共用同一行程/同一實例 (跑 NetBusMaster.py 即同時起 web)
+    "web_enable": 1,          # 1 = 啟動網頁遙控 HTTP 服務
+    "web_port": 8080,         # 網頁遙控埠
+    "web_open_browser": 1,    # 1 = 啟動時自動開瀏覽器
+    # 🔧 權威播放 fps: 同步計算 / 重連追幀 / 起播廣播共用 (解決重連後落後)
+    #    0 = 自動 (用動畫 metadata fps); >0 = 以此 fps 為準。設備實際節拍由
+    #    slave config 的 System.frame_interval_ms 決定 (20ms=50fps); 若與動畫
+    #    metadata fps 不一致, 重連設備就會用錯節拍越播越落後 —— 設 play_fps 對齊。
+    "play_fps": 0,
+    "midjoin_lead_frames": 3,  # 重連追幀提前量(幀): 補 seek→讀檔→渲染 的管線延遲
+    # 🔧 延遲偵查: 對所有選中設備量單向延遲, 統計後可自動套用到 sync_delay_ms。
+    #    latency_probe_auto = 1 → 擊發播放前自動偵查並把「最大單向延遲」套進
+    #    sync_delay_ms (先音後燈補償); 0 = 手動 (預設)。延遲=網路單向延遲, 不含
+    #    miniaudio 本機音效啟動延遲 —— 後者若也要自動量, 需另加發聲時間戳。
+    "latency_probe_auto": 0,
+    "latency_probe_samples": 5,   # 每台設備量測樣本數
+    "latency_probe_warmup_s": 0.4, # 每台量測前暖機秒數 (避免 cold-start RTT)
+    # 🔧 音效啟動延遲基線 (ms): miniaudio 開檔/解碼/音效卡 buffer 的啟動延遲,
+    #    ping 量不到 (那是「網路單向延遲」)。延遲偵查套用時:
+    #    sync_delay_ms = audio_delay_base_ms + max(網路單向延遲)。此值手動調。
+    "audio_delay_base_ms": 0,
+    # 🔧 重連追幀 (mid-join) 時序: 準備檔(0x3009)→READY 後, 先固定等這段時間讓
+    #    slave 把 data.bin 開好/進快取, 再量延遲、算幀、發 0x300A。少了這段, seek
+    #    在冷檔案上會慢且不穩, 算好的位置一發就落後。
+    "midjoin_settle_s": 0.5,
+    # 🔧 重連追幀的延遲量測樣本數 (平均法): 用「平均單向延遲」補償而非 min RTT。
+    #    min RTT 在抖動下會低估 → 補償偏小 → 重連後追不上。平均給足裕量。
+    "midjoin_latency_samples": 3,
+    # 🔧 演出媒體槽 (技術台預先設定, MC 頁只按按鈕):
+    #    main = 主媒體 (播一次), loop = 第二媒體 (循環)。
+    #    每槽 = 資源主名 + 音效 + 同步延遲 + 主動同步 fps + 是否循環。
+    #    存在 slave_map.json (load_config 的 dict 合併分支自動支援新增子鍵)。
+    "media_slots": {
+        "main": {"label": "破鏡高達燈光秀", "resource": "", "mp3": "", "delay_ms": 150, "active_sync_fps": 0, "loop": 0},
+        "loop": {"label": "備用媒體", "resource": "", "mp3": "", "delay_ms": 150, "active_sync_fps": 0, "loop": 1},
+    },
 }
 
 # ==================== 垃圾檔過濾 (Python 快取 / macOS / Windows / 編輯器暫存) ====================
@@ -210,6 +722,10 @@ def _auto_switch_to_venv():
 # 🔧 輔助檔案集中存放:
 #   slave_map.json 與本程式同目錄 (tools/PC/); 其餘輔助檔案 (log/下載/profile) 放 data/
 CONFIG_PATH = os.path.join(SCRIPT_DIR, "slave_map.json")
+# 🔧 MC 講稿 / 流程卡片: 獨立檔案 (不塞進 slave_map.json, 免得設定檔被長文撐肥)。
+SCRIPT_PATH = os.path.join(SCRIPT_DIR, "mc_script.json")
+# 🔧 Wi-Fi 憑證 (供 QR 掃碼連線): 獨立檔案且不進版控 (含密碼)。
+WIFI_PATH = os.path.join(SCRIPT_DIR, "wifi_qr.json")
 DATA_DIR = os.path.join(SCRIPT_DIR, "data")
 LOG_DIR = os.path.join(DATA_DIR, "logs")
 DOWNLOAD_DIR = os.path.join(DATA_DIR, "downloads")
@@ -223,7 +739,7 @@ try:
     from slave.lib.sys.proto import Proto, StreamParser
     from slave.lib.sys.schema_loader import SchemaStore
     from slave.lib.sys.schema_codec import SchemaCodec
-    from tools.PC.PXLDv3Splitter import PXLDv3Decoder
+    from tools.PC.PXLDv3Splitter import PXLDv3Decoder, adjust_pxld_brightness
 except ImportError as e:
     print(f"❌ 導入錯誤: {e}")
     sys.exit(1)
@@ -416,7 +932,7 @@ class ConsoleUI:
         print("\033[?25h", end="")
     
     @staticmethod
-    def get_color(value, threshold_good=80, threshold_warn=50):
+    def get_color(value, threshold_good=80, threshold_warn=60):
         if value >= threshold_good:
             return "\033[92m"
         elif value >= threshold_warn:
@@ -453,22 +969,23 @@ class MonitorPanel:
         self.log_lock = threading.Lock()
 
     def log(self, level, msg):
-        """把後台通知導進面板 log 區 (非阻塞, 不再直接 print 到 stdout 打亂畫面)。
+        """把後台通知導進面板 log 區 + 網頁 log (非阻塞, 不再直接 print 打亂畫面)。
 
         level: "info" | "ok" | "warn" | "err" (對應面板著色)。
-        面板「沒在跑」(選單/啟動階段) 時 fallback 到 print, 讓通知仍看得到。
-        此方法可被任何執行緒安全呼叫。
+        此方法可被任何執行緒安全呼叫。console 面板 running 時顯示在 log_buffer;
+        網頁端由 _WEB_LOG.log 補進 web log 環形緩衝, 兩邊各只出現一次, 不重複。
         """
         try:
             with self.log_lock:
                 self.log_buffer.append((datetime.now().strftime("%H:%M:%S"), level, str(msg)))
         except Exception:
             pass
-        if not self.running:
-            try:
-                print(str(msg))
-            except Exception:
-                pass
+        # 🔧 網頁 log 出口 (stdout 已被 tee 到 web ring, 這裡「手動」補進去,
+        #    避免與 stdout print 重複 → 每則訊息在 web 只出現一次)
+        try:
+            _WEB_LOG.log(level, str(msg))
+        except Exception:
+            pass
 
     def _drain_logs(self, limit=200):
         """取出目前 log 區 (副本), 供渲染使用。"""
@@ -703,20 +1220,14 @@ class DeviceManager:
     負責:
     1. 管理 slaves 連接字典
     2. 處理設備重連/註冊
-    3. 執行健康檢查 (Heartbeat)
+    3. 連線狀態 = WS 通道本身 (recv 斷線/send 失敗 → 離線), 不做「無回應」定時健康檢查
+       (設計原則: master 不主動頻繁發 health 檢查, 見 doc/03_notes/12_upload_wdt_diagnosis.md)
     4. 提供設備統計數據
     """
     def __init__(self, panel: MonitorPanel):
         self.panel = panel
         self.slaves = {}  # {device_id: {conn, addr, parser, ...}}
         self.lock = threading.Lock()
-        self.running = True
-        self._knock_last = {}           # 🔧 自動敲門節流: {ip: last_knock_ts}
-        self._offline_knocked = set()   # 🔧 目前已知離線/無響應的設備 (只在集合變化時印摘要)
-        
-        # 啟動健康檢查線程
-        self.health_thread = threading.Thread(target=self._health_check_loop, daemon=True)
-        self.health_thread.start()
 
     def register_connection(self, cid, conn, addr, parser):
         """處理新連接/重連"""
@@ -743,11 +1254,9 @@ class DeviceManager:
                 "ready_event": threading.Event(),   # 🔧 0x3008 STREAM_READY_ACK (中途加入等待)
                 "ping_event": threading.Event(),    # 🔧 0x100B TIME_SYNC_RSP (延遲量測)
                 "ping_t0": 0.0,
-                "ping_lock": threading.Lock(),      # 🔧 串行化 ping (健康探測 vs 延遲量測併發)
+                "ping_lock": threading.Lock(),      # 🔧 串行化 ping (延遲量測併發防護)
                 "ping_rtt": None,                   # 🔧 最近一次 RTT (ms)
-                "ping_offset": None,                # 🔧 最近一次時鐘偏移 (slave-master, ms)
                 "latency_ms": None,                 # 🔧 單向延遲估計 (min-RTT/2, ms)
-                "clock_offset_ms": None,            # 🔧 min-RTT 樣本的時鐘偏移 (ms)
                 "min_rtt_ms": None,                 # 🔧 本次量測最小 RTT (ms)
                 "avg_rtt_ms": None,                 # 🔧 本次量測平均 RTT (ms)
                 "mode_event": threading.Event(),    # 🔧 0x3102 MODE_LIST_RSP (配對模式)
@@ -774,11 +1283,12 @@ class DeviceManager:
             self.panel.update_device(cid, status="待機")
 
     def unregister_connection(self, cid):
-        """移除連接"""
+        """移除連接 (WS 通道斷線 = 離線; 不再有「無回應」定時判定)"""
         with self.lock:
             if cid in self.slaves:
                 del self.slaves[cid]
             self.panel.remove_device(cid)
+        self.panel.log("warn", f"📴 [Health] {cid} 離線 (WS 連線中斷)")
 
     def update_heartbeat(self, cid):
         """更新心跳時間"""
@@ -794,134 +1304,14 @@ class DeviceManager:
     def get_all_slaves(self):
         return self.slaves
 
-    def _probe_device(self, cid):
-        """主動探測設備存活: 0x100A TIME_SYNC → 0x100B 有回應 = 在線。
+    # 🔧 已移除主動健康檢查 (_probe_device / _health_check_loop / 無響應判定):
+    #    連線狀態以 WS 通道本身為準 —— handle_client 的 recv 收到 FIN/RST/錯誤
+    #    (含 TCP keepalive 偵測到的半開連線) → finally → unregister_connection
+    #    → 標離線; send_pkt 發送失敗也會主動關 socket 觸發同一條清理路徑。
+    #    master 不主動頻繁發 0x100A/0x1101 health 檢查; 檢查連線是操作者手動
+    #    執行的動作 (查狀態/量延遲), 或播放途中的進度輪詢 (0x1101) 自然附帶。
+    #    要叫回離線設備: 選單 1 掃描/敲門 (手動)。見 doc/03_notes/12。
 
-        Wi-Fi 不穩時設備可能只是暫時沒推資料, 不代表斷線;
-        ping 有回應就刷新監控時間並把「無響應」恢復為「待機」。
-        """
-        master = getattr(self, "master", None)
-        node = self.slaves.get(cid)
-        if master is None or node is None:
-            return
-        try:
-            with node["ping_lock"]:  # 🔧 與 measure_latency 串行, 避免併發覆蓋 ping_t0
-                node["ping_event"].clear()
-                node["ping_t0"] = time.time()
-                master.send_pkt([cid], 0x100A, {"master_time_ms": int(time.time() * 1000) & 0xFFFFFFFF})
-                alive = node["ping_event"].wait(timeout=2.0)
-            if alive:
-                with self.panel.lock:
-                    mon = self.panel.monitors.get(cid)
-                    if mon:
-                        mon.last_update = time.time()
-                        if mon.status == "無響應":
-                            mon.status = "待機"
-                            self.panel.log("ok", f"💓 [Health] {cid} ping OK → 恢復待機")
-        except Exception:
-            pass
-
-    def _knock_offline_devices(self):
-        """🔧 自動敲門: 對「離線/無響應」且有 IP 紀錄的設備週期性 unicast DISCOVER (0x1001)。
-
-        背景: slave 的 WS 斷線後只會被動等 DISCOVER 敲門 (見 slave/tasks/network.py),
-        不會自己重連; PC 端若不敲門, 半夜斷線的設備就永遠回不來, 中途加入的
-        自動續播自然不會發生。本方法由健康檢查循環週期呼叫, 把離線設備叫回,
-        連上後 handle_client 的中途加入邏輯會自動接回播放。
-        """
-        master = getattr(self, "master", None)
-        if master is None:
-            return
-        mapping = master.config.get("mapping", {})
-        if not mapping:
-            return
-        interval = float(master.config.get("reconnect_knock_interval_s", 10.0))
-        interval = max(5.0, interval)
-        now = time.time()
-
-        offline_now = set()
-        for cid, info in mapping.items():
-            if not isinstance(info, dict):
-                continue
-            ip = (info.get("ip") or "").strip()
-            if not ip:
-                continue
-            node = self.slaves.get(cid)
-            mon = self.panel.monitors.get(cid)
-            # 已連線且非離線/無響應 → 不需要敲門
-            if node is not None and (mon is None or mon.status not in ("離線", "無響應")):
-                continue
-            offline_now.add(cid)
-            last = self._knock_last.get(ip, 0.0)
-            if now - last >= interval:
-                self._knock_last[ip] = now
-                master._knock_ip(ip, cid)
-
-        # 清理長期不在 mapping 的節流紀錄 (防無限增長)
-        known_ips = {str(v.get("ip", "")) for v in mapping.values() if isinstance(v, dict)}
-        for ip in list(self._knock_last.keys()):
-            if ip not in known_ips:
-                self._knock_last.pop(ip, None)
-
-        # 🔧 只在「離線集合變化」時印一次摘要, 不再每 10 秒對每台設備刷一行洗版。
-        #    穩定離線期間不重複輸出; 設備回到在線時回報一次「已回連」。
-        prev = self._offline_knocked
-        if offline_now != prev:
-            new_off = offline_now - prev
-            back = prev - offline_now
-            if new_off:
-                names = ", ".join(sorted(new_off))
-                self.panel.log("warn", f"🔔 [Health] 離線/無響應 {len(new_off)} 台 → 自動敲門叫回: {names}")
-                master._log_event("KNOCK", f"離線/無響應 {len(new_off)} 台: {names}")
-            if back:
-                names = ", ".join(sorted(back))
-                self.panel.log("ok", f"✅ [Health] 已回連 {len(back)} 台: {names}")
-                master._log_event("RECOVER", f"已回連 {len(back)} 台: {names}")
-            self._offline_knocked = offline_now
-
-    def _health_check_loop(self):
-        """每 5 秒檢查一次設備健康狀態 (主動探測版)。
-
-        規則:
-          - 傳輸中/下載中/準備中 → 強制餵狗
-          - 超過 15s 沒收到流量 → 主動 ping 探測 (0x100A)
-          - 超過 30s 沒流量且探測也失敗 → 標「無響應」, 之後持續探測,
-            ping 恢復回應自動回到「待機」
-        """
-        while self.running:
-            time.sleep(5)
-            # 🔧 自動敲門: 離線/無響應的設備會被 DISCOVER 叫回, 連上後自動接回播放
-            try:
-                self._knock_offline_devices()
-            except Exception as e:
-                self.panel.log("err", f"⚠️ [Health] 自動敲門錯誤: {e}")
-            now = time.time()
-            timeout = 30.0   # 無流量上限
-            probe_at = 15.0  # 超過此秒數沒流量 → 主動探測
-
-            # 複製 keys 避免遍歷時修改
-            with self.lock:
-                current_cids = list(self.slaves.keys())
-
-            for cid in current_cids:
-                monitor = self.panel.monitors.get(cid)
-                if not monitor:
-                    continue
-                # 傳輸中/下載中/準備中/重啟中 → 強制餵狗 (等重啟回連時別標無響應)
-                if monitor.status in ["傳輸中", "上傳中", "下載中", "準備中", "重啟中"]:
-                    monitor.last_update = now
-                    continue
-
-                idle = now - monitor.last_update
-                if idle >= timeout:
-                    if monitor.status != "離線" and monitor.status != "無響應":
-                        monitor.status = "無響應"
-                    # 已標無響應仍持續探測, 恢復連線時自動回到待機
-                    self._probe_device(cid)
-                    continue
-                if idle >= probe_at:
-                    # 🔧 主動探測: 有回應就保持活著 (避免 Wi-Fi 不穩的假警報)
-                    self._probe_device(cid)
     def get_counts(self):
         """返回 (在線總數, 離線總數)"""
         online = 0
@@ -933,9 +1323,6 @@ class DeviceManager:
                 else:
                     online += 1
         return online, offline
-
-    def stop(self):
-        self.running = False
 
 
 # ==================== NetBusMaster 主類 ====================
@@ -950,11 +1337,10 @@ class NetBusMaster:
         self.store.finalize()
         self.panel = MonitorPanel()
         self.device_manager = DeviceManager(self.panel)
-        self.device_manager.master = self  # 🔧 讓健康檢查能主動 ping 探測 (0x100A)
         self.slaves = self.device_manager.slaves  # 兼容舊代碼，指向 Manager 的字典
         
         self.running = True
-        self.local_ip = self.get_local_ip()
+        self.local_ip = '127.0.0.1'   # 稍後 load_config 後再依 network_interface 偵測
         
         self.is_playing = False
         self.is_paused = False
@@ -974,19 +1360,35 @@ class NetBusMaster:
         self.audio_finished = False
         self._dev_finished = set()        # 🔧 本次會話「已自然播完」的設備 (重連不再自動續播)
         self._stop_was_manual = False     # 🔧 本次播放是否由使用者手動停止 (s/q), 決定要不要補「延遲停止」
+        # 🔧 演出狀態機 (MC / 音響 兩頁共用的同步來源, 全部走 _build_state 曝光):
+        #    idle → armed → awaiting_audio → ready → playing → finished → ending → idle
+        self.show_phase = "idle"          # 目前演出階段
+        self.show_slot = "main"           # 目前使用的媒體槽 ("main" / "loop")
+        self.audio_ready = False          # 音響同事是否已按「音響已就緒」
+        self._show_started_at = 0.0       # 本輪演出擊發時刻 (除錯/顯示用)
+        self._show_watch_stop = threading.Event()   # 完成偵測執行緒停止訊號
+        self._show_watch_thread = None
+        self._script_cache = None        # (mtime, dict) — 講稿檔快取 (避免每秒讀檔)
         self._dev_drift = {}              # 🔧 每台設備的「連續進度偏差」次數 (3 次 → SEEK 校正)
+        self._dev_heal_misses = {}        # 🔧 每台設備「連續無回應」次數 (半開偵測, 播放中自癒用)
+        self._dev_heal_last_knock = {}    # 🔧 每台設備上次自癒敲門時間戳 (rate limit, 防循環)
         self._progress_poll_stop = threading.Event()   # 🔧 播放進度輪詢執行緒
         self._progress_poll_thread = None
-        self._local_ip_ts = 0.0           # 🔧 敲門時 local_ip 定期刷新節流
         
         self.config_file = config_file
         self.config = copy.deepcopy(DEFAULT_CONFIG)
         self._migrate_legacy_config()
         self._migrate_legacy_data()
         self.load_config()
+        self._iface_cache = None      # (ts, [ifaces]) — 網卡清單短暫快取 (避免 /api/state 每秒跑 ifconfig)
+        self._iface_cache_ttl = 5.0
+        self.local_ip = self.get_local_ip()   # 依 network_interface (若有設定) 偵測本機 IP
         self.selected_targets = []
         self.prepared_data = {}
         self.pxld_metadata = {}
+        self.resource_stem = ""   # 目前選中的資源 (pxld 主名) → 上傳/播放檔名 = {stem}.bin; 空 = 未選
+        self._prepared_resource = None
+        self._prepared_play_mode = 0
         self.transfer_cancel = threading.Event()
         self._transfer_kb_stop = threading.Event()
         self._transfer_kb_thread = None
@@ -994,8 +1396,11 @@ class NetBusMaster:
         # 🔧 只載入 bins/metadata.json (總幀數等), 不載入大型 bin 資料 —
         # 讓工具重開後連上設備時面板就有正確的 total_frames (進度% 才能顯示)
         self._load_metadata_only()
+        self._web_server = None
         
         threading.Thread(target=self.start_ws_server, daemon=True).start()
+        # 🔧 網頁遙控與 console 同一行程: 跑 NetBusMaster.py 即同時起 web (預設開啟)。
+        self._start_web_server()
 
     def _migrate_legacy_config(self):
         """把舊版 tools/slave_map.json 遷移到 tools/PC/slave_map.json (與本程式同目錄)。
@@ -1111,16 +1516,473 @@ class NetBusMaster:
             
         with open(self.config_file, 'w', encoding='utf-8') as f:
             json.dump(ordered_config, f, indent=4, ensure_ascii=False)
-    
+
+    # ==================== MC 講稿 / 流程卡片 (mc_script.json) ====================
+    #  卡片流水線: 文字卡 (zh/en 講稿) 與按鈕卡 (限演出動作) 串成一個可編輯的流程。
+    #  MC 頁照順序渲染, 按鈕卡依目前演出階段自動啟用/變灰。
+    _SHOW_ACTIONS = (
+        "show_arm", "show_request_play", "show_play", "show_stop",
+        "show_replay", "show_end_play", "show_end", "play_loop", "play_slot",
+    )
+
+    @staticmethod
+    def _default_script():
+        """預設 (空殼): 一個主劇本, 含基本流程按鈕。實際內容由 mc_script.json 提供。"""
+        return {
+            "version": 2,
+            "lang": "zh",
+            "active": "s1",
+            "scripts": [{
+                "id": "s1",
+                "name": "主劇本",
+                "cards": [
+                    {"id": "c1", "type": "text", "zh": "歡迎各位來賓，演出即將開始。",
+                     "en": "Welcome everyone, the show is about to begin."},
+                    {"id": "c2", "type": "button", "action": "show_arm",
+                     "zh": "邀請觀眾準備", "en": "Invite audience"},
+                    {"id": "c3", "type": "button", "action": "show_request_play",
+                     "zh": "準備播放", "en": "Request playback"},
+                    {"id": "c4", "type": "button", "action": "show_play",
+                     "zh": "播放", "en": "Play"},
+                    {"id": "c5", "type": "button", "action": "show_stop",
+                     "zh": "停止", "en": "Stop"},
+                    {"id": "c6", "type": "button", "action": "show_replay",
+                     "zh": "重播", "en": "Replay"},
+                    {"id": "c7", "type": "button", "action": "show_end",
+                     "zh": "結束流程", "en": "End session"},
+                ],
+            }],
+        }
+
+    @staticmethod
+    def _sanitize_cards(cards):
+        """過濾/正規化前端送來的卡片: 只留合法型別與欄位, 防止寫入垃圾。"""
+        out = []
+        if not isinstance(cards, list):
+            return out
+        for i, c in enumerate(cards):
+            if not isinstance(c, dict):
+                continue
+            ctype = c.get("type")
+            if ctype not in ("text", "button"):
+                continue
+            card = {
+                "id": str(c.get("id") or "c{}".format(i + 1))[:32],
+                "type": ctype,
+                "zh": str(c.get("zh") or "")[:4000],
+                "en": str(c.get("en") or "")[:4000],
+            }
+            if ctype == "button":
+                act = c.get("action")
+                if act not in NetBusMaster._SHOW_ACTIONS:
+                    continue
+                card["action"] = act
+                if act == "play_slot":
+                    slot = c.get("slot")
+                    if slot not in NetBusMaster._SLOT_NAMES:
+                        slot = "main"
+                    card["slot"] = slot
+            out.append(card)
+        return out
+
+    def _load_script(self):
+        """讀 mc_script.json (多劇本) → 正規化後回傳。
+
+        結構: {"version":2, "lang":"zh", "active":"<script_id>",
+               "scripts":[{"id","name","cards":[...]}, ...]}
+        🔧 相容舊格式 (只有頂層 cards) → 自動包成單一劇本。
+        🔧 mtime 快取: /api/state 每秒被輪詢, 不必每秒讀檔。
+        """
+        try:
+            mtime = os.stat(SCRIPT_PATH).st_mtime
+        except OSError:
+            mtime = None
+        cache = getattr(self, "_script_cache", None)
+        if cache is not None and mtime is not None and cache[0] == mtime:
+            return cache[1]
+
+        data = None
+        if mtime is not None:
+            try:
+                with open(SCRIPT_PATH, "r", encoding="utf-8") as f:
+                    loaded = json.load(f)
+                if isinstance(loaded, dict):
+                    data = self._normalize_script(loaded)
+            except OSError:
+                pass
+            except Exception as e:
+                print(f"⚠️ [Script] 讀取失敗, 改用預設: {e}")
+        if data is None:
+            data = self._default_script()
+            try:
+                self._write_script_file(data)
+                mtime = os.stat(SCRIPT_PATH).st_mtime
+            except Exception as e:
+                print(f"⚠️ [Script] 建立預設檔失敗: {e}")
+        self._script_cache = (mtime, data)
+        return data
+
+    def _normalize_script(self, loaded):
+        """把任何版本的講稿檔正規化成 {version, lang, active, scripts:[...]}。"""
+        lang = "en" if loaded.get("lang") == "en" else "zh"
+        scripts = []
+        raw = loaded.get("scripts")
+        if isinstance(raw, list) and raw:
+            for i, s in enumerate(raw):
+                if not isinstance(s, dict):
+                    continue
+                cards = self._sanitize_cards(s.get("cards"))
+                sid = str(s.get("id") or "s{}".format(i + 1))[:32]
+                name = str(s.get("name") or "劇本 {}".format(i + 1))[:64]
+                scripts.append({"id": sid, "name": name, "cards": cards})
+        else:
+            # 舊格式: 頂層 cards → 單一劇本
+            cards = self._sanitize_cards(loaded.get("cards"))
+            if cards:
+                scripts.append({"id": "s1", "name": "主劇本", "cards": cards})
+        if not scripts:
+            return self._default_script()
+        active = loaded.get("active")
+        ids = [s["id"] for s in scripts]
+        if active not in ids:
+            active = ids[0]
+        return {"version": 2, "lang": lang, "active": active, "scripts": scripts}
+
+    def _active_cards(self, data):
+        """取目前選中劇本的卡片。"""
+        for s in data.get("scripts", []):
+            if s.get("id") == data.get("active"):
+                return s.get("cards", [])
+        return data.get("scripts", [{}])[0].get("cards", []) if data.get("scripts") else []
+
+    @staticmethod
+    def _write_script_file(data):
+        """原子寫入: 先寫 .tmp 再 os.replace, 避免寫到一半斷電留下半個檔。"""
+        tmp = SCRIPT_PATH + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+            f.flush()
+            try:
+                os.fsync(f.fileno())
+            except Exception:
+                pass
+        os.replace(tmp, SCRIPT_PATH)
+
+    def remote_save_script(self, cards, lang=None, script_id=None, name=None):
+        """儲存指定劇本的卡片 (編輯器按「儲存」)。回傳 (ok, msg)。
+
+        script_id=None → 存到目前選中的劇本; 若該劇本不存在則新增。
+        """
+        clean = self._sanitize_cards(cards)
+        if not clean:
+            return False, "講稿內容為空或格式不合法, 未儲存"
+        data = self._load_script()
+        sid = script_id or data.get("active")
+        target = None
+        for s in data.get("scripts", []):
+            if s.get("id") == sid:
+                target = s
+                break
+        if target is None:
+            sid = sid or "s{}".format(len(data.get("scripts", [])) + 1)
+            target = {"id": str(sid)[:32], "name": str(name or "新劇本")[:64], "cards": []}
+            data.setdefault("scripts", []).append(target)
+        target["cards"] = clean
+        if name:
+            target["name"] = str(name)[:64]
+        data["active"] = target["id"]
+        if lang in ("zh", "en"):
+            data["lang"] = lang
+        try:
+            self._write_script_file(data)
+        except Exception as e:
+            return False, f"寫入失敗: {e}"
+        self._cache_script(data)
+        return True, "已儲存劇本「{}」共 {} 張卡片".format(target["name"], len(clean))
+
+    def remote_set_script(self, script_id):
+        """切換目前使用的劇本 (存後端, 全裝置同步)。回傳 (ok, msg)。"""
+        data = self._load_script()
+        for s in data.get("scripts", []):
+            if s.get("id") == script_id:
+                data["active"] = script_id
+                try:
+                    self._write_script_file(data)
+                except Exception as e:
+                    return False, f"寫入失敗: {e}"
+                self._cache_script(data)
+                return True, "已切換劇本「{}」".format(s.get("name", script_id))
+        return False, "找不到劇本: {}".format(script_id)
+
+    def remote_delete_script(self, script_id):
+        """刪除劇本 (至少保留一個)。回傳 (ok, msg)。"""
+        data = self._load_script()
+        scripts = data.get("scripts", [])
+        if len(scripts) <= 1:
+            return False, "至少需保留一個劇本"
+        remain = [s for s in scripts if s.get("id") != script_id]
+        if len(remain) == len(scripts):
+            return False, "找不到劇本: {}".format(script_id)
+        data["scripts"] = remain
+        if data.get("active") == script_id:
+            data["active"] = remain[0]["id"]
+        try:
+            self._write_script_file(data)
+        except Exception as e:
+            return False, f"寫入失敗: {e}"
+        self._cache_script(data)
+        return True, "已刪除劇本"
+
+    def _cache_script(self, data):
+        """寫檔後立刻更新 mtime 快取 (st_mtime 解析度可能是秒, 不能只靠它)。"""
+        try:
+            mtime = os.stat(SCRIPT_PATH).st_mtime
+        except OSError:
+            mtime = None
+        self._script_cache = (mtime, data)
+
+    def remote_set_lang(self, lang):
+        """切換中/英講稿顯示 (存後端, 全裝置同步)。回傳 (ok, msg)。"""
+        if lang not in ("zh", "en"):
+            return False, f"不支援的語言: {lang}"
+        data = self._load_script()
+        data["lang"] = lang
+        try:
+            self._write_script_file(data)
+        except Exception as e:
+            return False, f"寫入失敗: {e}"
+        self._cache_script(data)
+        return True, "已切換為{}".format("中文" if lang == "zh" else "English")
+
+    # ==================== Wi-Fi QR 憑證 (wifi_qr.json, 不進版控) ====================
+    def _load_wifi(self):
+        """讀 wifi_qr.json → {ssid, password, auth, hidden}。缺檔回空值 (不自動建檔)。"""
+        out = {"ssid": "", "password": "", "auth": "WPA", "hidden": 0}
+        try:
+            with open(WIFI_PATH, "r", encoding="utf-8") as f:
+                d = json.load(f)
+            if isinstance(d, dict):
+                out["ssid"] = str(d.get("ssid") or "")[:64]
+                out["password"] = str(d.get("password") or "")[:128]
+                auth = str(d.get("auth") or "WPA").upper()
+                out["auth"] = auth if auth in ("WPA", "WEP", "NOPASS") else "WPA"
+                out["hidden"] = 1 if d.get("hidden") else 0
+        except OSError:
+            pass
+        except Exception as e:
+            print(f"⚠️ [WiFi] 讀取失敗: {e}")
+        return out
+
+    def remote_save_wifi(self, ssid=None, password=None, auth=None, hidden=None):
+        """儲存 Wi-Fi QR 憑證 (技術台)。回傳 (ok, msg)。空 ssid 視為清空。"""
+        cur = self._load_wifi()
+        if ssid is not None:
+            cur["ssid"] = str(ssid)[:64]
+        if password is not None:
+            cur["password"] = str(password)[:128]
+        if auth is not None:
+            a = str(auth).upper()
+            cur["auth"] = a if a in ("WPA", "WEP", "NOPASS") else "WPA"
+        if hidden is not None:
+            cur["hidden"] = 1 if hidden else 0
+        try:
+            tmp = WIFI_PATH + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(cur, f, indent=2, ensure_ascii=False)
+                f.flush()
+                try:
+                    os.fsync(f.fileno())
+                except Exception:
+                    pass
+            os.replace(tmp, WIFI_PATH)
+        except Exception as e:
+            return False, f"寫入失敗: {e}"
+        return True, "已儲存 Wi-Fi 設定" + ("" if cur["ssid"] else " (SSID 為空)")
+
+    @staticmethod
+    def _wifi_device():
+        """找出 Wi-Fi 介面名稱 (通常是 en0, 但可能不同)。失敗回 'en0'。"""
+        import re as _re
+        import subprocess
+        try:
+            r = subprocess.run(["networksetup", "-listallhardwareports"],
+                               capture_output=True, text=True, timeout=5)
+            m = _re.search(r"Hardware Port: (?:Wi-Fi|AirPort)\s*\nDevice: (\S+)", r.stdout or "")
+            if m:
+                return m.group(1)
+        except Exception:
+            pass
+        return "en0"
+
+    def remote_detect_ssid(self):
+        """嘗試讀出本機目前連線的 Wi-Fi SSID (macOS)。回傳 (ok, ssid/message)。
+
+        🔧 macOS 的隱私限制: 讀取 SSID 需要「位置服務」授權。未授權時
+        networksetup 會回一句誤導的 "not associated", 而 system_profiler /
+        ipconfig 會把 SSID 顯示成 <redacted>。這裡先判斷「是否真的連線」,
+        再區分「沒連線」與「已連線但被系統遮蔽」兩種情況, 給出可行動的提示。
+        """
+        import subprocess
+        if sys.platform != "darwin":
+            return False, "此平台不支援自動偵測，請手動輸入 SSID"
+        dev = self._wifi_device()
+
+        # 1) 是否真的連線? (en0 有 IP 或 system_profiler 說 Connected)
+        connected = False
+        try:
+            r = subprocess.run(["ipconfig", "getifaddr", dev],
+                               capture_output=True, text=True, timeout=5)
+            if (r.stdout or "").strip():
+                connected = True
+        except Exception:
+            pass
+        if not connected:
+            try:
+                r = subprocess.run(["system_profiler", "SPAirPortDataType"],
+                                   capture_output=True, text=True, timeout=15)
+                connected = "Status: Connected" in (r.stdout or "")
+            except Exception:
+                pass
+
+        # 2) 逐一嘗試取得 SSID (networksetup 最直接 → ipconfig getsummary)
+        try:
+            r = subprocess.run(["networksetup", "-getairportnetwork", dev],
+                               capture_output=True, text=True, timeout=5)
+            out = (r.stdout or "").strip()
+            if ":" in out and "not associated" not in out.lower():
+                ssid = out.split(":", 1)[1].strip()
+                if ssid and "<redacted>" not in ssid:
+                    return True, ssid
+        except Exception:
+            pass
+        try:
+            r = subprocess.run(["ipconfig", "getsummary", dev],
+                               capture_output=True, text=True, timeout=5)
+            for line in (r.stdout or "").splitlines():
+                if line.strip().startswith("SSID") and ":" in line:
+                    ssid = line.split(":", 1)[1].strip()
+                    if ssid and "<redacted>" not in ssid:
+                        return True, ssid
+        except Exception:
+            pass
+
+        # 3) 拿不到 → 分辨原因
+        if connected:
+            return False, ("Wi-Fi 已連線，但 macOS 未授權讀取 SSID（系統設定 → 隱私權與安全性 → "
+                           "位置服務，允許終端機 / Python）。請直接手動輸入 SSID 即可。")
+        return False, "目前未連線 Wi-Fi，請手動輸入 SSID"
+
+    def _list_interfaces(self):
+        """列出本機所有 IPv4 網卡 [{"name","ip"}, ...]。失敗回 []。
+
+        帶短暫快取: /api/state 每秒輪詢會呼叫 remote_network_info, 不必每秒跑
+        ifconfig 子行程 (網卡清單很少變動, 5 秒快取已足夠)。
+        """
+        cache = getattr(self, "_iface_cache", None)
+        ttl = getattr(self, "_iface_cache_ttl", 5.0)
+        if cache and (time.time() - cache[0]) < ttl:
+            return cache[1]
+        try:
+            if os.name == "nt":
+                result = self._list_interfaces_windows()
+            else:
+                result = self._list_interfaces_unix()
+        except Exception:
+            result = []
+        self._iface_cache = (time.time(), result)
+        return result
+
+    def _list_interfaces_unix(self):
+        out = []
+        cur = None
+        try:
+            raw = subprocess.check_output(["ifconfig"], text=True, stderr=subprocess.DEVNULL)
+        except Exception:
+            return out
+        for line in raw.splitlines():
+            if not line.startswith((" ", "\t")):
+                cur = line.split(":")[0].strip() if ":" in line else line.split()[0]
+                continue
+            m = re.search(r"inet\s+(\d+\.\d+\.\d+\.\d+)", line)
+            if m and cur:
+                ip = m.group(1)
+                if not ip.startswith("127.") and not any(d["ip"] == ip for d in out):
+                    out.append({"name": cur, "ip": ip})
+        return out
+
+    def _list_interfaces_windows(self):
+        out = []
+        try:
+            raw = subprocess.check_output(["ipconfig"], text=True, stderr=subprocess.DEVNULL)
+        except Exception:
+            return out
+        cur = None
+        for line in raw.splitlines():
+            m_name = re.search(r"adapter\s+(.+?):", line)
+            if m_name:
+                cur = m_name.group(1).strip()
+                continue
+            m_ip = re.search(r"IPv4[^\d]*(\d+\.\d+\.\d+\.\d+)", line)
+            if m_ip and cur:
+                ip = m_ip.group(1)
+                if not ip.startswith("127.") and not any(d["ip"] == ip for d in out):
+                    out.append({"name": cur, "ip": ip})
+        return out
+
+    def _resolve_interface_ip(self, selector):
+        """依 selector 找對應網卡 IP: 支援 IP 精準 / 網卡名 / 子網前綴。找不到回 None。"""
+        if not selector:
+            return None
+        selector = str(selector).strip()
+        if not selector:
+            return None
+        ifaces = self._list_interfaces()
+        for it in ifaces:                     # 1) 直接 IP
+            if it["ip"] == selector:
+                return it["ip"]
+        for it in ifaces:                     # 2) 網卡名
+            if it["name"] == selector:
+                return it["ip"]
+        prefix = selector.rstrip("/")         # 3) 子網前綴 (例 "192.168.8.")
+        if prefix.endswith(".") or re.match(r"^\d+\.\d+\.\d+\.$", prefix):
+            for it in ifaces:
+                if it["ip"].startswith(prefix):
+                    return it["ip"]
+        return None
+
+    def _make_discover_socket(self):
+        """建 DISCOVER 用的 UDP socket, 綁定到選定網卡 (讓廣播從正確 NIC 出去)。"""
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+        ip = self.local_ip
+        if ip and ip not in ("127.0.0.1", "0.0.0.0"):
+            try:
+                s.bind((ip, 0))
+            except Exception:
+                pass
+        return s
+
     def get_local_ip(self):
         """偵測本機 IP (給 slave 連回用的 ws_url)。
 
-        公司內網常沒有網際網路, 8.8.8.8 連不到會回 127.0.0.1 → slave 會連錯;
-        依序嘗試:
-          1. UDP connect 8.8.8.8 (需能路由到網際網路)
-          2. gethostbyname_ex(主機名) 取第一個非 127. 的 IP (內網可用)
-          3. 回退 127.0.0.1
+        依序:
+          1. config `network_interface` 有設定且解析得到 → 用那張
+          2. 本機只有「唯一一張」非 loopback 網卡 → 直接用那張 (最可靠, 不被
+             8.8.8.8 的預設路由誤導)
+          3. 自動偵測: UDP connect 8.8.8.8 → 主機名 → 127.0.0.1
         """
+        sel = self.config.get("network_interface", "")
+        if sel:
+            ip = self._resolve_interface_ip(sel)
+            if ip:
+                return ip
+            print(f"⚠️ [Net] network_interface='{sel}' 找不到對應網卡 IP, 改用唯一網卡/自動偵測")
+
+        # 只有一張非 loopback 網卡時, 直接用那張 (雙網卡時才需要上面 config 指定)
+        ifaces = self._list_interfaces()
+        if len(ifaces) == 1:
+            return ifaces[0]["ip"]
+
         try:
             s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             try:
@@ -1148,7 +2010,7 @@ class NetBusMaster:
         s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         port = self.config.get("ws_port", 8000)
         s.bind(('0.0.0.0', port))
-        s.listen(20)
+        s.listen(128)
         print(f"[WS Server] 監聽 0.0.0.0:{port} ,IP: {self.local_ip}")
         
         while self.running:
@@ -1163,13 +2025,19 @@ class NetBusMaster:
 
         # 🔧 TCP keepalive: 半開連線 (對面靜默消失, 無 FIN/RST) 時讓作業系統及早偵測,
         #    之後 recv 才會拋錯觸發清理, 而不是永久阻塞在 recv 上。
+        #    這正是「判斷 WS 通道本身的連接狀態」——不靠應用層 ping/回應。
         try:
             conn.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
-            # macOS 用 TCP_KEEPALIVE、Linux 用 TCP_KEEPIDLE, 都吃秒數; 設 30s 縮短偵測週期
-            for _opt in ("TCP_KEEPALIVE", "TCP_KEEPIDLE"):
-                if hasattr(socket, _opt):
-                    conn.setsockopt(socket.IPPROTO_TCP, getattr(socket, _opt), 30)
-                    break
+            if hasattr(socket, "SIO_KEEPALIVE_VALS"):
+                # Windows: SIO_KEEPALIVE_VALS = (enable, idle_ms, interval_ms)
+                #   10s 無流量開始探測、每 3s 一次 → 對面消失 ~20s 內被偵測到。
+                conn.ioctl(socket.SIO_KEEPALIVE_VALS, (1, 10000, 3000))
+            else:
+                # macOS 用 TCP_KEEPALIVE、Linux 用 TCP_KEEPIDLE, 都吃秒數; 設 30s 縮短偵測週期
+                for _opt in ("TCP_KEEPALIVE", "TCP_KEEPIDLE"):
+                    if hasattr(socket, _opt):
+                        conn.setsockopt(socket.IPPROTO_TCP, getattr(socket, _opt), 30)
+                        break
         except Exception:
             pass
 
@@ -1237,8 +2105,7 @@ class NetBusMaster:
                 self.save_config()
                 print(f"📝 [Mapping] {cid} IP 紀錄更新 → {client_ip}")
             
-            # 🔧 上線打招呼: 敲門/掃描/主動重連連上都會顯示
-            print(f"👋 [Connect] {cid} 已上線 (PlayID {play_id})")
+            # 🔧 上線打招呼: 敲門/掃描/主動重連連上都會顯示 (只 log 一次, 不再 print 造成重複)
             self.panel.log("ok", f"👋 [Connect] {cid} 已上線 (PlayID {play_id})")
             
             # --- Mid-Stream Join Logic (🔧 延遲補償 + READY 等待, 推算最準確幀號) ---
@@ -1332,14 +2199,6 @@ class NetBusMaster:
         self.panel.update_device(target_cid, status="中途加入")
         self.panel.log("info", f"🔗 [Mid-Join] {target_cid} 開始接回流程 (attempt {_attempt + 1})...")
 
-        # 0. 量測此設備的單向延遲 (RTT/2), 供幀號補償
-        lat_s = 0.0
-        lat = self.measure_latency(target_cid, samples=3)
-        if lat is not None:
-            lat_s = lat / 1000.0
-            self._log_latency([(target_cid, lat)], note="mid-join")
-            self.panel.log("info", f"   📡 {target_cid} latency {lat:.1f}ms → 補償 {lat_s*1000:.0f}ms")
-
         # 非循環且主控已播到結尾 → 視為已播完, 不續播
         total = self._device_total_frames(target_cid)
         if play_mode == 0 and total > 0:
@@ -1363,7 +2222,7 @@ class NetBusMaster:
             # 🔧 先 clear 再 send (修 race); node 每次重抓 (修重連換 dict 的 race)
             node["ready_event"].clear()
             self.send_pkt([target_cid], 0x3009, {
-                "file_name": "data.bin",
+                "file_name": self._bin_name(),
                 "block_id": 0,
                 "play_mode": play_mode
             })
@@ -1383,26 +2242,55 @@ class NetBusMaster:
             self.panel.update_device(target_cid, status="錯誤", error_msg="READY timeout")
             return
 
-        # 3. 就緒瞬間推算目標幀 = (有效播放時間 + 單向延遲補償) * fps
+        # 1.5 🔧 準備檔 READY 後, 先固定等一段 settle, 讓 slave 把 data.bin 真正
+        #    開好/進快取, 之後的 seek 才會快而穩定 (否則在冷檔案上 seek 慢且抖,
+        #    算好的位置一發就落後)。
+        settle = max(0.0, self._cfg_float("midjoin_settle_s", 0.5))
+        if settle > 0:
+            time.sleep(settle)
+
+        # 2. 重測延遲 (3 次平均): min RTT 在抖動下會低估 → 補償偏小 → 追不上,
+        #    改用平均單向延遲給足裕量。
+        lat_s = 0.0
+        samples = max(2, self._cfg_int("midjoin_latency_samples", 3))
+        lat = self.measure_latency(target_cid, samples=samples, use_avg=True)
+        if lat is not None:
+            lat_s = lat / 1000.0
+            self._log_latency([(target_cid, lat)], note="mid-join")
+            self.panel.log("info", f"   📡 {target_cid} latency {lat:.1f}ms (avg) → 補償 {lat_s*1000:.0f}ms")
+
+        # 3. 就緒瞬間推算目標幀 = (有效播放時間 + 平均單向延遲補償 + seek 管線提前量) * 權威 fps
+        #    fps 用 slave 實際渲染 fps (1000/frame_interval_ms), 或權威 fps;
+        #    不用 metadata fps (30) 去算 —— slave 實際用 frame_interval_ms 前進,
+        #    兩者不同 → 追幀越差越多。
+        #    🔧 重連設備剛上線, status_data 可能是舊的 → 先查一次拿到真正的
+        #    frame_interval_ms, 否則 _tracking_fps 會 fallback 到 metadata fps 算錯。
+        self.query_status(target_cid, timeout=1.5)
+        fps = self._tracking_fps(target_cid)
+        lead = max(0, self._cfg_int("midjoin_lead_frames", 3))
         with self.play_lock:
             paused_extra = self.paused_total
             if self.paused_since is not None:
                 paused_extra += time.time() - self.paused_since
+        # 🔧 在「發送前一刻」才取時間戳, 把 compute→send 之間的空窗壓到最小
         elapsed = time.time() - self.playback_start_time - paused_extra
         if elapsed < 0:
             elapsed = 0
-        target_frame = int((elapsed + lat_s) * self.current_fps)
+        target_frame = int((elapsed + lat_s) * fps) + lead
         if total > 0:
             target_frame = target_frame % total if play_mode == 1 else min(target_frame, total - 1)
-        self.panel.log("info", f"🔄 [Mid-Join] {target_cid} → frame {target_frame}")
+        self.panel.log("info", f"🔄 [Mid-Join] {target_cid} → frame {target_frame} (fps={fps}, lead={lead}, lat={lat_s*1000:.0f}ms)")
 
         # 4. 帶幀號播放 + 同步 fps; master 暫停中則讓新裝置也跟上暫停
+        #    🔧 只有「權威 fps 真的開啟」才對單台重連設備廣播 0x3001, 否則讓它
+        #    跟其他設備一樣吃自己的 frame_interval_ms —— 之前無條件廣播 30 就是
+        #    重連後越播越慢的元兇。
         self.send_pkt([target_cid], 0x300A, {"start_frame": target_frame})
-        if self.current_fps > 0:
+        if self._play_fps_value() > 0:
             self.send_pkt([target_cid], 0x3001, {
                 "total_blocks": 0,
                 "frames_per_block": 0,
-                "fps": int(self.current_fps)
+                "fps": int(fps)
             })
         if paused:
             self.send_pkt([target_cid], 0x3005, {"pause": 1})
@@ -1411,7 +2299,7 @@ class NetBusMaster:
         self.panel.update_device(target_cid, current_frame=target_frame)
 
         # 5. 🔧 接回後驗證閉環: 確認 slave 真的開始播, 進度偏差就 SEEK 拉回
-        ok = self._verify_join(target_cid, target_frame)
+        ok = self._verify_join(target_cid, target_frame, lead_ms=lat_s)
         if not ok and _attempt == 0:
             self.panel.log("warn", f"🔁 [Mid-Join] {target_cid} 接回後未開始播放 → 整輪重來一次")
             time.sleep(1.0)
@@ -1420,12 +2308,15 @@ class NetBusMaster:
         if ok:
             self.panel.log("ok", f"✅ [Mid-Join] {target_cid} 已接回播放 (frame {target_frame}{', 同步暫停' if paused else ''})")
 
-    def _verify_join(self, target_cid, target_frame, rounds=3):
+    def _verify_join(self, target_cid, target_frame, rounds=3, lead_ms=0.0):
         """接回後驗證: 輪詢 slave 狀態, 確認 stream 真的有在跑且進度正確。
 
         回 True = 播放中/已對齊; False = 3 輪都未開始 (接口/狀態沒生效)。
         進度偏差超過容差 → 發 0x3004 SEEK 校正 (slave 端 seek 後回 0x3008,
         狀態自動回 PLAYING, 不需要重送 0x300A)。
+
+        🔧 lead_ms: 接回時量的單向延遲補償, 校正基準要含它 (與 target_frame 一致),
+           否則校正會把延遲補償當偏差抵消掉。
         """
         for rnd in range(1, rounds + 1):
             time.sleep(1.2)
@@ -1445,9 +2336,11 @@ class NetBusMaster:
             self.panel.update_device(target_cid, current_frame=cur, mem_free=mem_free)
             total = self._device_total_frames(target_cid)
             if pos is not None and total > 0:
-                expected = self._expected_frame(target_cid)
+                expected = self._expected_frame(target_cid, lead_ms=lead_ms)
                 drift = abs(pos - expected)
-                drift_tol = max(30, int(total * 0.03))
+                # 🔧 容忍度收緊: 重連設備「落後幾幀」也要被抓到並 SEEK 拉回。
+                #    舊值 max(30, 3%) = 282 幀, 小落後永遠不觸發校正。
+                drift_tol = max(3, int(total * 0.005))
                 if drift > drift_tol:
                     self.panel.log("warn", f"   🩹 [Verify] {target_cid} 進度偏差 {drift} 幀 (pos={pos}, expect={expected}) → SEEK 校正")
                     self.send_pkt([target_cid], 0x3004, {"target_block": 0, "target_frame": expected})
@@ -1487,11 +2380,15 @@ class NetBusMaster:
             return 0
         return self.pxld_metadata.get(play_id, {}).get("total_frames", 0) or 0
 
-    def _expected_frame(self, cid):
+    def _expected_frame(self, cid, lead_ms=0.0):
         """依主控時鐘推算該設備「現在應該在哪一幀」。
 
         有效播放時間 = now - playback_start_time - 暫停時間; 循環模式取模,
         非循環 clamp 到最後一幀。中途加入與進度校正共用此推算, 保證一致。
+
+        🔧 lead_ms: 校正時傳入「接回補償 (單向延遲)」, 讓校正基準與接回落點一致;
+           否則 _verify_join 用無補償的 expected 當基準, 會把剛設的延遲補償
+           當成「偏差」又 SEEK 拉回去 —— 補償設了等於白設。
         """
         with self.play_lock:
             paused_extra = self.paused_total
@@ -1500,7 +2397,8 @@ class NetBusMaster:
         elapsed = time.time() - self.playback_start_time - paused_extra
         if elapsed < 0:
             elapsed = 0
-        frame = int(elapsed * self.current_fps)
+        fps = self._tracking_fps(cid)
+        frame = int((elapsed + lead_ms) * fps)
         total = self._device_total_frames(cid)
         if total > 0:
             if self.current_play_mode == 1:
@@ -1508,6 +2406,117 @@ class NetBusMaster:
             else:
                 frame = min(frame, max(0, total - 1))
         return frame
+
+    # ==================== 權威播放 fps (config) ====================
+    def _play_fps_value(self):
+        """權威播放 fps: play_fps 優先, 其次 active_sync_fps, 否則 0 (=自動用 metadata)。
+
+        這是「同步計算 / 重連追幀 / 起播廣播」的唯一真相源 —— PC 推算的幀號
+        必須與設備實際播放節拍一致, 否則重連設備會用錯 fps 越播越落後。
+        """
+        play = self._cfg_int("play_fps", 0)
+        if play > 0:
+            return play
+        return self._cfg_int("active_sync_fps", 0)
+
+    def _slave_frame_fps(self, cid):
+        """slave 實際渲染幀率 = 1000 / frame_interval_ms (從 0x1102 回報讀取)。
+
+        🔧 這是追幀的真正權威 fps: slave 的 stream_pos_frame 就是照「渲染節拍」前進,
+           而渲染節拍由 System.frame_interval_ms 決定 (不是動畫 metadata 的 fps)。
+           若 PC 用 metadata 30fps 去算「現在該在哪一幀」, slave 實際用 20ms=50fps
+           前進 → 越追越不準, 且隨時間漂移。讀不到時才 fallback。
+        """
+        node = self.slaves.get(cid)
+        if node:
+            sd = node.get("status_data") or {}
+            fim = sd.get("frame_interval_ms")
+            if fim:
+                try:
+                    f = 1000.0 / float(fim)
+                    if f > 0:
+                        return f
+                except Exception:
+                    pass
+        return float(self._play_fps_value() or self.current_fps or 40)
+
+    def _tracking_fps(self, cid):
+        """追幀用的 fps: 有權威 fps (play_fps/active_sync_fps) 用它, 否則用 slave 實際渲染 fps。"""
+        v = self._play_fps_value()
+        if v > 0:
+            return float(v)
+        return self._slave_frame_fps(cid)
+
+    def _apply_play_fps(self):
+        """起播時: 依 config 設定權威 fps (current_fps), 需要時補一次 0x3001 廣播。
+
+        play_fps > 0 → current_fps = play_fps; active_sync 沒開時起播廣播一次,
+                       讓所有設備真的以 play_fps 播 (active_sync 有週期廣播, 不用補)。
+        active_sync_fps > 0 (play_fps=0) → current_fps = active_sync_fps。
+        兩者都 0 → 保持 metadata fps (舊行為)。
+        """
+        play = self._cfg_int("play_fps", 0)
+        active = self._cfg_int("active_sync_fps", 0)
+        if play > 0:
+            self.current_fps = play
+            if active <= 0:
+                self.send_pkt(self.selected_targets, 0x3001, {
+                    "total_blocks": 0, "frames_per_block": 0, "fps": play})
+                self.panel.log("info", f"🎬 [play_fps] 起播同步 fps={play}")
+        elif active > 0:
+            self.current_fps = active
+
+    # ==================== 網頁遙控 HTTP 服務 (與 console 同一行程) ====================
+    def _start_web_server(self):
+        """啟動網頁遙控 HTTP 服務 —— 跑在 NetBusMaster 同一行程, 操作的就是本實例。
+
+        🔧 綁定到「當前選中的網卡 IP」(self.local_ip), 只讓那一張網卡連入 (更準確);
+            local_ip 無效 (127.0.0.1 / 0.0.0.0 / 空) 時才 fallback 0.0.0.0。
+        """
+        if not self._cfg_int("web_enable", 1):
+            return
+        port = self._cfg_int("web_port", 8080)
+        _WebHandler.master = self
+        bind_ip = self.local_ip if self.local_ip not in ("127.0.0.1", "0.0.0.0", "") else "0.0.0.0"
+        try:
+            self._web_server = ThreadingHTTPServer((bind_ip, port), _WebHandler)
+        except OSError as e:
+            print(f"⚠️ [Web] 無法綁定 {bind_ip}:{port} ({e}), 回退 0.0.0.0")
+            bind_ip = "0.0.0.0"
+            try:
+                self._web_server = ThreadingHTTPServer((bind_ip, port), _WebHandler)
+            except OSError as e2:
+                print(f"⚠️ [Web] 0.0.0.0:{port} 也無法監聽: {e2}")
+                return
+        threading.Thread(target=self._web_server.serve_forever, daemon=True).start()
+        url = f"http://{self.local_ip}:{port}" if bind_ip != "0.0.0.0" else f"http://{self.local_ip}:{port}"
+        print(f"🌐 [Web] 網頁遙控已啟動 (綁定 {bind_ip}:{port}, 只有這張網卡可連入):")
+        print(f"      → {url}")
+        print(f"   💡 從別台機器連入請用上面的網址; 連不上多半是 macOS 防火牆擋了入站連線")
+        print(f"      (系統設定 → 網路 → 防火牆, 允許 Python 接受連入)。")
+        if self._cfg_int("web_open_browser", 1):
+            def _open():
+                try:
+                    time.sleep(1.2)
+                    webbrowser.open(url)
+                except Exception as e:
+                    print(f"⚠️ [Web] 自動開瀏覽器失敗: {e}")
+            threading.Thread(target=_open, daemon=True).start()
+
+    def _restart_web_server(self):
+        """重啟網頁伺服器 (換網卡後重綁到新 IP)。WS 伺服器不受影響。"""
+        old = getattr(self, "_web_server", None)
+        if old is not None:
+            try:
+                old.shutdown()
+            except Exception:
+                pass
+            try:
+                old.server_close()
+            except Exception:
+                pass
+        self._web_server = None
+        self._start_web_server()
 
     def dispatch_logic(self, cid, cmd, payload):
         c_def = self.store.get(cmd)
@@ -1572,17 +2581,18 @@ class NetBusMaster:
         
         elif cmd == 0x100B:
             # 🔧 TIME_SYNC_RSP: 延遲量測回應
-            #    t0 = 本機送出時刻, t1 = slave 收到時刻 (received_at_ms, slave 時鐘),
-            #    t2 = 本機收到時刻 → RTT = t2-t0; 時鐘偏移 = t1 - (t0+t2)/2
+            #    t0 = 本機送出時刻, t2 = 本機收到時刻 (都是 master 的 epoch 時鐘)
+            #    → RTT = t2 - t0。單向延遲 ≈ min_RTT / 2。
+            #    ⚠️ 不再算「時鐘偏移」: slave 回傳的 received_at_ms 是 time.ticks_ms()
+            #    (開機以來的毫秒), 跟 master 的 epoch 秒不同時間基準, 相減只會得到
+            #    約 -57 年的垃圾值, 對延遲補償毫無用處, 已移除。
             if cid in self.slaves:
                 node = self.slaves[cid]
                 t2 = time.time()
                 t0 = node.get("ping_t0", t2)
-                t1 = args.get("received_at_ms", 0) / 1000.0
                 rtt = t2 - t0
                 if rtt >= 0:
                     node["ping_rtt"] = rtt * 1000.0
-                    node["ping_offset"] = (t1 - (t0 + t2) / 2.0) * 1000.0
                     node["ping_event"].set()
         
         elif cmd == 0x3102:
@@ -1677,49 +2687,235 @@ class NetBusMaster:
             # 只要 tid 在 self.slaves 中有記錄 (即 socket 未被物理移除)，就嘗試發送
             # 即使標記為 "離線" 也可以嘗試發送，因為 socket 可能只是暫時沒心跳
             if tid in self.slaves:
+                node = self.slaves[tid]
                 try:
-                    self.slaves[tid]["conn"].sendall(pkt)
-                except:
-                    pass
+                    node["conn"].sendall(pkt)
+                except Exception:
+                    # 🔧 WS 通道層級斷線偵測: send 失敗 (RST/EPIPE/半開連線重傳超時)
+                    #    = 通道已死 → 關閉 socket, 讓 handle_client 的 recv 結束並
+                    #    在 finally 標離線 (不靠任何定時 health 檢查)。
+                    try:
+                        node["conn"].close()
+                    except Exception:
+                        pass
             # 如果 tid 根本不在 slaves (socket 已 close/清除)，則無法發送，忽略
     
-    # ==================== 延遲量測 / 紀錄 (0x100A/0x100B TIME_SYNC) ====================
-    def measure_latency(self, cid, samples=None):
-        """量測單一設備的單向延遲 (ms)。回傳平均值或 None (無回應)。
+    # ==================== 連線穩定 (半開偵測 / 敲門自癒, 純 master 端) ====================
+    def _probe_alive(self, cid, timeout=0.7):
+        """對單台設備 ping (0x100A→0x100B), 回 True = 活著, False = 無回應 (半開/離線)。
 
-        利用 0x100A TIME_SYNC (master_time_ms) → slave 回 0x100B TIME_SYNC_RSP
-        (received_at_ms = slave 本地收到時刻)。每個樣本取:
-          RTT    = t2 - t0            (本機送出→收到)
-          偏移   = t1 - (t0+t2)/2     (slave 時鐘 − master 時鐘)
-        NTP 式取「最小 RTT」樣本 (佇列不對稱最小、最可信):
-          單向延遲 ≈ min_RTT / 2      (單一路徑下最精確的估計)
-        另把時鐘偏移一併存下, 供顯示/對時參考。
+        半開連線的特徵: master 端 sendall 寫得進去 (kernel 收下), 但對面收不到、
+        也回不來 → ping 逾時。正常設備會立刻回 0x100B。這是「有沒有回應」的
+        一次性主動檢查, 只在操作者擊發播放前 / 進度輪詢發現異常時執行,
+        不是背景定時 health 檢查 (見 doc/03_notes/12)。
+        """
+        node = self.slaves.get(cid)
+        if not node:
+            return False
+        lock = node.get("ping_lock") or threading.Lock()
+        try:
+            with lock:
+                evt = node["ping_event"]
+                evt.clear()
+                node["ping_rtt"] = None
+                node["ping_t0"] = time.time()
+                self.send_pkt([cid], 0x100A, {"master_time_ms": int(time.time() * 1000) & 0xFFFFFFFF})
+                if evt.wait(timeout=timeout):
+                    return self.slaves.get(cid) is node   # 🔧 防重連換 dict 的誤判
+                return False
+        except Exception:
+            return False
+
+    def _knock_ips_quiet(self, ips):
+        """對指定 IP 靜默 unicast DISCOVER (0x1001), 不打印 (供自癒內部呼叫)。"""
+        if not ips:
+            return
+        try:
+            self.local_ip = self.get_local_ip()
+            pkt = self._build_discover_packet()
+            port = self.config.get("upt_port", 9000)
+            s = self._make_discover_socket()
+            try:
+                for ip in ips:
+                    for _ in range(3):
+                        try:
+                            s.sendto(pkt, (ip, port))
+                        except Exception:
+                            pass
+            finally:
+                s.close()
+        except Exception:
+            pass
+
+    def _stabilize_connections(self, targets):
+        """進入播放/準備前的「穩定連結」閘門: 並行 ping 所有目標, 把半開/無回應的
+        設備敲門叫回重連, 確保 0x3009/0x300A 發出去時每台都接得到。
+
+        回傳 (alive, repaired, still_dead):
+          alive       = 原本就活著的設備
+          repaired    = 敲門後重連成功的設備
+          still_dead  = 敲門後仍沒回來的設備 (這次播放先警告, 之後可手動掃描)
+        """
+        if not self._cfg_int("preplay_liveness_check", 1):
+            return list(targets), [], []
+        targets = [t for t in targets if t in self.slaves]
+        if not targets:
+            return [], [], []
+
+        alive, dead = [], []
+        with ThreadPoolExecutor(max_workers=min(64, len(targets))) as ex:
+            futs = {ex.submit(self._probe_alive, t): t for t in targets}
+            for f in futs:
+                (alive if f.result() else dead).append(futs[f])
+
+        if not dead:
+            return alive, [], []
+
+        ips = []
+        for t in dead:
+            ip = self.config.get("mapping", {}).get(t, {}).get("ip", "")
+            if ip and ip not in ips:
+                ips.append(ip)
+        if not ips:
+            return alive, [], dead
+
+        self.panel.log("warn", f"🔍 [LinkGuard] {len(dead)} 台無回應, 敲門自癒: {', '.join(dead)}")
+        self._knock_ips_quiet(ips)
+
+        repaired, still_dead = [], list(dead)
+        deadline = time.time() + 6.0
+        while time.time() < deadline and still_dead:
+            time.sleep(0.6)
+            still = []
+            for t in still_dead:
+                (repaired if self._probe_alive(t, timeout=0.7) else still).append(t)
+            still_dead = still
+
+        if repaired:
+            self.panel.log("ok", f"✅ [LinkGuard] 已自癒 {len(repaired)} 台: {', '.join(repaired)}")
+        if still_dead:
+            self.panel.log("warn", f"⚠️ [LinkGuard] 仍無回應 {len(still_dead)} 台: {', '.join(still_dead)}")
+        return alive, repaired, still_dead
+
+    def _maybe_heal_half_dead(self, tid):
+        """播放途中: 設備在 self.slaves (WS 通道還在) 但 0x1101 無回應 = 半開連線。
+
+        連續 N 次無回應且超過冷卻時間 → 敲門一次叫它斷掉舊 WS 重連 (重連後
+        handle_client 會觸發 mid-join 自動追幀接回)。rate limit + 冷卻避免回到
+        舊版「定時敲門 → ECONNABORTED 循環」的老問題。
+        """
+        if not self._cfg_int("midplay_auto_heal", 1):
+            return
+        if tid not in self.slaves:
+            # 已完全離線 → 不主動敲門 (遵循「重連由操作者發起」原則), 交給手動掃描
+            self._dev_heal_misses[tid] = 0
+            return
+        misses = self._dev_heal_misses.get(tid, 0) + 1
+        self._dev_heal_misses[tid] = misses
+        threshold = max(2, self._cfg_int("midplay_heal_miss_threshold", 3))
+        if misses < threshold:
+            return
+        now = time.time()
+        cooldown = max(5.0, self._cfg_float("midplay_heal_cooldown_s", 60.0))
+        if now - self._dev_heal_last_knock.get(tid, 0) < cooldown:
+            return
+        self._dev_heal_last_knock[tid] = now
+        self._dev_heal_misses[tid] = 0
+        ip = self.config.get("mapping", {}).get(tid, {}).get("ip", "")
+        if not ip:
+            return
+        self.panel.log("warn", f"🩹 [LinkGuard] {tid} 連續 {misses} 次無回應 (半開?) → 敲門自癒")
+        self._knock_ips_quiet([ip])
+
+    def _wait_all_ready(self, targets, timeout=5.0, retries=1):
+        """等所有目標回 0x3008 READY_ACK (0x3009 開檔完成); 未回的設備重發 0x3009 再等。
+
+        這是「擊發前」的關鍵閘門: slave 收到 0x3009 後要開檔 + 讀第一幀, 期間若
+        0x300A 就到, slave 的 play 指令會在 LOADING 狀態被靜默丟棄 (狀態機只接受
+        READY/PAUSED → PLAYING), 那台就永遠不亮。慢開檔的設備 (24MB data.bin 在
+        SD 卡上開檔秒數不一) 就是「隨機一台沒反應」的來源。等齊 READY 再發 0x300A
+        就沒有這個競爭。
+
+        回傳仍沒 READY 的設備清單 (這些多半半死/過慢, 交給 mid-play 自癒)。
+        """
+        pending = [t for t in targets if t in self.slaves]
+        for r in range(retries + 1):
+            if not pending:
+                break
+            deadline = time.time() + timeout
+            while time.time() < deadline:
+                still = [t for t in pending
+                         if not (self.slaves.get(t) and self.slaves[t].get("ready_event", threading.Event()).is_set())]
+                pending = still
+                if not pending:
+                    break
+                time.sleep(0.1)
+            if pending and r < retries:
+                # 重發 0x3009 給還沒 READY 的設備 (清掉可能剛好到的 stale ready 再等)
+                for t in pending:
+                    node = self.slaves.get(t)
+                    if node:
+                        node["ready_event"].clear()
+                self.send_pkt(pending, 0x3009, {
+                    "file_name": self._bin_name(),
+                    "block_id": 0,
+                    "play_mode": self.current_play_mode
+                })
+        return pending
+
+    # ==================== 延遲量測 / 紀錄 (0x100A/0x100B TIME_SYNC) ====================
+    def measure_latency(self, cid, samples=None, warmup=0.0, use_avg=False):
+        """量測單一設備的單向延遲 (ms)。回傳估計值或 None (無回應)。
+
+        利用 0x100A TIME_SYNC → slave 回 0x100B (RTT 由 master 送出/收到時間算,
+        不依賴 slave 時鐘)。每個樣本取 RTT = t2 - t0 (本機送出→收到)。
+
+        use_avg=False (預設): NTP 式取「最小 RTT」樣本 (佇列不對稱最小、最可信),
+          單向延遲 ≈ min_RTT / 2 —— 適合「展示」與「profile」。
+        use_avg=True: 單向延遲 ≈ avg_RTT / 2 —— 重連追幀用。min RTT 在抖動下
+          會低估, 導致補償偏小、重連後追不上; 平均給足裕量 (使用者回報的落後主因)。
+
+        🔧 warmup: 剛重連時 TCP 仍在 slow-start / 緩衝冷, 前幾個 RTT 明顯偏高。
+        🔧 race: 每圈重抓 node; 等待期間 slave 又重連把 node 換掉 → 該圈作廢。
         """
         node = self.slaves.get(cid)
         if not node:
             return None
         samples = int(samples if samples is not None else self._cfg_int("latency_samples", 5))
         samples = max(1, samples)
-        samples_data = []  # (rtt_ms, offset_ms)
-        with node["ping_lock"]:  # 🔧 避免與健康檢查探測併發互相覆蓋 ping_t0
-            for _ in range(samples):
-                node["ping_event"].clear()
+        if warmup > 0:
+            time.sleep(warmup)
+        samples_data = []  # rtt_ms
+        for _ in range(samples):
+            node = self.slaves.get(cid)   # 🔧 每圈重抓, 防重連換 dict
+            if node is None:
+                return None
+            lock = node.get("ping_lock") or threading.Lock()
+            with lock:
+                evt = node["ping_event"]
+                evt.clear()
                 node["ping_rtt"] = None
-                node["ping_offset"] = None
                 node["ping_t0"] = time.time()
                 self.send_pkt([cid], 0x100A, {"master_time_ms": int(time.time() * 1000) & 0xFFFFFFFF})
-                if node["ping_event"].wait(timeout=1.0):
-                    rtt = node.get("ping_rtt")
-                    if rtt is not None:
-                        samples_data.append((rtt, node.get("ping_offset", 0.0)))
+                if evt.wait(timeout=1.0):
+                    # 🔧 確認 node 沒在等待期間被重連換掉 (否則 rtt 寫到新 node, 舊 evt 是誤觸發)
+                    if self.slaves.get(cid) is node:
+                        rtt = node.get("ping_rtt")
+                        if rtt is not None:
+                            samples_data.append(rtt)
         if not samples_data:
             return None
-        # NTP 式: 最小 RTT 樣本最可信 (佇列不對稱最小)
-        best = min(samples_data, key=lambda x: x[0])
-        node["min_rtt_ms"] = best[0]
-        node["avg_rtt_ms"] = sum(r for r, _ in samples_data) / len(samples_data)
-        node["latency_ms"] = best[0] / 2.0
-        node["clock_offset_ms"] = best[1]
+        # 🔧 丟掉第一個樣本 (暖機高值殘留); 至少留 1 個
+        if len(samples_data) > 2:
+            samples_data = samples_data[1:]
+        best = min(samples_data)
+        avg = sum(samples_data) / len(samples_data)
+        node = self.slaves.get(cid)
+        if node is None:
+            return (avg / 2.0) if use_avg else (best / 2.0)
+        node["min_rtt_ms"] = best
+        node["avg_rtt_ms"] = avg
+        node["latency_ms"] = (avg / 2.0) if use_avg else (best / 2.0)
         return node["latency_ms"]
 
     def _log_latency(self, rows, note=""):
@@ -1764,10 +2960,9 @@ class NetBusMaster:
                 node = self.slaves.get(tid, {})
                 min_rtt = node.get("min_rtt_ms")
                 avg_rtt = node.get("avg_rtt_ms")
-                off = node.get("clock_offset_ms")
                 extra = ""
                 if min_rtt is not None:
-                    extra = f"  (minRTT {min_rtt:5.1f}ms / avgRTT {avg_rtt:5.1f}ms / offset {off:+7.2f}ms)"
+                    extra = f"  (minRTT {min_rtt:5.1f}ms / avgRTT {avg_rtt:5.1f}ms)"
                 print(f"  ✅ {tid}: 單向 {lat:6.1f} ms{extra}")
                 rows.append((tid, lat))
         if rows:
@@ -1775,6 +2970,57 @@ class NetBusMaster:
                 note = input("  📝 備註 (Enter=無): ").strip()
             self._log_latency(rows, note=note)
             print(f"💾 已紀錄 {len(rows)} 筆 → {os.path.join(LOG_DIR, self.config.get('latency_log_file', 'latency_log.csv'))}")
+
+    def latency_probe(self, targets=None, apply=False):
+        """延遲偵查: 量所有目標的單向延遲, 統計 min/avg/max。
+
+        apply=True 時套用「audio_delay_base_ms + max(網路單向延遲)」到 sync_delay_ms。
+        audio_delay_base_ms 是音效啟動延遲基線 (miniaudio 開檔/解碼/音效卡 buffer,
+        ping 量不到, 需手填); max(網路延遲) 是這次量到最慢那台的單向延遲。
+        回傳 (stats, applied_ms)。
+        """
+        targets = list(targets) if targets is not None else list(self.selected_targets)
+        if not targets:
+            self.panel.log("warn", "⚠️ 延遲偵查: 無目標設備")
+            return None, None
+        samples = self._cfg_int("latency_probe_samples", 5)
+        warmup = self._cfg_float("latency_probe_warmup_s", 0.4)
+        self.panel.log("info", f"📡 [延遲偵查] 開始量測 {len(targets)} 台 (samples={samples}, warmup={warmup}s)...")
+        rows = []
+        for tid in targets:
+            lat = self.measure_latency(tid, samples=samples, warmup=warmup)
+            if lat is None:
+                self.panel.log("warn", f"   ❌ {tid}: 無回應")
+                continue
+            node = self.slaves.get(tid, {})
+            rows.append({
+                "tid": tid,
+                "pid": self.config.get("mapping", {}).get(tid, {}).get("play_id"),
+                "latency_ms": round(lat, 2),
+                "min_rtt_ms": round(node.get("min_rtt_ms", 0), 2),
+                "avg_rtt_ms": round(node.get("avg_rtt_ms", 0), 2),
+            })
+            self.panel.log("info", f"   ✅ {tid} (PlayID {rows[-1]['pid']}): 單向 {lat:.2f}ms (minRTT {rows[-1]['min_rtt_ms']}ms)")
+        if not rows:
+            self.panel.log("warn", "⚠️ 延遲偵查: 全部無回應")
+            return None, None
+        lats = [r["latency_ms"] for r in rows]
+        stats = {
+            "count": len(rows),
+            "min_ms": round(min(lats), 2),
+            "avg_ms": round(sum(lats) / len(lats), 2),
+            "max_ms": round(max(lats), 2),
+            "rows": rows,
+        }
+        self.panel.log("ok", f"📊 [延遲偵查] 結果: min {stats['min_ms']}ms / avg {stats['avg_ms']}ms / max {stats['max_ms']}ms (共 {stats['count']} 台)")
+        applied_ms = None
+        if apply:
+            base = self._cfg_int("audio_delay_base_ms", 0)
+            applied_ms = int(round(base + stats["max_ms"]))
+            self.config["sync_delay_ms"] = applied_ms
+            self.save_config()
+            self.panel.log("ok", f"⚙️ [延遲偵查] 已套用 sync_delay_ms = {base}ms(音效基線) + {stats['max_ms']}ms(最大網路延遲) = {applied_ms}ms")
+        return stats, applied_ms
 
     def _get_mode_name(self, cid, mode_id):
         """查詢單一本地燈效模式的名稱 (0x3107→0x3108), 失敗回 '?'。
@@ -1878,7 +3124,6 @@ class NetBusMaster:
             lat = self.measure_latency(cid, samples=3)
             if lat is not None:
                 profile["latency_ms"] = round(lat, 2)
-                profile["clock_offset_ms"] = round(node.get("clock_offset_ms") or 0.0, 2)
         # 檔案清單
         if manifest is not None:
             profile["files"] = sorted(manifest.keys())
@@ -1911,7 +3156,7 @@ class NetBusMaster:
             print(f"      frame_interval_ms: {st.get('frame_interval_ms', '?')}  │  played_frames: {st.get('played_frames', '?')}  │  stream_frame_count: {st.get('stream_frame_count', '?')}")
             print(f"      stream_mode: {st.get('stream_mode', '?')}  │  stream_active: {st.get('stream_active', '?')}")
         if "latency_ms" in profile:
-            print(f"      單向延遲: {profile['latency_ms']} ms  │  offset: {profile.get('clock_offset_ms')} ms")
+            print(f"      單向延遲: {profile['latency_ms']} ms")
         modes = profile.get("modes") or []
         if modes:
             print(f"      可播放模式 {len(modes)} 個:")
@@ -1950,6 +3195,7 @@ class NetBusMaster:
         print("  6. 重試失敗/續傳 (斷點續傳)")
         print("  7. 軟重啟設備 (0x100F Reboot)")
         print("  8. 引導修復 (bootstrap 新韌體到 root)")
+        print("  9. 批量 Config 更新 (Profile/模板 → 依順序上傳)")
         print("  q. 返回")
         
         choice = input("\n👉 請選擇: ").strip().lower()
@@ -1972,6 +3218,8 @@ class NetBusMaster:
             self._soft_reboot_devices()
         elif choice == '8':
             self._bootstrap_root_fix()
+        elif choice == '9':
+            self._batch_config_update()
         elif choice == 'q':
             self.panel.start()
             return
@@ -2104,70 +3352,54 @@ class NetBusMaster:
         return node.get("remote_pending", -1) == 0
 
     def _confirm_path_batch(self, tids, remote_path, wait=3.0):
-        """廣播 0x2008 FILE_CONFIRM 給多台設備 (同時發送), 回傳 {tid: bool}。
+        """平行對多台設備發 0x2008 FILE_CONFIRM (每台獨立並行), 回傳 {tid: bool}。
 
         以 slave 回覆的 pending 欄位判定是否真的清掉; 失敗的再重試一次 (slave
         可能忙線未即時清), 避免假確認留下的 pending 在重啟後被自動回滾。
         """
-        nodes = {}
-        for tid in tids:
-            node = self.slaves.get(tid)
-            if node:
-                node["query_event"].clear()
-                node["remote_pending"] = -1
-                nodes[tid] = node
-        if not nodes:
+        return self._commit_path_batch(tids, remote_path, 0x2008, wait=wait)
+
+    def _undo_path_batch(self, tids, remote_path, wait=3.0):
+        """平行對多台設備發 0x200A FILE_UNDO (每台獨立並行), 回傳 {tid: bool}。"""
+        return self._commit_path_batch(tids, remote_path, 0x200A, wait=wait)
+
+    def _commit_path_batch(self, tids, remote_path, cmd, wait=3.0):
+        """對每台設備「平行」發送 confirm/undo (cmd 0x2008/0x200A), 回傳 {tid: bool}。
+
+        像上傳一樣用 ThreadPoolExecutor 每台獨立並行發送+等待, 一台卡住不拖住其他台;
+        失敗自動重試一次。原先是「一次廣播後串行等待」, 慢的那台會拖累全部。
+        """
+        tids = [t for t in tids if t in self.slaves]
+        if not tids:
             return {}
-        self.send_pkt(list(nodes.keys()), 0x2008, {"path": remote_path})
-        res = {}
-        for tid, node in nodes.items():
+
+        def _commit_one(tid):
+            node = self.slaves.get(tid)
+            if not node:
+                return tid, False
+            node["query_event"].clear()
+            node["remote_pending"] = -1
+            self.send_pkt([tid], cmd, {"path": remote_path})
             if node["query_event"].wait(timeout=wait):
-                res[tid] = node.get("remote_pending", -1) == 0
-            else:
-                res[tid] = False
+                return tid, (node.get("remote_pending", -1) == 0)
+            return tid, False
+
+        def _run_all(ts):
+            res = {}
+            with ThreadPoolExecutor(max_workers=min(16, len(ts))) as ex:
+                futs = [ex.submit(_commit_one, tid) for tid in ts]
+                for f in futs:
+                    tid, ok = f.result()
+                    res[tid] = ok
+            return res
+
+        res = _run_all(tids)
         # 🔧 失敗的重試一次 (pending 可能因 slave 忙線未即時清)
         retry_tids = [tid for tid, ok in res.items() if not ok]
         if retry_tids:
             time.sleep(0.5)
-            rnodes = {tid: self.slaves[tid] for tid in retry_tids if tid in self.slaves}
-            for node in rnodes.values():
-                node["query_event"].clear()
-                node["remote_pending"] = -1
-            self.send_pkt(list(rnodes.keys()), 0x2008, {"path": remote_path})
-            for tid, node in rnodes.items():
-                if node["query_event"].wait(timeout=wait):
-                    res[tid] = node.get("remote_pending", -1) == 0
-        return res
-
-    def _undo_path_batch(self, tids, remote_path, wait=3.0):
-        """廣播 0x200A FILE_UNDO 給多台設備 (同時發送), 回傳 {tid: bool}。"""
-        nodes = {}
-        for tid in tids:
-            node = self.slaves.get(tid)
-            if node:
-                node["query_event"].clear()
-                node["remote_pending"] = -1
-                nodes[tid] = node
-        if not nodes:
-            return {}
-        self.send_pkt(list(nodes.keys()), 0x200A, {"path": remote_path})
-        res = {}
-        for tid, node in nodes.items():
-            if node["query_event"].wait(timeout=wait):
-                res[tid] = node.get("remote_pending", -1) == 0
-            else:
-                res[tid] = False
-        retry_tids = [tid for tid, ok in res.items() if not ok]
-        if retry_tids:
-            time.sleep(0.5)
-            rnodes = {tid: self.slaves[tid] for tid in retry_tids if tid in self.slaves}
-            for node in rnodes.values():
-                node["query_event"].clear()
-                node["remote_pending"] = -1
-            self.send_pkt(list(rnodes.keys()), 0x200A, {"path": remote_path})
-            for tid, node in rnodes.items():
-                if node["query_event"].wait(timeout=wait):
-                    res[tid] = node.get("remote_pending", -1) == 0
+            for tid, ok in _run_all(retry_tids).items():
+                res[tid] = ok
         return res
 
     def _download_remote_delta(self, tid):
@@ -2194,7 +3426,7 @@ class NetBusMaster:
         return obj.get("pending", {}) or {}
 
     def _run_confirm_or_undo(self, promoted, action):
-        """依路徑分組後「廣播」confirm/undo 給所有受影響設備 (同時發送, 不逐台串行)。
+        """依路徑分組後「平行」confirm/undo 給所有受影響設備 (每台獨立並行, 不逐台串行)。
 
         promoted: {tid: [remote_path, ...]} 或 {tid: {path: rec}}; action: "confirm"|"undo"。
         回傳 (成功數, 失敗數)。
@@ -2227,28 +3459,27 @@ class NetBusMaster:
         return ok_n, fail_n
 
     def _prompt_confirm_promoted(self, promoted):
-        """批次 promote 後的手動確認: c=確認全部 / u=復原全部 / Enter=暫不確認。
+        """批次上傳後的手動確認: [Enter/c]=確認全部 / [u]=復原全部 / [q]=暫不確認。
 
-        未確認的檔案保留 pending, MCU 會在 3 次重啟後自動復原 (回滾舊版)。
-        確認/復原以「路徑分組廣播」到所有設備, 同時發送。
+        預設「確認」——避免一路 Enter 卻沒確認, 導致 pending 留存 → 3 次重啟自動回滾
+        → 下次又顯示「需要更新」的無限循環。確認/復原以路徑分組平行發送到所有設備。
         """
         total = sum(len(v) for v in promoted.values())
-        print(f"\n📢 [Promote] {total} 個檔案已搬到 root (舊檔已備份 .bak), 等待確認:")
-        print("   ⚠️ 未確認的話, MCU 會在 3 次重啟後自動復原 (回滾舊版)")
-        print("   [c] 確認全部 (正式生效, 刪除 .bak 備份)")
-        print("   [u] 復原全部 (立即回滾, 用 .bak 還原)")
-        print("   [Enter] 暫不確認 (保留 pending, 由 MCU 3 次重啟自動判斷)")
+        print(f"\n📢 [Confirm] {total} 個檔案已寫入 root (舊檔已備份 .bak):")
+        print("   [Enter/c] 確認全部 (正式生效, 刪除 .bak 備份) ← 預設")
+        print("   [u] 復原全部 (立即回滾, 用 .bak 還原舊版)")
+        print("   [q] 暫不確認 (保留 pending, MCU 3 次重啟後自動回滾)")
         ch = input("👉 請選擇: ").strip().lower()
-        if ch == 'c':
+        if ch == 'u':
+            ok_n, fail_n = self._run_confirm_or_undo(promoted, "undo")
+            print(f"♻️ 已復原 {ok_n} 個檔案; 失敗 {fail_n}")
+        elif ch == 'q':
+            print("ℹ️ 暫不確認 — MCU 將在 3 次重啟後自動復原未確認的檔案")
+            print("   (之後可再用 Step 0 檔案管理 或本工具的確認/復原指令處理)")
+        else:
             ok_n, fail_n = self._run_confirm_or_undo(promoted, "confirm")
             print(f"✅ 已確認 {ok_n} 個檔案 (正式生效); 失敗 {fail_n}")
             self._verify_promoted(promoted)
-        elif ch == 'u':
-            ok_n, fail_n = self._run_confirm_or_undo(promoted, "undo")
-            print(f"♻️ 已復原 {ok_n} 個檔案; 失敗 {fail_n}")
-        else:
-            print("ℹ️ 暫不確認 — MCU 將在 3 次重啟後自動復原未確認的檔案")
-            print("   (之後可再用 Step 0 檔案管理 或本工具的確認/復原指令處理)")
 
     def _auto_confirm_promoted(self, promoted):
         """批次 promote 後「直接確認」: 對有信心的上傳立即 confirm (刪 .bak, 正式生效)。
@@ -2408,7 +3639,7 @@ class NetBusMaster:
 
         print("\n🔁 [Reboot] 軟重啟設備讓新韌體/配置生效:")
         for i, tid in enumerate(targets):
-            print(f"   {i+1}. {tid}")
+            print(f"   {i+1:2d}. {self._play_id_str(tid)}  {tid}")
         hint = "👉 [Enter] 是/全部重啟" if default_yes else "👉 [a] 全部重啟"
         ch = input(f"{hint} / [n] 挑選部分 / [q] 否: ").strip().lower()
         if ch == "q":
@@ -2780,7 +4011,7 @@ class NetBusMaster:
         for tid in targets:
             self.panel.update_device(tid, status="準備中", transfer_label="", upload_progress=0)
 
-        max_workers = self.config.get("max_workers", 10)
+        max_workers = max(self.config.get("max_workers", 50), len(targets))
         promoted = {}   # tid -> [root_paths]
         promoted_lock = threading.Lock()
         results = {}    # tid -> [(remote_path, status, err)]
@@ -2861,6 +4092,11 @@ class NetBusMaster:
             for f in futures:
                 f.result()
         self._transfer_end()
+        # 🔧 停止面板: 之後要印上傳結果報告 + 確認提示(需要 input),
+        #    不能讓面板每 0.1s 重繪把這些文字覆蓋掉 (否則會「顯示完成卻其實在等 Enter」)。
+        if self.panel.running:
+            self.panel.stop()
+        ConsoleUI.show_cursor()
 
         self.last_upload_results = results
 
@@ -3244,7 +4480,7 @@ class NetBusMaster:
                 print("  ❌ 離線, 跳過")
                 fail_count += 1
                 continue
-            # 🔧 跳過健康檢查標記為離線/無響應的設備, 避免每個都等查詢逾時
+            # 🔧 跳過已標離線/無響應的設備, 避免每個都等查詢逾時
             mon = self.panel.monitors.get(target)
             if mon and mon.status in ("離線", "無響應"):
                 self.panel.log("warn", f"⚠️ {target}: {mon.status}, 跳過 (先 Scan 或確認設備在線)")
@@ -3320,6 +4556,18 @@ class NetBusMaster:
             if self.transfer_cancel.is_set():
                 print("ℹ️ 已停止")
                 break
+
+            # 🔧 Profile 內附順序標籤: 放一個「檔名為 play_id」的小檔 (內容 = 順序號),
+            #    人類/工具打開 profile 資料夾就知道它對應哪個順序位置。
+            #    資料夾鍵仍是 device_id (不變), 不用 play_id 命名任何檔案/資料夾。
+            try:
+                pid = self.config["mapping"].get(target, {}).get("play_id")
+                if pid is not None:
+                    with open(os.path.join(save_dir, "play_id"), "w", encoding="utf-8") as f:
+                        f.write(str(pid))
+                    print(f"  🏷️ 順序標籤已寫: play_id = {pid}")
+            except Exception as e:
+                print(f"  ⚠️ 寫順序標籤失敗: {e}")
 
             # 3. Profile (模式/狀態/延遲 + 檔案清單)
             if self._save_profile(target, manifest):
@@ -3468,12 +4716,10 @@ class NetBusMaster:
         #    否則「上傳後再跑一次」會拿到過期快取, 比對永遠顯示「全部一致」。
         self._firmware_manifest_cache = {}
 
-        # 🔧 先觸發每台重掃 root flash 重建 manifest, 再下載——確保比對用的是
-        #    最新哈希表, 而不是 slave 記憶體/磁碟上的過期 manifest (例如檔案被
-        #    外部改動、或舊韌體把檔寫到 /sd 導致 root manifest 沒更新)。
-        print("🔄 觸發設備重掃 manifest (0x200B)...")
-        self.send_pkt(targets, 0x200B, {"target": 0})
-        self._wait_fs_scan_idle(targets, timeout=30.0)
+        # 🔧 直接下載 manifest 比對, 不再每次觸發 root 重掃 (0x200B):
+        #    manifest 是 write-through 的權威哈希表, 上傳/還原/確認/刪除都會同步更新;
+        #    每跑一次就重掃會拖慢整批, 且掃描本身若未完成會誤用過期 manifest。
+        #    需要手動重建時, 用 Step 0 選單的「4. 重建文件索引 (Scan)」。
 
         # 🔧 並行下載 manifest: 一台卡住/掉線不阻塞其餘設備；個別逾時直接跳過。
         manifests = {}   # tid -> dict|None
@@ -3525,8 +4771,8 @@ class NetBusMaster:
             return
 
         print("\n👉 請選擇上傳方式:")
-        print("  [Enter] 全部更新 (只傳差異 + 上傳後詢問確認 + 軟重啟) ← 預設")
-        print("  [a] 全部更新 (只傳差異 + 直接確認 + 軟重啟)")
+        print("  [Enter] 全部更新 (只傳差異 + 直接確認 + 軟重啟) ← 預設")
+        print("  [p] 全部更新 (只傳差異 + 上傳後手動確認 + 軟重啟)")
         print("  [s] 逐檔上傳 (一個一個來, 每檔即時進度 + 直接確認)")
         print("  [1] 挑選單一檔案上傳到全部設備")
         print("  [q] 返回")
@@ -3534,16 +4780,16 @@ class NetBusMaster:
 
         if ch == "q":
             return
-        elif ch == "a":
-            self._run_upload_batch(diff_by_target, targets=targets, confirm_mode="auto")
+        elif ch == "p":
+            self._run_upload_batch(diff_by_target, targets=targets, confirm_mode="prompt")
         elif ch == "s":
             self._upload_files_sequential(diff_by_target, targets=targets)
             return
         elif ch == "1":
             self._upload_single_file_interactive(files_to_upload, targets=targets)
             return
-        elif ch in ("", "c", "y", "yes"):
-            self._run_upload_batch(diff_by_target, targets=targets, confirm_mode="prompt")
+        elif ch in ("", "a", "y", "yes"):
+            self._run_upload_batch(diff_by_target, targets=targets, confirm_mode="auto")
         else:
             print("❌ 無效選擇")
             return
@@ -3571,6 +4817,8 @@ class NetBusMaster:
             (os.path.join(PROJECT_ROOT, "slave", "action", "file_actions.py"), "/action/file_actions.py"),
             (os.path.join(PROJECT_ROOT, "slave", "lib", "sys", "fs_manager.py"), "/lib/sys/fs_manager.py"),
             (os.path.join(PROJECT_ROOT, "slave", "action", "status_actions.py"), "/action/status_actions.py"),
+            # 🔧 ConfigManager: 補上「寫 config 後立刻 reset 丟寫入」的 os.sync 修正
+            (os.path.join(PROJECT_ROOT, "slave", "lib", "sys", "ConfigManager.py"), "/lib/sys/ConfigManager.py"),
         ]
         for l, r in boot_files:
             if not os.path.isfile(l):
@@ -3611,6 +4859,232 @@ class NetBusMaster:
 
         print("\n✅ Bootstrap 完成, 準備重啟讓新韌體生效...")
         self._reboot_and_confirm(targets=targets, default_yes=True)
+
+    def _play_id_str(self, sid):
+        """slave_map 的 play_id → 'P03' 形式 (人讀順序標籤; 沒有就 'P??')。"""
+        pid = self.config["mapping"].get(sid, {}).get("play_id")
+        if pid is None:
+            return "P??"
+        try:
+            return "P%02d" % int(pid)
+        except Exception:
+            return "P" + str(pid)
+
+    def _batch_config_update(self):
+        """批量 Config 更新: 依「順序 (play_id)」把 config 批量上傳。
+
+        設計 (使用者需求):
+        - 40+ 台只有三套 config。每台設備的 profile 資料夾
+          (data/downloads/<device_id>/) 放一份 config.json; 資料夾鍵仍是
+          device_id (不變, 不用 play_id 命名任何檔案/資料夾), 順序靠資料夾裏
+          一個檔名為 `play_id` 的小檔 (內容 = 順序號)。
+        - 設備 ID 難讀 → 顯示/排序一律用 play_id 順序。
+        - 上傳走既有兩段式 commit (自動 .bak → confirm), 有 .bak 保護,
+          不必先完整下載舊 config; 上傳後 sha 驗證 + 可選軟重啟生效。
+        - 🔧 最保險: 上傳前先把每台現有的 /config.json 下載留底進該台 profile
+          (config.backup.<時間戳>.json); 下載失敗就跳過該台, 不覆蓋。
+        """
+        if self.panel.running:
+            self.panel.stop()
+        ConsoleUI.show_cursor()
+
+        print("\n⚙️  [批量 Config 更新]")
+        print("Config 來源:")
+        print("  1. 每台設備自己的 Profile (data/downloads/<device_id>/config.json) ← 推薦")
+        print("  2. 單一檔案 → 已選中設備 (整組同一份, 例如三套模板之一)")
+        mode = input("👉 選擇 (1/2): ").strip()
+        if mode not in ("1", "2"):
+            print("❌ 無效選擇")
+            input("\n按 Enter 返回...")
+            self.panel.start()
+            return
+
+        def _read_play_id(d):
+            """讀 profile 資料夾裏的 play_id 標籤檔 → int 或 None。"""
+            p = os.path.join(d, "play_id")
+            if os.path.isfile(p):
+                try:
+                    with open(p, "r", encoding="utf-8") as f:
+                        return int(f.read().strip())
+                except Exception:
+                    return None
+            return None
+
+        def _pid(pid_val):
+            return ("P%02d" % pid_val) if isinstance(pid_val, int) else "P??"
+
+        plan = []   # (pid_or_None, device_id, local_path, data, sha_hex)
+        skip = []   # (pid_or_None, device_id, why)
+
+        if mode == "1":
+            # 掃所有 profile 資料夾 (鍵 = device_id), 依裏面的 play_id 檔排序
+            if not os.path.isdir(DOWNLOAD_DIR):
+                print("❌ 無 profile 資料夾 (先跑 Step 8 → 3 批次備份, 或手動放 config)")
+                input("\n按 Enter 返回...")
+                self.panel.start()
+                return
+            rows = []
+            for name in sorted(os.listdir(DOWNLOAD_DIR)):
+                d = os.path.join(DOWNLOAD_DIR, name)
+                if not os.path.isdir(d):
+                    continue
+                cfg = os.path.join(d, "config.json")
+                if not os.path.isfile(cfg):
+                    skip.append((_read_play_id(d), name, "profile 缺 config.json"))
+                    continue
+                with open(cfg, "rb") as f:
+                    data = f.read()
+                rows.append((_read_play_id(d), name, cfg, data, hashlib.sha256(data).hexdigest()))
+            # 有 play_id 的依順序; 沒標籤的放後面依資料夾名
+            rows.sort(key=lambda r: (r[0] is None, r[0] if r[0] is not None else 0, r[1]))
+            plan = rows
+        else:
+            single_path = input("👉 模板檔路徑 (例: tools/PC/configs/group_A.json): ").strip().strip('"')
+            if not os.path.isfile(single_path):
+                print(f"❌ 找不到檔案: {single_path}")
+                input("\n按 Enter 返回...")
+                self.panel.start()
+                return
+            with open(single_path, "rb") as f:
+                data = f.read()
+            sha_hex = hashlib.sha256(data).hexdigest()
+
+            online_sorted = sorted(
+                list(self.slaves.keys()),
+                key=lambda sid: self.config["mapping"].get(sid, {}).get("play_id", 999),
+            )
+            if not online_sorted:
+                print("❌ 無在線設備")
+                input("\n按 Enter 返回...")
+                self.panel.start()
+                return
+            targets = [t for t in online_sorted if t in self.selected_targets]
+            if not targets:
+                print("⚠️ 尚未選擇設備。可在此直接挑選 (依 PlayID 順序):")
+                print("-" * 58)
+                for i, sid in enumerate(online_sorted):
+                    ip = self.config["mapping"].get(sid, {}).get("ip", "?")
+                    print(f" {i+1:2d}. {self._play_id_str(sid)}  {sid}  ({ip})")
+                print("-" * 58)
+                ch = input("👉 輸入編號 (例: 1,2,3-10 / a 全選): ").strip().lower()
+                if ch == "a":
+                    targets = online_sorted[:]
+                else:
+                    indices = self._parse_index_ranges(ch, len(online_sorted))
+                    if not indices:
+                        print("❌ 輸入無效")
+                        input("\n按 Enter 返回...")
+                        self.panel.start()
+                        return
+                    targets = [online_sorted[i] for i in sorted(indices)]
+                self.selected_targets = targets
+            if not targets:
+                print("❌ 無目標設備")
+                input("\n按 Enter 返回...")
+                self.panel.start()
+                return
+            for tid in targets:
+                pid = self.config["mapping"].get(tid, {}).get("play_id")
+                plan.append((pid, tid, single_path, data, sha_hex))
+
+        # 計劃表 (依順序; 離線的照樣列出, 稍後標記)
+        print("\n📋 [計劃]")
+        online_ids = set(self.slaves.keys())
+        for pid, dev_id, l_path, _data, sha_hex in plan:
+            online = "在線" if dev_id in online_ids else "離線"
+            print(f"   {_pid(pid)}  {dev_id}  ({online})  ← {l_path}  (sha {sha_hex[:8]})")
+        for pid, dev_id, why in skip:
+            print(f"   {_pid(pid)}  {dev_id}  ⏭ 跳過 ({why})")
+
+        upload_rows = [r for r in plan if r[1] in online_ids]
+        offline_rows = [r for r in plan if r[1] not in online_ids]
+        if not upload_rows:
+            print("❌ 沒有在線設備可上傳 (離線的之後上線再跑一次即可)")
+            input("\n按 Enter 返回...")
+            self.panel.start()
+            return
+
+        confirm = input(f"\n👉 確認上傳到 {len(upload_rows)} 台在線設備? (y/n): ").lower()
+        if confirm != 'y':
+            self.panel.start()
+            return
+
+        print("\n⚠️ 提醒:")
+        print("   - 上傳前會先下載每台現有 config 留底: profile/config.backup.<時間戳>.json (下載失敗就跳過該台)")
+        print("   - 若設備還沒做 Step 0 → 8 引導修復, 舊韌體會把 /config.json 導向 /sd 而無效")
+        print('   - 模板請把 System.cID 留 "" — 重啟後每台會自動填回自己的 cID')
+        print("   - config 要軟重啟才生效 (完成後會問)")
+
+        self._transfer_begin()
+        results = {}
+        lock = threading.Lock()
+
+        def _task(row):
+            pid, tid, l_path, data, sha_hex = row
+            try:
+                if self.transfer_cancel.is_set():
+                    raise Exception("已停止")
+                # 🔧 上傳前先下載現有 config 留底 (最保險: 有本地備份才覆蓋)
+                try:
+                    old = self._download_bytes(tid, "/config.json", expected_size=None, status="備份 Config")
+                except Exception as e:
+                    raise Exception("備份下載失敗, 跳過上傳: %s" % e)
+                if old is None:
+                    raise Exception("備份下載失敗 (無資料), 跳過上傳")
+                backup_dir = os.path.join(DOWNLOAD_DIR, tid.replace(":", "_"))
+                os.makedirs(backup_dir, exist_ok=True)
+                backup_name = "config.backup.%s.json" % time.strftime("%Y%m%d_%H%M%S")
+                backup_path = os.path.join(backup_dir, backup_name)
+                with open(backup_path, "wb") as f:
+                    f.write(old)
+
+                self._upload_bytes(tid, data, "/config.json")
+                confirm_ok = self._confirm_file(tid, "/config.json")
+                rsha = self._query_remote_sha(tid, "/config.json")
+                sha_ok = (rsha is not None and rsha.hex() == sha_hex)
+                if confirm_ok and sha_ok:
+                    status = "ok"
+                elif not confirm_ok:
+                    status = "confirm-fail"
+                else:
+                    status = "sha-mismatch"
+                with lock:
+                    results[tid] = (status, os.path.basename(backup_path))
+            except Exception as e:
+                with lock:
+                    results[tid] = ("err", str(e))
+
+        try:
+            with ThreadPoolExecutor(max_workers=self._cfg_int("max_workers", 10)) as ex:
+                futs = [ex.submit(_task, r) for r in upload_rows]
+                for f in futs:
+                    f.result()
+        finally:
+            self._transfer_end()
+        # 🔧 停止面板再印報告 (面板每 0.1s 重繪會把報告文字覆蓋掉)
+        if self.panel.running:
+            self.panel.stop()
+        ConsoleUI.show_cursor()
+
+        # 結果表 (依順序)
+        print("\n📊 [結果]")
+        ok_tids = []
+        marks = {"ok": "✅ 成功", "confirm-fail": "⚠️ confirm 失敗 (pending 未清)",
+                 "sha-mismatch": "❌ sha 不符", "err": "❌"}
+        for pid, tid, l_path, _data, _sha in upload_rows:
+            st, detail = results.get(tid, ("err", "無結果"))
+            print(f"   {_pid(pid)}  {tid}  {marks.get(st, st)}" + (f"  ({detail})" if detail else ""))
+            if st == "ok":
+                ok_tids.append(tid)
+        for pid, tid, why in skip:
+            print(f"   {_pid(pid)}  {tid}  ⏭ 跳過 ({why})")
+        for pid, tid, _l, _d, _s in offline_rows:
+            print(f"   {_pid(pid)}  {tid}  📴 離線未上傳 (上線後重跑即可)")
+
+        if ok_tids:
+            print(f"\n✅ 成功 {len(ok_tids)} 台")
+            self._reboot_and_confirm(targets=ok_tids, default_yes=True)
+        self.panel.start()
 
     def _upload_single_file_to_targets(self, l_path, r_path, targets, confirm_mode="auto"):
         """上傳單一檔案到多台設備 (逐台, 每台即時進度), 之後 promote + 確認。"""
@@ -3832,17 +5306,151 @@ class NetBusMaster:
         input("\n按 Enter 返回...")
         
     def _scan_files(self):
-        print("\n🔄 向所有設備發送全盤掃描指令...")
-        
+        """重建文件索引 (入口, 選範圍):
+
+          1. 本地 flash (/manifest.json) — 剷除 + 重啟, 開機自動重掃
+          2. SD (/sd/.manifest.json) — 0x200B(target=1) 主動掃描重建全表
+             (SD manifest 平時 delta 維護, 唔主動掃; 呢個係主動重建)
+          3. 兩樣都做 (先 SD 後本地: 本地會重啟設備)
+        """
+        print("\n🔄 [重建文件索引]")
+        print("  1. 本地 flash (/manifest.json) — 剷除 + 重啟, 開機自動重掃")
+        print("  2. SD (/sd/.manifest.json) — 主動掃描重建全表 (平時 delta 維護)")
+        print("  3. 兩樣都做 (先 SD 後本地)")
+        choice = (input("\n👉 請選擇 (1/2/3) [Enter=1]: ").strip() or "1")
+        if choice == "2":
+            self._scan_files_sd()
+        elif choice == "3":
+            self._scan_files_sd()
+            self._scan_files_local()
+        else:
+            self._scan_files_local()
+        input("\n按 Enter 返回...")
+
+    def _scan_files_sd(self):
+        """SD 主動掃描 (0x200B target=1): 重建 /sd/.manifest.json 全表。
+
+        唔加新指令: 0x200B 冇回覆, 靠 STATUS_GET 嘅 fs_scan_busy 旗標
+        (slave scan_sd 置 fs_scan_sd_busy=1, provider 已含 SD) 確認
+        「開始咗 (busy=1) → 做完 (busy=0)」。
+        """
+        print("\n🔄 [SD 重建] 送 0x200B(target=1) 主動掃描 /sd ...")
+        targets = [t for t in self.selected_targets if t in self.slaves]
         for tid in self.selected_targets:
+            if tid not in self.slaves:
+                print(f"  ❌ {tid}: 離線 (跳過)")
+        for tid in targets:
             try:
-                self.send_pkt([tid], 0x200B, {})
-                print(f"  ✅ {tid}: 指令已發送")
+                self.send_pkt([tid], 0x200B, {"target": 1})
+                print(f"  → {tid}: 指令已送出")
             except Exception as e:
                 print(f"  ❌ {tid}: {e}")
-                
-        print("\nℹ️ 掃描將在後台進行，這可能需要幾秒鐘。")
-        input("\n按 Enter 返回...")
+        if not targets:
+            return
+
+        # ── 階段 1: 確認「開始咗」(busy=1), 最多 5s ──
+        print("\n⏳ 等 SD 掃描開始 (busy=1)...")
+        started = set()
+        deadline = time.time() + 5.0
+        while time.time() < deadline and len(started) < len(targets):
+            for tid in targets:
+                if tid in started:
+                    continue
+                st = self.query_status(tid, timeout=1.5)
+                if st is not None and st.get("fs_scan_busy", 0):
+                    started.add(tid)
+                    print(f"  ✅ {tid}: 掃描已開始")
+            if len(started) < len(targets):
+                time.sleep(0.3)
+        for tid in targets:
+            if tid not in started:
+                print(f"  ⚠️ {tid}: 未見 busy=1 (舊韌體冇 SD busy 旗標?) — 照等完成")
+
+        # ── 階段 2: 等掃描完成 (busy=0), 最多 90s ──
+        print("\n⏳ 等 SD 掃描完成 (最多 90s)...")
+        self._wait_fs_scan_idle(targets, timeout=90.0)
+        for tid in targets:
+            if tid not in started:
+                print(f"  ⚠️ {tid}: 舊韌體冇 SD busy — 無法確認, 請自行驗證 manifest")
+                continue
+            st = self.query_status(tid, timeout=2.0)
+            if st is None:
+                print(f"  ❌ {tid}: 查無狀態 (離線?)")
+            elif st.get("fs_scan_busy", 0):
+                print(f"  ⚠️ {tid}: 90s 內未完成 (大檔較多, 可再確認)")
+            else:
+                print(f"  ✅ {tid}: SD 表重建完成")
+
+    def _scan_files_local(self):
+        """本地 flash 重建索引: 剷除 /manifest.json → 設備自己重啟 → 開機自動重掃。
+
+        唔加新指令、唔等回覆 (重用舊指令 0x2009): slave 剷完 manifest 即刻
+        self-reset 且唔回覆, master 見到 WS 斷線 = 已執行; 設備重新上線後
+        開機背景掃描已重建 manifest, 再輪詢 fs_scan_busy 確認完成。
+        0x2004 係 chunk ACK、0x2006 係查詢回覆, 語意都唔啱呢度 — 用
+        「通道斷線」本身做確認最直接。
+        """
+        print("\n🔄 [本地重建] 剷除 /manifest.json → 設備重啟 → 開機自動重掃")
+        targets = [t for t in self.selected_targets if t in self.slaves]
+        for tid in self.selected_targets:
+            if tid not in self.slaves:
+                print(f"  ❌ {tid}: 離線 (跳過)")
+        for tid in targets:
+            try:
+                self.send_pkt([tid], 0x2009, {"path": "/manifest.json"})
+                print(f"  → {tid}: 已送出剷除指令 (設備會即刻重啟, WS 斷線 = 已執行)")
+            except Exception as e:
+                print(f"  ❌ {tid}: {e}")
+        if not targets:
+            return
+
+        # ── 階段 1: 等 WS 斷線 (設備 self-reset 嘅證明), 最多 10s ──
+        print("\n⏳ 等設備重啟 (WS 斷線)...")
+        dropped = set()
+        deadline = time.time() + 10.0
+        while len(dropped) < len(targets) and time.time() < deadline:
+            for tid in targets:
+                if tid not in dropped and tid not in self.slaves:
+                    dropped.add(tid)
+                    print(f"  ✅ {tid}: 已重啟 (WS 斷線)")
+            if len(dropped) < len(targets):
+                time.sleep(0.2)
+        for tid in targets:
+            if tid not in dropped:
+                print(f"  ⚠️ {tid}: 10s 內未見斷線 (舊韌體冇 self-reset?) — 仍會等佢上線")
+
+        # ── 階段 2: 等設備重新上線 (開機自動連回 stored master), 最多 60s ──
+        print("\n⏳ 等設備重新上線 (開機自動連回 + 背景重掃)...")
+        back = set()
+        deadline = time.time() + 60.0
+        while len(back) < len(targets) and time.time() < deadline:
+            for tid in targets:
+                if tid not in back and tid in self.slaves:
+                    back.add(tid)
+                    print(f"  👋 {tid}: 已上線")
+            if len(back) < len(targets):
+                time.sleep(0.5)
+        for tid in targets:
+            if tid not in back:
+                print(f"  ❌ {tid}: 60s 內未回線 (用選單 1 手動掃描/敲門叫回)")
+
+        # ── 階段 3: 等開機背景掃描完成 (fs_scan_busy 歸零) ──
+        if back:
+            print("\n⏳ 等開機掃描完成 (core1 背景, 唔會頂看門狗)...")
+            self._wait_fs_scan_idle(sorted(back), timeout=30.0)
+            for tid in sorted(back):
+                if tid not in dropped:
+                    # 冇斷線 = 冇重啟 → 唔會有開機重掃 (舊韌體冇 self-reset 特例,
+                    # 只係回咗 0x2006 + 剷咗 manifest, 唔會自動重建索引)
+                    print(f"  ⚠️ {tid}: 未見重啟 (舊韌體冇 self-reset?) — manifest 已剷但索引未重建, 請手動重啟/部署新韌體")
+                    continue
+                st = self.query_status(tid, timeout=2.0)
+                if st is None:
+                    print(f"  ❌ {tid}: 查無狀態 (離線?)")
+                elif st.get("fs_scan_busy", 0):
+                    print(f"  ⚠️ {tid}: 30s 內未完成 (大檔較多, 可再確認)")
+                else:
+                    print(f"  ✅ {tid}: 文件索引重建完成")
 
     def _view_manifest(self):
         target = self.selected_targets[0]
@@ -3938,28 +5546,6 @@ class NetBusMaster:
         )
         return Proto.pack(0x1001, p_data)
 
-    def _knock_ip(self, ip, label=""):
-        """🔧 對單一 IP 發 unicast DISCOVER (0x1001) 敲門, 叫該設備連回 WS。
-
-        供健康檢查自動敲門使用; slave 收到後會依 ws_url 主動連回 master。
-        local_ip 定期刷新 (DHCP 可能換 IP), 避免敲門包裡帶舊的 ws_url。
-        """
-        try:
-            now = time.time()
-            if now - self._local_ip_ts > 60.0:
-                self._local_ip_ts = now
-                self.local_ip = self.get_local_ip()
-            pkt = self._build_discover_packet()
-            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            try:
-                s.settimeout(1.0)
-                s.sendto(pkt, (ip, self.config.get("upt_port", 9000)))
-                return True
-            finally:
-                s.close()
-        except Exception:
-            return False
-
     def _send_unicast_discover(self, ips, label=""):
         """對指定 IP 清單逐一 unicast DISCOVER (0x1001), 每個重發 3 次。"""
         self.local_ip = self.get_local_ip()
@@ -3967,7 +5553,7 @@ class NetBusMaster:
         pkt = self._build_discover_packet()
         print(f"📡 {label} → {len(ips)} 個 IP (UDP {udp_port}, Server IP: {self.local_ip})")
         try:
-            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s = self._make_discover_socket()
             for attempt in range(3):
                 for ip in ips:
                     try:
@@ -4008,7 +5594,8 @@ class NetBusMaster:
         """依 slave_map.json 的 IP 紀錄批量敲門 (unicast DISCOVER), 不發廣播。
 
         slave 的 IP 會因 DHCP 改變, 每次連上時 handle_client 已自動更新紀錄;
-        啟動 master 或設備沒回來時, 用這招點對點把它們全部叫回來。
+        操作者手動叫回設備時用這招點對點把它們全部叫回來 (master 不自動敲門,
+        見 doc/03_notes/12_upload_wdt_diagnosis.md)。
         敲門後逐台回報: 誰連回、誰沒回來 (IP 可能已變, 需重新掃描更新紀錄)。
         """
         self.load_config()
@@ -4054,15 +5641,14 @@ class NetBusMaster:
         """廣播 DISCOVER (0x1001) 到全域 + 子網廣播位址。"""
         print("\n[Scan] 正在廣播發現包...")
         try:
-            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            s.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-
             # Refresh local IP
             self.local_ip = self.get_local_ip()
 
             port = self.config.get("ws_port", 8000)
             udp_port = self.config.get("upt_port", 9000)
             pkt = self._build_discover_packet(port)
+
+            s = self._make_discover_socket()
 
             print(f"📡 Broadcasting DISCOVER to port {udp_port} (Server IP: {self.local_ip})")
 
@@ -4110,6 +5696,36 @@ class NetBusMaster:
         self._send_unicast_discover(ips, label="[定向掃描] 點對點 DISCOVER")
         self._wait_connections(before, timeout=10, label="握手")
 
+    @staticmethod
+    def _parse_index_ranges(text, count):
+        """解析「1,2,3-10」式編號輸入 → set of 0-based indices。
+
+        支援: 逗號分隔 + a-b 範圍 (包含兩端, 例 "3-10" = 第 3 至第 10)。
+        空白容忍; 非法片段/超出範圍/倒轉範圍 → 回 None (整筆輸入無效)。
+        """
+        if text is None:
+            return None
+        indices = set()
+        try:
+            for part in str(text).split(','):
+                part = part.strip()
+                if not part:
+                    continue
+                m = [p.strip() for p in part.split('-')]
+                if len(m) == 1:
+                    a = b = int(m[0])
+                elif len(m) == 2:
+                    a, b = int(m[0]), int(m[1])
+                else:
+                    return None
+                if a < 1 or b < a or b > count:
+                    return None
+                for i in range(a - 1, b):
+                    indices.add(i)
+        except Exception:
+            return None
+        return indices if indices else None
+
     def select_devices(self):
         """選擇設備"""
         self.load_config()  # Reload config
@@ -4141,7 +5757,7 @@ class NetBusMaster:
         
         print("-" * 50)
         print("操作說明:")
-        print(" - 輸入編號 (例: 1,3,5) 選擇/取消選擇")
+        print(" - 輸入編號 (例: 1,3,5 或 1,2,3-10) 選擇/取消選擇")
         print(" - 輸入 'a' 全選")
         print(" - 輸入 'c' 清空選擇")
         print(" - 直接按 Enter 完成並返回")
@@ -4159,23 +5775,20 @@ class NetBusMaster:
             self.selected_targets = []
             print("✅ 已清空選擇")
         else:
-            try:
-                indices = [int(x.strip()) - 1 for x in choice.split(',')]
+            indices = self._parse_index_ranges(choice, len(sorted_ids))
+            if indices is None:
+                print("❌ 輸入無效 (例: 1,2,3-10 / a 全選 / c 清空)")
+            else:
                 current_set = set(self.selected_targets)
-                
                 for i in indices:
-                    if 0 <= i < len(sorted_ids):
-                        target = sorted_ids[i]
-                        if target in current_set:
-                            current_set.remove(target)
-                        else:
-                            current_set.add(target)
-                
+                    target = sorted_ids[i]
+                    if target in current_set:
+                        current_set.remove(target)
+                    else:
+                        current_set.add(target)
                 # 保持排序順序
                 self.selected_targets = [tid for tid in sorted_ids if tid in current_set]
                 print(f"✅ 更新選擇: {len(self.selected_targets)} 個設備")
-            except:
-                print("❌ 輸入無效")
         
         time.sleep(1)
         self.panel.start()
@@ -4216,9 +5829,100 @@ class NetBusMaster:
         self.panel.start()
     
     # ==================== Step 2: 準備數據 (修復版) ====================
+    # ==================== 資源庫 (pxld 多套) ====================
+    def _pxld_stem(self, path):
+        """'test.pxld' → 'test' (只換副檔名, 主名保留; 播放時 {stem}.bin)。"""
+        return os.path.splitext(os.path.basename(path))[0]
+
+    def _default_stem(self):
+        """未選資源時的預設主名: 第一個 .pxld 主名, 沒有才回 'data' (舊版兜底)。"""
+        pxld = self._list_pxld_files()
+        if pxld:
+            return self._pxld_stem(pxld[0])
+        return "data"
+
+    def _bin_name(self, stem=None):
+        stem = stem or self.resource_stem or self._default_stem()
+        return stem + ".bin"
+
+    def _resource_dir(self, stem=None):
+        """資源的 bins 目錄。'data' = 舊版扁平 data/bins/; 其餘 = data/bins/<stem>/。"""
+        stem = stem or self.resource_stem or self._default_stem()
+        if stem == "data":
+            return BINS_DIR
+        return os.path.join(BINS_DIR, stem)
+
+    def _list_resources(self):
+        """列出已切分的資源主名 = data/bins/<stem>/ 目錄 (新邏輯)。
+
+        不再把舊版扁平 data/bins/metadata.json 當成 'data' 資源 —— 舊版單一
+        data.bin 已由「每套 pxld 一個目錄」取代, 避免網頁下拉又冒出 data.bin。
+        """
+        stems = []
+        try:
+            if os.path.isdir(BINS_DIR):
+                for name in sorted(os.listdir(BINS_DIR)):
+                    d = os.path.join(BINS_DIR, name)
+                    if os.path.isdir(d) and os.path.isfile(os.path.join(d, "metadata.json")):
+                        stems.append(name)
+        except Exception:
+            pass
+        return stems
+
+    def _list_pxld_files(self):
+        """目前目錄下的 .pxld 檔案清單 (供播放時選資源)。"""
+        try:
+            return sorted(f for f in os.listdir(SCRIPT_DIR) if f.lower().endswith(".pxld"))
+        except Exception:
+            return []
+
+    def _resource_bin_path(self, pid, stem=None):
+        return os.path.join(self._resource_dir(stem), f"pid_{pid}.bin")
+
+    def _verify_resource(self, stem=None):
+        """驗證每個選中設備的 /sd/{stem}.bin 與本地一致 (等同部署驗證那一步)。
+
+        回傳 (ok, results)。results = [{tid, pid, local_sha, remote_sha, size_ok, match}]。
+        檔名安全檢查不通過 → ok=False 且不發任何查詢。
+        """
+        stem = stem or self.resource_stem or "data"
+        # 嚴格檔名: 只允許安全字元, 禁止路徑穿越
+        if not stem or stem in (".", "..") or "/" in stem or "\\" in stem:
+            return False, "資源名稱不合法: {!r}".format(stem)
+        targets = list(self.selected_targets) or list(self.slaves.keys())
+        if not targets:
+            return False, "無在線/已選設備"
+        results = []
+        all_ok = True
+        for tid in targets:
+            pid = self.config.get("mapping", {}).get(tid, {}).get("play_id")
+            local_path = self._resource_bin_path(pid, stem) if pid is not None else None
+            if local_path and os.path.isfile(local_path):
+                # 🔧 串流算 sha (64KB chunk), 不把整檔讀進記憶體; 有 mtime/size 快取
+                local_sha = self._calc_local_sha(local_path).hex()[:16]
+            else:
+                local_sha = None
+            remote_sha_bytes = self._query_remote_sha(tid, f"/sd/{self._bin_name(stem)}")
+            remote_sha = remote_sha_bytes.hex()[:16] if remote_sha_bytes else None
+            match = bool(local_sha and remote_sha and local_sha == remote_sha)
+            if not match:
+                all_ok = False
+            results.append({
+                "tid": tid, "pid": pid,
+                "local_sha": local_sha, "remote_sha": remote_sha,
+                "match": match,
+            })
+            self.panel.log(
+                "ok" if match else "err",
+                f"🔍 [Verify] {tid} /sd/{self._bin_name(stem)} "
+                f"local={local_sha or '無本地數據'} remote={remote_sha or '不存在/逾時'} "
+                f"{'✔ 一致' if match else '✖ 不一致'}"
+            )
+        return all_ok, results
+
     def _save_bins(self):
-        """將 prepared_data 保存到 data/bins/ 目錄"""
-        bins_dir = BINS_DIR
+        """將 prepared_data 保存到資源目錄 (data/bins/<stem>/)。"""
+        bins_dir = self._resource_dir()
         os.makedirs(bins_dir, exist_ok=True)
 
         for pid, data in self.prepared_data.items():
@@ -4254,14 +5958,16 @@ class NetBusMaster:
         except Exception as e:
             print(f"  ⚠️ Metadata (only) load failed: {e}")
 
-    def _load_bins(self):
-        """從 data/bins/ 目錄載入 bin 檔案到 prepared_data"""
-        bins_dir = BINS_DIR
+    def _load_bins(self, stem=None):
+        """從資源目錄 (data/bins/<stem>/ 或舊版扁平 data/bins/) 載入 bin 到 prepared_data。"""
+        stem = stem or self.resource_stem or "data"
+        bins_dir = self._resource_dir(stem)
         needed_pids = {self.config["mapping"][tid].get("play_id") for tid in self.selected_targets}
         needed_pids.discard(None)
 
         self.prepared_data.clear()
         self.pxld_metadata.clear()
+        self.resource_stem = stem
         
         # Load Metadata
         meta_path = os.path.join(bins_dir, 'metadata.json')
@@ -4271,7 +5977,7 @@ class NetBusMaster:
                     loaded_meta = json.load(f)
                     # Convert string keys to int
                     self.pxld_metadata = {int(k): v for k, v in loaded_meta.items()}
-                print(f"  📋 Metadata loaded ({len(self.pxld_metadata)} entries)")
+                print(f"  📋 Metadata loaded ({len(self.pxld_metadata)} entries) from {meta_path}")
             except Exception as e:
                 print(f"  ⚠️ Metadata load failed: {e}")
 
@@ -4293,9 +5999,58 @@ class NetBusMaster:
                 missing.append(pid)
 
         if missing:
-            print(f"  ⚠️ 缺少 PlayID: {missing}")
+            missing = sorted(missing)
+            if len(missing) <= 8:
+                detail = ", ".join(str(p) for p in missing)
+            else:
+                detail = ", ".join(str(p) for p in missing[:8]) + ", … 共 {} 個".format(len(missing))
+            print(f"  ⚠️ 資源 '{stem}' 缺少 {len(missing)} 個 PlayID 的本地檔: {detail}")
+            print(f"     → 這套 pxld 還沒切分/上傳過 (或切分時未含這些設備)。先跑 Step 2 切分 → Step 3 上傳。")
 
         return loaded, missing
+
+    def _load_metadata_for_stem(self, stem=None):
+        """只載入資源 metadata (total_frames/fps) 並確認本地 bin 檔是否存在, 不讀檔內容。
+
+        進入 Sync Play 用: 進播放只需要 total_frames/fps, 不需要把 51 個 24MB 的
+        bin 全塞進記憶體。真正的 sha 比對移到按下 'v' 驗證時才逐檔算 (串流讀取)。
+        回傳 (現有檔數, missing_playids)。
+        """
+        stem = stem or self.resource_stem or "data"
+        bins_dir = self._resource_dir(stem)
+        needed_pids = {self.config["mapping"][tid].get("play_id") for tid in self.selected_targets}
+        needed_pids.discard(None)
+
+        self.resource_stem = stem
+
+        # 只讀 metadata (小檔), 不讀 bin 內容
+        meta_path = os.path.join(bins_dir, 'metadata.json')
+        if os.path.exists(meta_path):
+            try:
+                with open(meta_path, 'r', encoding='utf-8') as f:
+                    loaded_meta = json.load(f)
+                self.pxld_metadata = {int(k): v for k, v in loaded_meta.items()}
+                print(f"  📋 Metadata loaded ({len(self.pxld_metadata)} entries) from {meta_path}")
+            except Exception as e:
+                print(f"  ⚠️ Metadata load failed: {e}")
+
+        present = 0
+        missing = []
+        for pid in sorted(needed_pids):
+            if os.path.isfile(os.path.join(bins_dir, f"pid_{pid}.bin")):
+                present += 1
+            else:
+                missing.append(pid)
+
+        if missing:
+            if len(missing) <= 8:
+                detail = ", ".join(str(p) for p in missing)
+            else:
+                detail = ", ".join(str(p) for p in missing[:8]) + ", … 共 {} 個".format(len(missing))
+            print(f"  ⚠️ 資源 '{stem}' 缺少 {len(missing)} 個 PlayID 的本地檔: {detail}")
+            print(f"     → 這套 pxld 還沒切分/上傳過 (或切分時未含這些設備)。先跑 Step 2 切分 → Step 3 上傳。")
+
+        return present, missing
 
     def _fill_pca_w(self, data):
         """把 data.bin 每幀「最後 16 顆」的 W 通道填上有值。
@@ -4390,6 +6145,9 @@ class NetBusMaster:
             self.panel.start()
             return
         
+        # 🔧 資源名 = pxld 主名 (test.pxld → test → /sd/test.bin)
+        self.resource_stem = self._pxld_stem(path)
+        print(f"\n🏷️  資源主名: '{self.resource_stem}' → 上傳/播放檔名 = '{self._bin_name()}'")
         print(f"\n⚙️ 正在解析動畫: {path}...")
         
         self.prepared_data.clear()
@@ -4523,7 +6281,7 @@ class NetBusMaster:
                 valid_tids.append(tid)
                 
         # 批量發送查詢
-        self.send_pkt(valid_tids, 0x2005, {"path": "/sd/data.bin"})
+        self.send_pkt(valid_tids, 0x2005, {"path": f"/sd/{self._bin_name()}"})
         
         tout = self.config.get("deploy_timeout", 120)
         print(f"⏳ 等待設備回報 (Timeout: {tout}s)...")
@@ -4569,7 +6327,7 @@ class NetBusMaster:
             return
         
         print("\n" + "-" * 75)
-        choice = input("👉 輸入編號上傳 (例: 1,3,5) | 'a' 僅上傳不一致 | 'all' 全選: ").lower()
+        choice = input("👉 輸入編號上傳 (例: 1,3,5 或 1-10) | 'a' 僅上傳不一致 | 'all' 全選: ").lower()
         
         final_targets = []
         if choice == 'all':
@@ -4577,13 +6335,12 @@ class NetBusMaster:
         elif choice == 'a':
             final_targets = [item[0] for item in deploy_queue if item[1] != item[2]]
         else:
-            try:
-                idxs = [int(x.strip()) - 1 for x in choice.split(',')]
-                final_targets = [deploy_queue[i][0] for i in idxs if 0 <= i < len(deploy_queue)]
-            except:
-                print("❌ 輸入錯誤")
+            idxs = self._parse_index_ranges(choice, len(deploy_queue))
+            if idxs is None:
+                print("❌ 輸入錯誤 (例: 1,3,5 或 1-10)")
                 self.panel.start()
                 return
+            final_targets = [deploy_queue[i][0] for i in sorted(idxs)]
         
         if not final_targets:
             print("ℹ️ 無設備被選中")
@@ -4599,7 +6356,7 @@ class NetBusMaster:
                 else:
                     self.panel.update_device(tid, status="上傳中", transfer_label="上傳 data.bin", upload_progress=0)
             
-            max_workers = self.config.get("max_workers", 50)
+            max_workers = max(self.config.get("max_workers", 50), len(final_targets))
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
                 futures = {executor.submit(self._deploy_to_single_slave, tid): tid for tid in final_targets}
                 
@@ -4627,12 +6384,14 @@ class NetBusMaster:
         if not node or data is None:
             raise Exception("無數據或離線")
 
-        local_sha = self._upload_bytes(tid, data, "/sd/data.bin", file_idx=1, total_files=1, file_id=1)
+        bin_name = self._bin_name()
+        remote = f"/sd/{bin_name}"
+        local_sha = self._upload_bytes(tid, data, remote, file_idx=1, total_files=1, file_id=1)
         # 🔧 播放數據常改, 不該進「3 次重啟自動回滾」保護帶: 上傳完立即 confirm
-        #    (清 .bak + pending)。否則 /data.bin 的備份會留著, 3 次開機後被靜默還原成舊版。
-        if not self._confirm_file(tid, "/sd/data.bin"):
-            self._log_event("FAIL", "data.bin 確認失敗 (pending 未清, 可能 3 次重啟後回滾)", device_id=tid)
-            self.panel.log("warn", f"⚠️ [{tid}] data.bin 上傳成功但確認失敗 (pending 未清)")
+        #    (清 .bak + pending)。否則檔案的備份會留著, 3 次開機後被靜默還原成舊版。
+        if not self._confirm_file(tid, remote):
+            self._log_event("FAIL", f"{bin_name} 確認失敗 (pending 未清, 可能 3 次重啟後回滾)", device_id=tid)
+            self.panel.log("warn", f"⚠️ [{tid}] {bin_name} 上傳成功但確認失敗 (pending 未清)")
         self.config["mapping"][tid]["last_sha"] = local_sha.hex()
         self.save_config()
     
@@ -4650,28 +6409,55 @@ class NetBusMaster:
             input("\n按 Enter 繼續...")
             self.panel.start()
             return
-        
+
+        # ── 1. 選資源 (pxld) — 主名即檔名: test.pxld → /sd/test.bin ──
+        pxld_files = self._list_pxld_files()
+        if pxld_files:
+            print("\n🎬 [資源選擇] 播放哪一套 pxld (主名 = /sd 下的 .bin 檔名):")
+            w = max((len(self._pxld_stem(f)) for f in pxld_files), default=8)
+            for i, f in enumerate(pxld_files):
+                stem = self._pxld_stem(f)
+                print(f"   {i+1:>2}. {stem:<{w}}  →  /sd/{stem}.bin")
+            print(f"   [Enter] 沿用目前資源: {self._bin_name()}")
+            raw = input("\n👉 選擇編號: ").strip()
+            if raw:
+                try:
+                    idx = int(raw) - 1
+                    if 0 <= idx < len(pxld_files):
+                        self.resource_stem = self._pxld_stem(pxld_files[idx])
+                    else:
+                        print("❌ 選擇無效, 沿用目前資源")
+                except ValueError:
+                    print("❌ 輸入無效, 沿用目前資源")
+        else:
+            print("⚠️ 目前目錄找不到 .pxld (沿用目前資源: {})".format(self._bin_name()))
+
+        # 🔧 只載入 metadata (total_frames/fps), 不讀 51 個 bin 的內容 ——
+        #    進播放不需要整檔資料; 真正 sha 比對等按下 'v' 驗證時才串流算。
+        present, _missing = self._load_metadata_for_stem(self.resource_stem)
+        print(f"🏷️  資源: {self._bin_name()}  (本地現有 {present} 個 PlayID 檔; 驗證時才比對 sha)")
+
         if AUDIO_MODE is None:
             print("⚠️ 音訊模塊未安裝 (miniaudio/pygame) — MP3 無法播放,但仍可播放燈效 (靜音模式)")
-        
+
         mp3_files = [f for f in os.listdir('.') if f.endswith('.mp3')]
         if not mp3_files:
             print("❌ 找不到 MP3 文件 (可選)")
-        
+
         print(f"\n🎵 [音訊準備] 模式: {AUDIO_MODE}")
         print(f"  0. 不播放音訊 (僅觸發動畫)")
         for i, f in enumerate(mp3_files):
             print(f"  {i+1}. {f}")
         print("  q. 取消返回")
         print("  [Enter] 等同 0 (靜音模式)")
-        
+
         selected_mp3 = None
         try:
             raw_choice = input("\n👉 選擇編號: ").strip().lower()
             if raw_choice == 'q':
                 self.panel.start()
                 return
-            
+
             if raw_choice == '':
                 choice = 0
             else:
@@ -4696,18 +6482,24 @@ class NetBusMaster:
             time.sleep(1)
             self.panel.start()
             return
-        
+
         print(f"\n⚙️ 正在預備設備...")
-        
+
+        # 🔧 進入播放前先「穩定連結」: 半開/無回應的設備敲門叫回重連, 避免
+        #    0x3009/0x300A 發出去後那台才斷線漏接 (半死問題)。
+        _alive, _repaired, still_dead = self._stabilize_connections(self.selected_targets)
+        if still_dead:
+            print(f"⚠️ 以下設備目前無回應, 本次播放先警告 (之後可手動掃描叫回): {', '.join(still_dead)}")
+
         for tid in self.selected_targets:
             self.panel.update_device(tid, status="待機")
             if tid in self.panel.monitors:
                 self.panel.monitors[tid].reset_play_stats()
-        
+
         # 🔧 play_mode: 0=播放一次, 1=循環 (播完自動重頭)
         self.current_play_mode = 1 if self.config.get("loop_play", 0) else 0
         self.send_pkt(self.selected_targets, 0x3009, {
-            "file_name": "data.bin",
+            "file_name": self._bin_name(),
             "block_id": 0,
             "play_mode": self.current_play_mode
         })
@@ -4717,29 +6509,53 @@ class NetBusMaster:
             act_str = f"fps={act_fps}" if act_fps > 0 else "關閉"
             print("\n" + "!" * 50)
             print("     系統就緒,等待擊發")
-            print(f"     延遲設定: {self.config.get('sync_delay_ms', 0)} ms  │  循環播放: {loop_str}  │  主動同步: {act_str}")
-            print("     輸入 'go' 開始 | 't' 微調延遲 | 'l' 延遲測試並紀錄 | 'p' 切換循環 | 'a' 切換主動同步 | 'q' 取消")
+            print(f"     資源: {self._bin_name()}  │  延遲: {self.config.get('sync_delay_ms', 0)} ms  │  循環: {loop_str}  │  主動同步: {act_str}")
+            print("     'go' 播放一次 | 'loop' 循環播放 | 'v' 驗證資源 | 't' 微調延遲 | 'l' 延遲測試 | 'a' 切換主動同步 | 'q' 取消")
             print("!" * 50)
-            
+
             trigger = input("\n🚀 指令: ").lower().strip()
-            
-            if trigger == 'go':
+
+            if trigger in ('go', 'loop'):
+                self.config["loop_play"] = 1 if trigger == 'loop' else 0
+                self.current_play_mode = 1 if self.config["loop_play"] else 0
+                self.save_config()
+                # 🔧 擊發前先等 READY: 避免 0x300A 到時 slave 還在 LOADING 而吞掉播放指令
+                for tid in self.selected_targets:
+                    node = self.slaves.get(tid)
+                    if node:
+                        node["ready_event"].clear()
+                self.send_pkt(self.selected_targets, 0x3009, {
+                    "file_name": self._bin_name(),
+                    "block_id": 0,
+                    "play_mode": self.current_play_mode
+                })
+                still = self._wait_all_ready(self.selected_targets, timeout=5.0, retries=2)
+                if still:
+                    print(f"⚠️ 以下設備未 READY, 播放可能漏掉 (之後自癒): {', '.join(still)}")
                 break
             elif trigger == 'q':
                 print("🛑 已取消")
                 time.sleep(1)
                 self.panel.start()
                 return
+            elif trigger == 'v':
+                # 🔧 驗證資源: 比對每個 slave 的 /sd/{stem}.bin 與本地 sha (同部署驗證)
+                ok, _res = self._verify_resource(self.resource_stem)
+                print("✅ 驗證通過 (所有設備一致)" if ok else "❌ 驗證未通過 (見上方明細)")
             elif trigger == 't':
                 try:
                     curr = self.config.get("sync_delay_ms", 150)
                     new_val = input(f"👉 輸入新延遲 (當前 {curr}ms): ").strip()
                     if new_val:
-                        self.config["sync_delay_ms"] = int(new_val)
-                        self.save_config()
-                        print(f"✅ 延遲已更新為: {self.config['sync_delay_ms']} ms")
+                        v = int(new_val)
+                        if not (-60000 <= v <= 60000):
+                            print("❌ 延遲需在 -60000 ~ 60000 ms 之間")
+                        else:
+                            self.config["sync_delay_ms"] = v
+                            self.save_config()
+                            print(f"✅ 延遲已更新為: {self.config['sync_delay_ms']} ms")
                 except ValueError:
-                    print("❌ 輸入無效")
+                    print("❌ 輸入無效 (需為整數)")
             elif trigger == 'l':
                 # 🔧 延遲測試 + 手動紀錄 (CSV, 可加備註)
                 self._latency_test_and_log(ask_note=True)
@@ -4766,7 +6582,7 @@ class NetBusMaster:
                 self.save_config()
                 self.current_play_mode = 1 if self.config["loop_play"] else 0
                 self.send_pkt(self.selected_targets, 0x3009, {
-                    "file_name": "data.bin",
+                    "file_name": self._bin_name(),
                     "block_id": 0,
                     "play_mode": self.current_play_mode
                 })
@@ -4788,14 +6604,17 @@ class NetBusMaster:
         delay_ms = self.config.get("sync_delay_ms", 150)
         delay_sec = abs(delay_ms) / 1000.0
         
-        # 記錄播放起始時間與 FPS，供中途加入使用
-        self.playback_start_time = time.time()
+        # 記錄 FPS（供中途加入使用）。⚠️ playback_start_time 改在「真正發 0x300A
+        # 開燈那一刻」才設 —— 之前設在延遲 sleep 之前, 大延遲時主控時鐘提早
+        # (delay_ms/1000*fps) 幀, SEEK 校正會把 slave 硬拉超前 → 看起來「崩壞」。
         self.current_fps = 40 # Default
         if self.selected_targets:
             pid = self.config["mapping"][self.selected_targets[0]].get("play_id")
             if pid in self.pxld_metadata and "fps" in self.pxld_metadata[pid]:
                 self.current_fps = self.pxld_metadata[pid]["fps"]
                 if self.current_fps == 0: self.current_fps = 40
+        # 🔧 權威 fps (play_fps / active_sync_fps) 覆蓋 metadata, 需要時補一次 0x3001 廣播
+        self._apply_play_fps()
         
         # 🔧 播放模式: 0=一次, 1=循環 (中途加入沿用此值)
         self.current_play_mode = 1 if self.config.get("loop_play", 0) else 0
@@ -4821,13 +6640,16 @@ class NetBusMaster:
                 self._start_audio_stream(selected_mp3)
                 if delay_ms > 0:
                     time.sleep(delay_sec)
+                self.playback_start_time = time.time()   # 🔧 開燈那一刻才計時
                 self.send_pkt(self.selected_targets, 0x300A, {"start_frame": 0})
             else:
+                self.playback_start_time = time.time()   # 🔧 開燈那一刻才計時
                 self.send_pkt(self.selected_targets, 0x300A, {"start_frame": 0})
                 time.sleep(delay_sec)
                 self._start_audio_stream(selected_mp3)
         else:
             # Silent mode: just trigger
+            self.playback_start_time = time.time()   # 🔧 開燈那一刻才計時
             self.send_pkt(self.selected_targets, 0x300A, {"start_frame": 0})
         
         # 🔧 播放進度輪詢: 每秒向 slave 查 0x1101, 用 0x1102 更新面板進度
@@ -4903,17 +6725,12 @@ class NetBusMaster:
                 self.play_session_active = False
             self._dev_finished.clear()
 
-        # 🔧 自然播完 (非循環音檔結束, 非手動 s/q 停止) → 延遲 post_play_stop_delay_s
-        #    後才送 0x3002 停止指令。slave 端在檔尾會保持最後一幀亮著, 這段延遲就是
-        #    「最後姿勢定格」時間; 延遲一到才真正熄燈。手動停止時 stop_all() 已立即
-        #    送過 0x3002, 這裡不重複送 (否則會誤關掉緊接著的下一段準備)。
+        # 🔧 自然播完 (非循環音檔結束, 非手動 s/q 停止) → 先播純黑 post_play_stop_delay_s
+        #    秒再送 0x3002 停止。原本這段時間 slave 停在「最後一幀姿勢」, 現在改用
+        #    direct mode 發純黑幀覆蓋, 讓收尾是平滑淡出到黑, 不是停在最後一幀。
         if (not self._stop_was_manual) and (self.current_play_mode != 1):
             delay = max(0.0, self._cfg_float("post_play_stop_delay_s", 10.0))
-            self.panel.log("info", "🏁 播放自然結束, {} 秒後發送停止指令 (0x3002)...".format(delay))
-            time.sleep(delay)
-            if self.selected_targets:
-                self.send_pkt(self.selected_targets, 0x3002, {})
-                self.panel.log("ok", "🛑 已發送停止指令 (0x3002) — 熄燈")
+            self._blackout_then_stop(self.selected_targets, delay)
 
         for tid in self.selected_targets:
             self.panel.update_device(tid, status="待機")
@@ -4999,20 +6816,29 @@ class NetBusMaster:
                     continue
                 st = self.query_status(tid, timeout=1.0)
                 if not st:
+                    # 🔧 半開自癒: WS 通道還在但 0x1101 無回應 → 可能半開, 敲門叫回
+                    self._maybe_heal_half_dead(tid)
                     continue
+                self._dev_heal_misses[tid] = 0   # 🔧 有回應 → 重設無回應計數
                 # 🔧 新舊韌體格式統一解析 (接口相容)
                 cur, pos, active, mem_free, _rid = self._parse_status(st)
                 self.panel.update_device(tid, current_frame=cur, mem_free=mem_free)
                 mon = self.panel.monitors.get(tid)
-                # 🔧 自然播完偵測: 裝置回報 stream_active=False 且已播過幀 →
+                # 🔧 自然播完偵測: 裝置回報 stream_active=False 且「已播到接近結尾」→
                 #    非循環播放已到檔尾; 標記後, 之後重連不再自動續播。
-                #    (剛重啟的裝置 cur=0 且 stream_active=False, 不算播完,
-                #     避免把「重啟後還沒接回」誤判成「播完」)
+                #    flaky 設備會偶發回報 active=False 但 frame 才到中段 (例如
+                #    80F1B2D1F530 回報 frame 7323/9427 就被誤判播完) —— 這種情況
+                #    不標播完, 讓它重連時仍可被 mid-join 救回。
                 if active is False:
-                    if mon and mon.status in ("播放中", "暫停", "中途加入") and cur > 0:
+                    total_frames = self._device_total_frames(tid)
+                    near_end = (total_frames > 0 and cur >= total_frames - max(3, int(total_frames * 0.02)))
+                    if mon and mon.status in ("播放中", "暫停", "中途加入") and cur > 0 and near_end:
                         self._dev_finished.add(tid)
                         self.panel.update_device(tid, status="播完")
-                        print(f"🏁 [Play] {tid} 串流已自然播完 (frame {cur})")
+                        print(f"🏁 [Play] {tid} 串流已自然播完 (frame {cur}/{total_frames})")
+                    elif mon and mon.status in ("播放中", "暫停", "中途加入") and cur > 0:
+                        # flaky: active=False 但還沒到結尾 → 不標播完, 只留 log, 等待重連救回
+                        self.panel.log("warn", f"⚠️ [Play] {tid} 回報 stream_active=False 但 frame {cur}/{total_frames} 未到結尾 (flaky?), 不標播完")
                     continue
                 # 🔧 進度校正: 播放中且回報進度與主控推算偏差過大 → SEEK 拉回。
                 #    (新韌體有 stream_pos_frame 才做; 舊韌體 played_frames 是
@@ -5266,7 +7092,7 @@ class NetBusMaster:
                 # 只對這一台準備 + 播放 data.bin; 等 READY (0x3008) 再開播,
                 # 避免 0x300A 到時 slave 還在 LOADING 狀態而漏接。
                 node["ready_event"].clear()
-                self.send_pkt([cid], 0x3009, {"file_name": "data.bin", "block_id": 0, "play_mode": 0})
+                self.send_pkt([cid], 0x3009, {"file_name": self._bin_name(), "block_id": 0, "play_mode": 0})
                 if not node["ready_event"].wait(timeout=2.0):
                     print("   ⚠️ READY 逾時 (data.bin 可能未部署/開檔失敗), 仍嘗試開播")
                 self.send_pkt([cid], 0x300A, {"start_frame": 0})
@@ -5342,12 +7168,12 @@ class NetBusMaster:
         ConsoleUI.clear_screen()
         ConsoleUI.show_cursor()
 
-        print("\n🔌 [Step 9] PoE Restart — 交換器 PoE port 重啟 (Cisco 3560)")
-        print("  1. 正式執行 (斷電 → 等待 → 恢復供電)")
+        print("\n🔌 [Step 9] PoE Restart — 交換器 PoE 電源控制 (Cisco 3560)")
+        print("  1. 正式執行 (可揀 重啟 / 關閉 PoE / 開啟 PoE)")
         print("  2. 模擬 Dry-run (只預覽指令, 不連線)")
         print("  q. 返回")
 
-        choice = input("\n👉 請選擇: ").strip().lower()
+        choice = input("\n👉 請選擇 [Enter=1]: ").strip().lower() or "1"
         if choice == 'q':
             self.panel.start()
             return
@@ -5481,8 +7307,10 @@ class NetBusMaster:
         print(" 6. Sync Play          | 同步播放 (支持暫停/中途加入)")
         print(" 7. Pairing Mode       | 配對: 播放本地燈效並更新 PlayID")
         print(" 8. Profiles           | 每 id Profile (模式/狀態/批次備份)")
-        print(" 9. PoE Restart        | 交換器 PoE port 重啟 (Cisco 3560)")
+        print(" 9. PoE Restart        | 交換器 PoE 電源控制 (重啟/關閉/開啟, Cisco 3560)")
         print(" i. Install Deps       | 檢查/安裝缺失的 Python 模組")
+        print(" n. Network Interface  | 選擇網卡 (網際網路/設備本地網雙網卡時指定)")
+        print(" b. Brightness         | 調整 .pxld 亮度並產生新檔")
         print(" s. STOP ALL           | 緊急停止")
         print(" q. Exit               | 退出程序")
         print("=" * 60)
@@ -5497,13 +7325,832 @@ class NetBusMaster:
         # 由於兼容性問題，直接調用標準 input
         return input(prompt)
 
+    # ==================== Web Remote API (非互動, 供內建網頁遙控 /api/action 呼叫) ====================
+    # 這些方法與互動式選單 (main_loop) 共用同一份核心 (send_pkt / stop_all / 播放狀態機),
+    # 但全部「不讀 stdin、不畫終端 UI」, 讓網頁遙控可以把主程式當 API 來按 1/2/3/4。
+    _REMOTE_INT_KEYS = {
+        "sync_delay_ms", "loop_play", "active_sync_fps", "play_fps",
+        "midjoin_lead_frames", "ws_port", "upt_port", "web_port",
+        "web_enable", "web_open_browser", "upload_chunk_size",
+        "latency_samples", "download_chunk_size", "transfer_retry_count",
+        "latency_probe_auto", "latency_probe_samples", "audio_delay_base_ms",
+        "preplay_liveness_check", "midplay_auto_heal", "midplay_heal_miss_threshold",
+    }
+    _REMOTE_FLOAT_KEYS = {
+        "active_sync_interval_s", "progress_poll_interval_s",
+        "post_play_stop_delay_s", "upload_ack_timeout", "upload_begin_timeout",
+        "latency_probe_warmup_s", "midplay_heal_cooldown_s",
+    }
+
+    def remote_devices(self):
+        """回傳所有已知設備的即時狀態 (供網頁渲染設備表)。"""
+        result = []
+        try:
+            with self.panel.lock:
+                monitors = list(self.panel.monitors.items())
+        except Exception:
+            monitors = []
+        selected = set(self.selected_targets)
+        for sid, m in monitors:
+            try:
+                prog = m.get_play_progress()
+                fps = m.calculated_fps
+                cur = m.current_frame
+                total = m.total_frames
+                status = m.status
+                mem = m.mem_free
+            except Exception:
+                prog, fps, cur, total, status, mem = 0.0, 0.0, 0, 0, "?", 0
+            pid = self.config.get("mapping", {}).get(sid, {}).get("play_id")
+            result.append({
+                "id": sid,
+                "online": sid in self.slaves,
+                "play_id": pid,
+                "status": status,
+                "current_frame": cur,
+                "total_frames": total,
+                "progress": round(prog, 1),
+                "fps": round(fps, 1),
+                "mem_free": mem,
+                "selected": sid in selected,
+            })
+        result.sort(key=lambda d: (d["play_id"] is None, d["play_id"] if d["play_id"] is not None else 999999))
+        return result
+
+    def remote_scan(self, mode="broadcast", ips=None, wait=10):
+        """非互動掃描: broadcast / direct / knock。回傳 (ok, message)。"""
+        self.load_config()
+        try:
+            before = set(self.slaves.keys())
+            if mode == "direct":
+                raw = (ips or "").replace('，', ',')
+                ip_list = [p.strip() for p in raw.split(',') if p.strip() and not p.strip().startswith('255.')]
+                if not ip_list:
+                    return False, "未提供有效 IP"
+                self._send_unicast_discover(ip_list, label="[Remote] 定向 DISCOVER")
+                self._wait_connections(before, timeout=wait, label="握手")
+            elif mode == "knock":
+                self._knock_recorded_devices(wait=wait)
+            else:
+                self._broadcast_scan()
+            new = sorted(set(self.slaves.keys()) - before)
+            msg = f"掃描完成, 新連線 {len(new)} 台" + (f": {', '.join(new)}" if new else "")
+            return True, msg
+        except Exception as e:
+            return False, f"掃描失敗: {e}"
+
+    def remote_select_all(self):
+        self.selected_targets = sorted(
+            self.slaves.keys(),
+            key=lambda sid: self.config.get("mapping", {}).get(sid, {}).get("play_id", 999),
+        )
+        return len(self.selected_targets)
+
+    def remote_select_clear(self):
+        self.selected_targets = []
+        return 0
+
+    def remote_select_ids(self, ids):
+        online = set(self.slaves.keys())
+        self.selected_targets = [i for i in (ids or []) if i in online]
+        return len(self.selected_targets)
+
+    def remote_clear(self):
+        for node in list(self.slaves.values()):
+            try:
+                node["conn"].close()
+            except Exception:
+                pass
+        time.sleep(0.5)
+        self.slaves.clear()
+        self.panel.monitors.clear()
+        self.selected_targets.clear()
+        return len(self.slaves)
+
+    def remote_config_set(self, key, val):
+        if key in self._REMOTE_INT_KEYS:
+            self.config[key] = int(val)
+        elif key in self._REMOTE_FLOAT_KEYS:
+            self.config[key] = float(val)
+        else:
+            return False, f"不支援的參數: {key}"
+        self.save_config()
+        return True, f"{key} = {self.config[key]}"
+
+    def remote_prepare(self, resource=None, loop=None, delay_ms=None, active_sync_fps=None):
+        """準備 (select + data 暖機): 選資源、送 0x3009 讓 slave 開檔/載入, 並等 READY。
+
+        與播放 (remote_fire) 拆開: 讓 slave 有時間把 data.bin 打開/暖機, 否則
+        「選了就馬上擊發」slave 可能還在開檔, 0x300A 到時會漏接。回傳 (ok, message)。
+        """
+        if not self.selected_targets:
+            return False, "請先掃描並選擇設備"
+        if resource:
+            stem = self._pxld_stem(resource) if resource.lower().endswith((".pxld", ".bin")) else resource
+            self.resource_stem = stem
+        self._load_metadata_for_stem(self.resource_stem)
+        if loop is not None:
+            self.config["loop_play"] = 1 if loop else 0
+        if delay_ms is not None:
+            self.config["sync_delay_ms"] = max(-60000, min(60000, int(delay_ms)))
+        if active_sync_fps is not None:
+            self.config["active_sync_fps"] = int(active_sync_fps)
+        self.save_config()
+
+        # 已在播放 → 先停掉上一段
+        if self.is_playing or self.play_session_active:
+            self.stop_all()
+
+        for tid in self.selected_targets:
+            self.panel.update_device(tid, status="準備中")
+            if tid in self.panel.monitors:
+                self.panel.monitors[tid].reset_play_stats()
+
+        self.current_play_mode = 1 if self.config.get("loop_play", 0) else 0
+
+        # 🔧 進入準備前先「穩定連結」: 半開/無回應設備敲門自癒 (同 console 路徑)
+        _alive, _repaired, still_dead = self._stabilize_connections(self.selected_targets)
+        if still_dead:
+            self.panel.log("warn", f"⚠️ [Prepare] 以下設備無回應: {', '.join(still_dead)}")
+
+        # 🔧 先 clear ready_event 再送 0x3009, 之後等每台 READY (data 暖機完成)
+        for tid in self.selected_targets:
+            node = self.slaves.get(tid)
+            if node:
+                node["ready_event"].clear()
+        self.send_pkt(self.selected_targets, 0x3009, {
+            "file_name": self._bin_name(),
+            "block_id": 0,
+            "play_mode": self.current_play_mode,
+        })
+
+        # 等 READY (0x3008) — slave 開檔 + 讀第一幀完成; 未回的設備重發 0x3009 再等
+        still = self._wait_all_ready(self.selected_targets, timeout=5.0, retries=2)
+
+        n_ready = len(self.selected_targets) - len(still)
+        n_total = len(self.selected_targets)
+        for tid in self.selected_targets:
+            self.panel.update_device(tid, status="待機")
+        self._prepared_resource = self.resource_stem
+        self._prepared_play_mode = self.current_play_mode
+        if n_ready < n_total:
+            self.panel.log("warn", f"⚙️ [Prepare] {n_ready}/{n_total} 台已 READY (其餘可能仍在開檔, 播放時會再確認)")
+        return True, f"已準備 {n_ready}/{n_total} 台 (data 暖機完成, 可擊發)"
+
+    def remote_fire(self, mp3=None, watchdog=True):
+        """擊發播放 (0x300A): 前提是已 remote_prepare。回傳 (ok, message)。
+
+        watchdog=False: 不啟動 _remote_play_watchdog。演出流程 (MC) 用這個 ——
+        內建 watchdog 會在音檔播完後就收掉 play_session_active / 停掉進度輪詢,
+        把「所有設備播完」的判定蓋掉; 演出改用 _show_finish_watcher 自行收尾。
+        既有呼叫者不傳此參數 → 行為完全不變。
+        """
+        if not self.selected_targets:
+            return False, "請先掃描並選擇設備"
+        if not self.play_session_active and not self.is_playing:
+            # 尚未準備 → 自動補 prepare (向後相容)
+            ok, msg = self.remote_prepare()
+            if not ok:
+                return False, msg
+
+        # 播放會話開始 (fire → stop_all 之間)
+        with self.play_lock:
+            self.play_session_active = True
+            self.audio_finished = False
+            self.paused_since = None
+            self.paused_total = 0.0
+        self._dev_finished.clear()
+        self._stop_was_manual = False
+        self.is_playing = True
+        self.is_paused = False
+
+        # current_fps 由 metadata 提供 (供中途加入/進度推算)
+        self.current_fps = 40
+        pid = self.config.get("mapping", {}).get(self.selected_targets[0], {}).get("play_id")
+        meta = self.pxld_metadata.get(pid, {}) if pid is not None else {}
+        fps = meta.get("fps", 0)
+        if fps:
+            self.current_fps = fps
+        # 🔧 權威 fps (play_fps / active_sync_fps) 覆蓋 metadata, 需要時補一次 0x3001 廣播
+        self._apply_play_fps()
+
+        self._start_active_sync()
+
+        # 🔧 延遲偵查 (自動): 若 config latency_probe_auto=1, 擊發前先量所有設備
+        #    單向延遲並把「最大延遲」套進 sync_delay_ms (先音後燈)。仍只補網路
+        #    延遲, 不含 miniaudio 本機啟動延遲。
+        if self._cfg_int("latency_probe_auto", 0):
+            self.latency_probe(self.selected_targets, apply=True)
+
+        delay_ms_v = self.config.get("sync_delay_ms", 150)
+        delay_sec = abs(delay_ms_v) / 1000.0
+        if mp3:
+            if delay_ms_v >= 0:
+                self._start_audio_stream(mp3)
+                if delay_ms_v > 0:
+                    time.sleep(delay_sec)
+                self.playback_start_time = time.time()   # 🔧 開燈那一刻才計時
+                self.send_pkt(self.selected_targets, 0x300A, {"start_frame": 0})
+            else:
+                self.playback_start_time = time.time()   # 🔧 開燈那一刻才計時
+                self.send_pkt(self.selected_targets, 0x300A, {"start_frame": 0})
+                time.sleep(delay_sec)
+                self._start_audio_stream(mp3)
+            if watchdog:
+                threading.Thread(target=self._remote_play_watchdog, daemon=True).start()
+        else:
+            self.playback_start_time = time.time()   # 🔧 開燈那一刻才計時
+            self.send_pkt(self.selected_targets, 0x300A, {"start_frame": 0})
+
+        self._start_progress_poll()
+        for tid in self.selected_targets:
+            self.panel.update_device(tid, status="播放中")
+        return True, "已擊發播放"
+
+    def remote_sync_play(self, mp3=None, delay_ms=None, loop=None, active_sync_fps=None, resource=None):
+        """一鍵播放 (準備+擊發): 等同舊行為, 內部先 prepare 再 fire。回傳 (ok, message)。"""
+        ok, msg = self.remote_prepare(resource=resource, loop=loop, delay_ms=delay_ms, active_sync_fps=active_sync_fps)
+        if not ok:
+            return False, msg
+        return self.remote_fire(mp3=mp3)
+
+    def _remote_play_watchdog(self):
+        """遠端播放的收尾看守 (音檔自然播完才走這條)。"""
+        while self.is_playing and self.running:
+            time.sleep(0.2)
+        if self._stop_was_manual:
+            return
+        if self.current_play_mode != 1:
+            delay = max(0.0, self._cfg_float("post_play_stop_delay_s", 10.0))
+            self._blackout_then_stop(self.selected_targets, delay)
+        with self.play_lock:
+            self.play_session_active = False
+        self._dev_finished.clear()
+        self._stop_active_sync()
+        self._stop_progress_poll()
+        for tid in self.selected_targets:
+            self.panel.update_device(tid, status="待機")
+
+    def remote_pause_toggle(self):
+        """暫停/繼續切換, 回傳目前是否暫停。"""
+        with self.play_lock:
+            self.is_paused = not self.is_paused
+            if self.is_paused:
+                self.paused_since = time.time()
+                self.send_pkt(self.selected_targets, 0x3005, {"pause": 1})
+                for tid in self.selected_targets:
+                    self.panel.update_device(tid, status="暫停")
+            else:
+                if self.paused_since is not None:
+                    self.paused_total += time.time() - self.paused_since
+                    self.paused_since = None
+                self.send_pkt(self.selected_targets, 0x3005, {"pause": 0})
+                for tid in self.selected_targets:
+                    self.panel.update_device(tid, status="播放中")
+        return self.is_paused
+
+    def remote_stop(self):
+        self.stop_all()
+        return True
+
+    # ==================== 演出流程 (MC ↔ 音響 同步) ====================
+    #  完整流程:
+    #    idle --[MC 邀請觀眾準備]--> armed --[MC 準備播放]--> awaiting_audio
+    #         --[音響按「音響已就緒」]--> ready --[MC 播放]--> playing
+    #         --[自然播完 / MC 停止]--> finished --[MC 結束流程]--> ending
+    #         --[音響按「已重置」]--> idle
+    #  MC 頁的按鈕卡依 phase 自動啟用/變灰; 音響頁只看 phase 顯示對應提示。
+    # 🔧 媒體槽名稱 (固定兩個: 主秀 / 備用)。label 由技術台自訂。
+    _SLOT_NAMES = ("main", "loop")
+
+    def _slot(self, name=None):
+        """取媒體槽設定 (回傳 dict; 不存在則回預設空槽)。"""
+        slots = self.config.get("media_slots") or {}
+        key = name or self.show_slot
+        s = slots.get(key) or {}
+        return {
+            "label": s.get("label", "") or key,
+            "resource": s.get("resource", "") or "",
+            "mp3": s.get("mp3", "") or "",
+            "delay_ms": int(s.get("delay_ms", 150) or 0),
+            "active_sync_fps": int(s.get("active_sync_fps", 0) or 0),
+            "loop": 1 if s.get("loop", 0) else 0,
+        }
+
+    def _set_phase(self, phase, log_msg=None):
+        self.show_phase = phase
+        if log_msg:
+            self.panel.log("info", "[Show] " + log_msg)
+
+    def remote_save_slots(self, slots):
+        """技術台儲存媒體槽設定 (main / loop)。回傳 (ok, msg)。"""
+        if not isinstance(slots, dict):
+            return False, "格式錯誤"
+        cur = self.config.setdefault("media_slots", {})
+        saved = []
+        for name in self._SLOT_NAMES:
+            src = slots.get(name)
+            if not isinstance(src, dict):
+                continue
+            slot = cur.setdefault(name, {})
+            if "label" in src:
+                slot["label"] = str(src.get("label") or "")[:64]
+            if "resource" in src:
+                slot["resource"] = str(src.get("resource") or "")[:128]
+            if "mp3" in src:
+                slot["mp3"] = str(src.get("mp3") or "")[:256]
+            if "delay_ms" in src:
+                try:
+                    slot["delay_ms"] = max(-60000, min(60000, int(src.get("delay_ms"))))
+                except (TypeError, ValueError):
+                    pass
+            if "active_sync_fps" in src:
+                try:
+                    slot["active_sync_fps"] = max(0, int(src.get("active_sync_fps")))
+                except (TypeError, ValueError):
+                    pass
+            if "loop" in src:
+                slot["loop"] = 1 if src.get("loop") else 0
+            saved.append(name)
+        if not saved:
+            return False, "沒有可儲存的槽"
+        self.save_config()
+        return True, "已儲存媒體槽: {}".format(", ".join(saved))
+
+    def remote_show_arm(self, slot=None):
+        """MC: 邀請觀眾準備 —— 自動全選在線裝置並暖機該槽媒體。回傳 (ok, msg)。"""
+        if slot in ("main", "loop"):
+            self.show_slot = slot
+        n = self.remote_select_all()
+        if not n:
+            self._set_phase("idle")
+            return False, "沒有在線裝置 (請先掃描)"
+        s = self._slot()
+        if not s["resource"]:
+            self._set_phase("idle")
+            return False, "媒體槽「{}」尚未設定資源 (請技術台先設定)".format(self.show_slot)
+        ok, msg = self.remote_prepare(
+            resource=s["resource"], loop=bool(s["loop"]),
+            delay_ms=s["delay_ms"], active_sync_fps=s["active_sync_fps"],
+        )
+        if not ok:
+            self._set_phase("idle")
+            return False, msg
+        self.audio_ready = False
+        self._set_phase("armed", "已暖機 {} 台, 媒體={}".format(n, s["resource"]))
+        return True, "{} ({} 台已就緒)".format(msg, n)
+
+    def remote_show_request_play(self):
+        """MC: 準備播放 —— 通知音響同事進入準備 (解除靜音)。回傳 (ok, msg)。
+
+        🔧 音響若已預先舉手 (armed 階段按過「已就緒」), 這裡直接進 ready,
+        不再多等一輪 (MC 按完就能播)。
+        """
+        if self.show_phase not in ("armed", "finished"):
+            return False, "目前階段無法準備播放 (需先「邀請觀眾準備」)"
+        if self.audio_ready:
+            self._set_phase("ready", "準備播放 (音響已預先就緒)")
+            return True, "音響已就緒, 可直接播放"
+        self.audio_ready = False
+        self._set_phase("awaiting_audio", "已通知音響準備")
+        return True, "已通知音響同事準備"
+
+    def remote_audio_ready(self):
+        """音響: 音響已就緒 —— 告知 MC 可以隨時播放。回傳 (ok, msg)。
+
+        🔧 armed 階段也接受: 音響不必等 MC 按「準備播放」才能舉手 (兩人在不同
+        位置時, 音響可先確認好設備並標記就緒)。此時只設 audio_ready=True,
+        階段維持 armed, 等 MC 按「準備播放」後會直接跳過等待 (見 request_play)。
+        """
+        if self.show_phase not in ("awaiting_audio", "ready", "armed"):
+            return False, "目前階段不需要就緒回報"
+        self.audio_ready = True
+        if self.show_phase == "armed":
+            self._set_phase("armed", "音響已預先就緒 (等待 MC 準備播放)")
+            return True, "已預先回報就緒"
+        self._set_phase("ready", "音響已就緒")
+        return True, "已回報就緒"
+
+    def remote_audio_reset(self):
+        """音響: 已重置 —— 結束流程後回到待機。回傳 (ok, msg)。"""
+        if self.show_phase != "ending":
+            return False, "目前階段不需要重置"
+        self.audio_ready = False
+        self.show_slot = "main"
+        self._set_phase("idle", "音響已重置, 回到待機")
+        return True, "已重置"
+
+    def remote_show_reset(self):
+        """手動強制重置流程 → idle (任何階段都可呼叫)。
+
+        逃生門: ending 階段只有音響能解 (按「已重置」), 音響手機沒電/關頁/忘了按
+        就整場卡死, 只能重啟程式。這顆讓 MC 或技術台自己解開。
+        正在播放會先停止; 不動媒體槽設定與講稿。
+        """
+        was = self.show_phase
+        self._stop_show_watcher()
+        if self.show_phase == "playing":
+            self.remote_stop()
+        self.audio_ready = False
+        self.show_slot = "main"
+        self._set_phase("idle", "手動重置流程 (原階段={})".format(was))
+        return True, "已重置流程 (原階段: {})".format(was)
+
+    def _show_do_play(self, slot):
+        """共用: 依槽設定擊發 (watchdog=False, 由 _show_finish_watcher 收尾)。"""
+        s = self._slot(slot)
+        if not s["resource"]:
+            return False, "媒體槽「{}」尚未設定資源".format(slot)
+        # 音效路徑: 槽內 mp3 是檔名, 轉絕對路徑並檢查存在
+        mp3 = None
+        if s["mp3"]:
+            full = os.path.join(SCRIPT_DIR, s["mp3"])
+            if not os.path.isfile(full):
+                return False, "找不到音效檔: {}".format(s["mp3"])
+            mp3 = full
+        # 資源/延遲若與暖機時不同 → 重新 prepare 對齊
+        if (self._prepared_resource != self._slot_stem(s)
+                or not self.play_session_active):
+            ok, msg = self.remote_prepare(
+                resource=s["resource"], loop=bool(s["loop"]),
+                delay_ms=s["delay_ms"], active_sync_fps=s["active_sync_fps"],
+            )
+            if not ok:
+                return False, msg
+        ok, msg = self.remote_fire(mp3=mp3, watchdog=False)
+        if not ok:
+            return False, msg
+        self._show_started_at = time.time()
+        self._set_phase("playing", "擊發播放 (槽={})".format(slot))
+        self._start_show_watcher(slot, has_mp3=bool(mp3), loop=bool(s["loop"]))
+        return True, "播放中"
+
+    @staticmethod
+    def _slot_stem(slot_cfg):
+        r = (slot_cfg or {}).get("resource", "")
+        return os.path.splitext(os.path.basename(r))[0] if r else ""
+
+    def remote_show_play(self, slot=None):
+        """MC: 播放 (需音響已就緒)。回傳 (ok, msg)。"""
+        if slot in ("main", "loop"):
+            self.show_slot = slot
+        if self.show_phase not in ("ready", "armed"):
+            return False, "目前階段無法播放"
+        if self.show_phase == "armed":
+            # 尚未經過「準備播放→音響就緒」, 允許但仍標記 (操作員可能自播自聽)
+            self.audio_ready = True
+        return self._show_do_play(self.show_slot)
+
+    def remote_show_replay(self):
+        """MC: 重播 —— 重新暖機並再次擊發。回傳 (ok, msg)。"""
+        if self.show_phase not in ("playing", "finished"):
+            return False, "目前階段無法重播"
+        slot = self.show_slot
+        self.remote_stop()
+        ok, msg = self._show_do_play(slot)
+        return ok, ("重播中" if ok else msg)
+
+    def remote_show_stop(self):
+        """MC: 停止 —— 停止播放並進入「播放結束」。回傳 (ok, msg)。"""
+        if self.show_phase not in ("playing", "ready", "armed"):
+            return False, "目前階段無法停止"
+        self._stop_show_watcher()
+        self.remote_stop()
+        self._set_phase("finished", "已停止播放")
+        return True, "已停止"
+
+    def remote_show_end_play(self):
+        """MC: 結束播放 —— 停止並回到「播放結束」等待下一步。回傳 (ok, msg)。"""
+        return self.remote_show_stop()
+
+    def remote_show_end(self):
+        """MC: 結束流程 —— 通知音響同事重置。回傳 (ok, msg)。"""
+        if self.show_phase not in ("finished", "playing", "ready", "armed"):
+            return False, "目前階段無法結束流程"
+        self._stop_show_watcher()
+        if self.show_phase == "playing":
+            self.remote_stop()
+        self.audio_ready = False
+        self._set_phase("ending", "已通知音響重置")
+        return True, "已通知音響同事重置"
+
+    def remote_play_loop(self):
+        """MC: 播放備用槽媒體 (切到 loop 槽, 循環播放)。回傳 (ok, msg)。"""
+        if self.show_phase == "playing":
+            self.remote_stop()
+        self.show_slot = "loop"
+        n = self.remote_select_all()
+        if not n:
+            return False, "沒有在線裝置 (請先掃描)"
+        self.audio_ready = True
+        return self._show_do_play("loop")
+
+    def remote_play_slot(self, slot):
+        """MC: 播放指定媒體槽 (main / loop)。回傳 (ok, msg)。"""
+        if slot not in self._SLOT_NAMES:
+            return False, "不支援的媒體槽: {}".format(slot)
+        if self.show_phase == "playing":
+            self.remote_stop()
+        self.show_slot = slot
+        n = self.remote_select_all()
+        if not n:
+            return False, "沒有在線裝置 (請先掃描)"
+        self.audio_ready = True
+        return self._show_do_play(slot)
+
+    def _start_show_watcher(self, slot, has_mp3, loop):
+        """完成偵測: 音效條件 + 設備條件皆成立 → finished。"""
+        self._stop_show_watcher()
+        self._show_watch_stop.clear()
+        t = threading.Thread(
+            target=self._show_finish_watcher,
+            args=(slot, has_mp3, loop),
+            daemon=True,
+        )
+        self._show_watch_thread = t
+        t.start()
+
+    def _stop_show_watcher(self):
+        self._show_watch_stop.set()
+        t = self._show_watch_thread
+        if t:
+            try:
+                t.join(timeout=0.5)
+            except Exception:
+                pass
+        self._show_watch_thread = None
+
+    def _show_finish_watcher(self, slot, has_mp3, loop):
+        """演出完成看守: 音效播完 且 所有選中設備都標「播完」→ phase=finished。
+
+        循環槽不自動結束 (靠 MC 按停止)。
+        """
+        if loop:
+            return
+        while not self._show_watch_stop.is_set():
+            if self.show_phase != "playing":
+                return
+            if not self.play_session_active:
+                # 被外部停止 (stop_all) → 讓停止路徑決定階段
+                return
+            audio_done = (not has_mp3) or bool(self.audio_finished)
+            targets = list(self.selected_targets)
+            dev_done = bool(targets) and all(t in self._dev_finished for t in targets)
+            if audio_done and dev_done:
+                if self.show_phase == "playing":
+                    self._set_phase("finished", "音效與設備皆已播完")
+                    self.panel.log("ok", "[Show] 播放結束 (音效+全部設備)")
+                return
+            self._show_watch_stop.wait(0.5)
+
+    def remote_query(self):
+        targets = list(self.selected_targets) or list(self.slaves.keys())
+        if not targets:
+            return "無在線設備"
+        for tid in targets:
+            st = self.query_status(tid)
+            if st:
+                self.panel.log("info", f"[Query] {tid}: {json.dumps(st, ensure_ascii=False)}")
+            else:
+                self.panel.log("warn", f"[Query] {tid}: 無回應")
+        return f"已查詢 {len(targets)} 台"
+
+    # ==================== Direct Mode (0x3003) 串流測試 ====================
+    def _resource_frame_bytes(self, pid=None):
+        """反推每幀 bytes (RGBW, 4B/pixel), 從 metadata total_frames + bin 檔大小。
+
+        這是 direct mode 的權威幀大小, 與 slave 端「多除小補」的 slot 對齊。
+        (實際動畫 676 pixel × 4 = 2704 bytes)
+        """
+        if pid is None:
+            pid = 0
+            if self.selected_targets:
+                pid = self.config.get("mapping", {}).get(self.selected_targets[0], {}).get("play_id", 0)
+        total = (self.pxld_metadata.get(pid, {}) or {}).get("total_frames", 0)
+        if total > 0:
+            bin_path = self._resource_bin_path(pid, self.resource_stem)
+            if os.path.isfile(bin_path):
+                fb = os.path.getsize(bin_path) // total
+                if fb > 0:
+                    return fb
+        return 2704   # 676 pixel × 4 兜底
+
+    def _direct_frame(self, r=0, g=0, b=0, w=0, frame_bytes=None):
+        """構造一幀純色 RGBW 資料 (每 pixel 4 bytes 順序: R,G,B,W)。"""
+        fb = frame_bytes or self._resource_frame_bytes()
+        n = fb // 4
+        buf = bytearray(fb)
+        for i in range(n):
+            o = i * 4
+            buf[o] = r & 0xFF
+            buf[o + 1] = g & 0xFF
+            buf[o + 2] = b & 0xFF
+            buf[o + 3] = w & 0xFF
+        return bytes(buf)
+
+    def remote_direct_breath(self, duration_s=3.0, fps=None, brightness=255):
+        """Direct Mode 測試: 用 0x3003 直接發 RGBW 幀, 播放「紅色呼吸」。
+
+        純網絡逐幀串流 (不走 data.bin 檔案)。正弦呼吸紅光, 每幀 R 通道變化,
+        G/B/W = 0。結束後不自動停, 由呼叫端接 _blackout_then_stop。回傳 (ok, message)。
+        """
+        import math
+        targets = list(self.selected_targets) or list(self.slaves.keys())
+        if not targets:
+            return False, "無在線/已選設備"
+        fb = self._resource_frame_bytes()
+        if fps is None:
+            fps = self._tracking_fps(targets[0])
+        fps = max(1, min(120, int(fps)))
+        frame_interval = 1.0 / fps
+        breath_period = 2.0   # 一個完整呼吸週期 (秒)
+        total_frames = max(1, int(duration_s * fps))
+        self.panel.log("info", f"🎬 [Direct] 紅色呼吸開始: {duration_s}s @ {fps}fps, 幀 {fb}B ({fb // 4} px)")
+        t0 = time.time()
+        for i in range(total_frames):
+            t = i / fps
+            v = int((math.sin(2 * math.pi * t / breath_period) + 1.0) / 2.0 * brightness)
+            frame = self._direct_frame(r=v, g=0, b=0, w=0, frame_bytes=fb)
+            self.send_pkt(targets, 0x3003, {"pixel_data": frame})
+            next_t = t0 + (i + 1) * frame_interval
+            sleep = next_t - time.time()
+            if sleep > 0:
+                time.sleep(sleep)
+        self.panel.log("ok", "🎬 [Direct] 紅色呼吸結束")
+        return True, f"紅色呼吸播完 ({duration_s}s @ {fps}fps)"
+
+    def _blackout_then_stop(self, targets, blackout_s):
+        """純黑收尾: 用 direct mode 發純黑幀 (覆蓋最後一幀姿勢), 保持 blackout_s 秒後送 0x3002 停止。"""
+        if not targets:
+            return
+        fb = self._resource_frame_bytes()
+        black = self._direct_frame(r=0, g=0, b=0, w=0, frame_bytes=fb)
+        for _ in range(3):   # 連發幾幀確保 slave 渲染到純黑
+            self.send_pkt(targets, 0x3003, {"pixel_data": black})
+            time.sleep(0.05)
+        self.panel.log("info", f"⬛ [Blackout] 純黑 {blackout_s:.1f}s 後停止")
+        if blackout_s > 0:
+            time.sleep(blackout_s)
+        self.send_pkt(targets, 0x3002, {})
+        self.panel.log("ok", "🛑 已發送停止指令 (0x3002) — 熄燈")
+
+    def remote_direct_test(self):
+        """完整 direct mode 測試: 紅色呼吸 → 純黑 → 停止。"""
+        ok, msg = self.remote_direct_breath(duration_s=3.0)
+        if not ok:
+            return False, msg
+        targets = list(self.selected_targets) or list(self.slaves.keys())
+        self._blackout_then_stop(targets, 1.0)
+        return True, "紅色呼吸 → 純黑 → 停止 完成"
+
+    def remote_set_network(self, selector):
+        """設定網卡 (selector: 網卡名/IP/子網前綴/空=自動), 存 config 並重偵測 local_ip。
+
+        換網卡後會延遲重啟網頁伺服器, 讓它改綁到新網卡的 IP (只有那張卡可連入)。
+        WS 伺服器維持 0.0.0.0, 不受影響 (slave 連回不因換卡而斷)。
+        """
+        self.config["network_interface"] = selector if selector else ""
+        self.save_config()
+        self._iface_cache = None   # 換網卡後失效快取
+        self.local_ip = self.get_local_ip()
+        # 🔧 延遲重啟 web server (晚一點讓當前 response 送完再重綁新 IP)
+        if getattr(self, "_web_server", None) is not None:
+            def _delayed():
+                time.sleep(0.5)
+                self._restart_web_server()
+            threading.Thread(target=_delayed, daemon=True).start()
+        if selector:
+            if self.local_ip in ("127.0.0.1", "0.0.0.0"):
+                return False, f"找不到網卡 '{selector}' (已存 config, 但本機 IP 未解析成功)"
+            return True, f"網卡已設為 '{selector}' → 本機 IP {self.local_ip} (網頁將改綁此 IP)"
+        return True, f"網卡已設為「自動偵測」 → 本機 IP {self.local_ip} (網頁將改綁此 IP)"
+
+    def remote_network_info(self):
+        """回傳所有網卡清單 + 目前設定 (供網頁下拉)。"""
+        ifaces = self._list_interfaces()
+        return {
+            "interfaces": ifaces,
+            "current": self.config.get("network_interface", ""),
+            "local_ip": self.local_ip,
+        }
+
+    def select_network_interface(self):
+        """console 選單: 列出網卡, 選一張存 config (或選自動)。"""
+        self.load_config()
+        self.panel.stop()
+        ConsoleUI.clear_screen()
+        ConsoleUI.show_cursor()
+
+        ifaces = self._list_interfaces()
+        cur = self.config.get("network_interface", "")
+        print("\n🌐 [網卡選擇]")
+        print(f"   目前設定: {cur or '(自動偵測)'}  →  本機 IP: {self.local_ip}")
+        print("-" * 56)
+        print("  0. 自動偵測 (default)")
+        for i, it in enumerate(ifaces):
+            mark = "← 目前" if it["ip"] == self.local_ip or it["name"] == cur or it["ip"] == cur else ""
+            print(f"  {i+1}. {it['name']:<12} {it['ip']:<16} {mark}")
+        print("-" * 56)
+        raw = input("👉 請選擇 (0-{}): ".format(len(ifaces))).strip()
+        if raw == "0":
+            ok, msg = self.remote_set_network("")
+        else:
+            try:
+                idx = int(raw) - 1
+                if 0 <= idx < len(ifaces):
+                    ok, msg = self.remote_set_network(ifaces[idx]["name"])
+                else:
+                    ok, msg = False, "編號無效"
+            except ValueError:
+                ok, msg = False, "輸入無效"
+        print(("✅ " if ok else "❌ ") + msg)
+        time.sleep(1)
+        self.panel.start()
+
+    # ==================== 亮度調整 (產生新 pxld) ====================
+    def remote_brightness(self, pxld_name, factor):
+        """依比例調整某個 .pxld 的亮度, 產生新檔 {stem}_bright{pct}.pxld。
+
+        pxld_name: 目前目錄下的 .pxld 檔名 (或主名); factor: 0.0~1.0 (或 >1)。
+        回傳 (ok, message, out_name)。
+        """
+        if not pxld_name:
+            return False, "未指定 .pxld 檔案", None
+        if not pxld_name.lower().endswith(".pxld"):
+            pxld_name += ".pxld"
+        src = os.path.join(SCRIPT_DIR, pxld_name)
+        if not os.path.isfile(src):
+            return False, "找不到檔案: {}".format(pxld_name), None
+        try:
+            factor = float(factor)
+        except (TypeError, ValueError):
+            return False, "亮度比例無效: {!r}".format(factor), None
+        if factor <= 0:
+            return False, "亮度比例必須 > 0 (0.5=50%, 1.0=100%)", None
+
+        stem = self._pxld_stem(pxld_name)
+        pct = int(round(factor * 100))
+        out_name = "{}_bright{}.pxld".format(stem, pct)
+        dst = os.path.join(SCRIPT_DIR, out_name)
+        try:
+            n = adjust_pxld_brightness(src, dst, factor)
+        except Exception as e:
+            return False, "亮度調整失敗: {}".format(e), None
+        return True, "已產生 {} ({} LEDs, {}%)".format(out_name, n, pct), out_name
+
+    def step_brightness(self):
+        """console 選單: 選一個 .pxld → 輸入亮度比例 → 產生新 pxld。"""
+        self.panel.stop()
+        ConsoleUI.clear_screen()
+        ConsoleUI.show_cursor()
+
+        pxld_files = self._list_pxld_files()
+        if not pxld_files:
+            print("❌ 目前目錄找不到 .pxld 檔案")
+            input("\n按 Enter 返回...")
+            self.panel.start()
+            return
+
+        print("\n💡 [亮度調整] 選一套 pxld, 按比例調整亮度後產生新檔:")
+        w = max(len(f) for f in pxld_files)
+        for i, f in enumerate(pxld_files):
+            print(f"   {i+1:>2}. {f:<{w}}")
+        raw = input("\n👉 選擇編號: ").strip()
+        try:
+            idx = int(raw) - 1
+            if not (0 <= idx < len(pxld_files)):
+                raise ValueError
+        except ValueError:
+            print("❌ 選擇無效")
+            time.sleep(1)
+            self.panel.start()
+            return
+        pxld_name = pxld_files[idx]
+
+        raw2 = input("👉 亮度比例 (0~100, 例 50 = 50% / 120 = 120%): ").strip()
+        try:
+            factor = float(raw2) / 100.0
+        except ValueError:
+            print("❌ 比例無效")
+            time.sleep(1)
+            self.panel.start()
+            return
+
+        ok, msg, out_name = self.remote_brightness(pxld_name, factor)
+        print(("✅ " if ok else "❌ ") + msg)
+        if ok and out_name:
+            print(f"   → 之後可在 Step 2 選 '{out_name}' 切分 → Step 3 上傳 (檔名 /sd/{self._pxld_stem(out_name)}.bin)")
+        time.sleep(1.5)
+        self.panel.start()
+
     def main_loop(self):
-        # 🔧 啟動時依 slave_map.json 的 IP 紀錄自動敲門握手 (點對點, 不廣播)
-        # 設備收到 0x1001 會主動連回; 連上時 handle_client 會順便更新 IP 紀錄
+        # 🔧 不再於啟動時自動敲門叫回設備: master 不主動發起重連 (自動敲門曾在
+        #    「離線判斷 → 敲門 → slave 自我斷線重連」間造成抖動循環, 見
+        #    doc/03_notes/12_upload_wdt_diagnosis.md)。要設備上線, 由操作者手動
+        #    執行選單 1. Scan Devices (廣播 / 定向 IP / 依紀錄敲門)。
         self.load_config()
         if self.config["mapping"]:
-            print("🔔 [Startup] 依紀錄敲門, 叫設備上線...")
-            self._knock_recorded_devices(wait=5)
+            print("ℹ️ 已載入 {} 台設備紀錄 — 設備未上線時, 用選單 1 (掃描/敲門) 手動叫回".format(len(self.config["mapping"])))
         else:
             print("ℹ️ 尚無設備紀錄 (slave_map.json 為空) — 請用 Step 1 掃描/定向連線")
 
@@ -5551,6 +8198,12 @@ class NetBusMaster:
                 self._print_menu()
             elif ch == 'i':
                 self.step_i_install_deps()
+                self._print_menu()
+            elif ch == 'n':
+                self.select_network_interface()
+                self._print_menu()
+            elif ch == 'b':
+                self.step_brightness()
                 self._print_menu()
             elif ch == 's':
                 self.stop_all()

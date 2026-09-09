@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "id": 2,
+  "name": "test",
+  "groups": [
+    {
+      "id": 1,
+      "name": "full",
+      "sel": [
+        {"type": "apa102",    "sel": ":"},
+        {"type": "ws2812",    "sel": ":"},
+        {"type": "pca9685",   "sel": ":"},
+        {"type": "pwm",       "sel": ":"},
+        {"type": "uartMotor1", "sel": ":"}
+      ]
+    }
+  ]
+}

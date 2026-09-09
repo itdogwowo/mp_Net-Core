@@ -230,6 +230,9 @@
 
 > 原 jpeg.json（0x31xx）已移除；0x31xx 域改由 pixel（模式播放）使用。權威定義見 `slave/schema/pixel.json`。
 > 詳細定義見 `04_pixel_protocol.md`。
+> **gmode 貫通（M5）**：`MODE_SET/MODE_STOP` 經 GlobalMode（`lib/sys/global_mode.py`）扇出 ——
+> mode JSON 的 `audio` 段（tracks+limit）與燈效用同一個 `start_delay_ms` 同步起播；
+> `mode_type=3` = AUDIO 組（純音效，`/audio/modes/*.json`），`MODE_LIST_QUERY` 依 id 高 byte 過濾。
 
 | CMD | 名稱 | 方向 | Payload | 說明 |
 |-----|------|------|---------|------|
@@ -241,6 +244,40 @@
 | 0x3106 | MODE_STOP | Master → MCU | `action(u8)` | 停止（0=暫停、1=全關閉） |
 | 0x3107 | MODE_DETAIL_QUERY | Master → MCU | `mode_type(u8)` `mode_id(u8)` | 查單一模式細節 |
 | 0x3108 | MODE_DETAIL_RSP | MCU → Master | `mode_type(u8)` `mode_id(u8)` `total_ms(u32)` `name(str_u16len)` | 模式細節（含名稱 UTF-8） |
+
+---
+
+## 12) audio.json（0x32xx）— 音訊播放（WAV 串流，dj_task）
+
+> 設計定案見 `doc/03_notes/13_audio_wav_stream_plan.md`。音檔 = PC 端預轉 WAV
+> （16-bit PCM/44.1kHz/stereo，檔名自述 `name_<rate>_<bits>_<ch>.wav`）。
+
+### 播放控制
+
+| CMD | 名稱 | 方向 | Payload | 說明 |
+|---|---|---|---|---|
+| 0x3201 | AUDIO_SET | Master → MCU | `file_name(str_u16len)` `play_mode(u8)` `volume(u8)` | 準備單檔（file_name = playlist 的 name；play_mode: 0=播完停 1=循環；volume 0–100） |
+| 0x3202 | AUDIO_PLAY | Master → MCU | `start_ms(u32)` | 起播；>0 = 中途加入 |
+| 0x3203 | AUDIO_STOP | Master → MCU | (空) | 停止（靜音 + 釋放檔案） |
+| 0x3204 | AUDIO_PAUSE | Master → MCU | `pause(u8)` | 暫停/恢復（XSMT 即時靜音） |
+| 0x3205 | AUDIO_SEEK | Master → MCU | `target_ms(u32)` | 跳轉（對齊幀邊界） |
+| 0x3206 | AUDIO_VOLUME | Master → MCU | `volume(u8)` | 主音量 0–100（DSP 增益於混音層應用） |
+| 0x3207 | AUDIO_READY_ACK | MCU → Master | `ok(u8)` `duration_ms(u32)` | SET 驗證結果（`ok=0` = 檔不存在/不兼容/header 不符） |
+| 0x3209 | AUDIO_PROGRAM_SET | Master → MCU | `tracks(bytes_rest)` | 獨立多軌節目（JSON：`{"tracks":[{file,loop,volume,start_ms}], "limit":0-100}`，與 mode JSON `audio` 段同構） |
+
+### 播放列表管理（playlist.json 索引）
+
+| CMD | 名稱 | 方向 | Payload | 說明 |
+|---|---|---|---|---|
+| 0x320A | AUDIO_LIST_QUERY | Master → MCU | (空) | 命令通道查列表（異系統相容） |
+| 0x320B | AUDIO_LIST_RSP | MCU → Master | `total(u8)` `count(u8)` `entries(bytes_rest)` | 每筆 = `name(str_u16len)` + `duration_ms(u32)` + `compat(u8)`；`total>count` = 8K 截斷 → 用檔案通道拉全量 |
+| 0x320C | AUDIO_LIST_RESCAN | Master → MCU | (空) | 重掃 `/sd/audio/*.wav` 重建 playlist.json（分批後台；播放中延後） |
+| 0x320D | AUDIO_LIST_REMOVE | Master → MCU | `name(str_u16len)` `delete_file(u8)` | `delete_file=0` 只移索引（隱藏）；`=1` 索引+SD 檔案一起刪 |
+| 0x320E | AUDIO_LIST_READY | MCU → Master | `ok(u8)` `count(u8)` | RESCAN/REMOVE 共用 ACK |
+
+> 查詢雙通道：命令（0x320A/B，異系統）+ 檔案通道（自家 Master 用既有
+> `0x2005 FILE_QUERY` 拿 sha256/size → `0x2007 FILE_READ` 分段下載
+> `/sd/audio/playlist.json`，sha 沒變就不用重拉）。
 
 ---
 

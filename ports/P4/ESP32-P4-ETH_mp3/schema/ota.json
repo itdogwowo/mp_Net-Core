@@ -1,0 +1,378 @@
+{
+  "group": "ota",
+  "cmds": [
+    {
+      "cmd": "0x2201",
+      "name": "OTA_BEGIN",
+      "payload": [
+        {
+          "name": "image_size",
+          "type": "u32"
+        },
+        {
+          "name": "chunk_size",
+          "type": "u16"
+        },
+        {
+          "name": "sha256",
+          "type": "bytes_fixed",
+          "len": 32
+        },
+        {
+          "name": "fw_ver",
+          "type": "str_u16len"
+        }
+      ]
+    },
+    {
+      "cmd": "0x2202",
+      "name": "OTA_WRITE",
+      "payload": [
+        {
+          "name": "offset",
+          "type": "u32"
+        },
+        {
+          "name": "data",
+          "type": "bytes_rest"
+        }
+      ]
+    },
+    {
+      "cmd": "0x2203",
+      "name": "OTA_END",
+      "payload": []
+    },
+    {
+      "cmd": "0x2204",
+      "name": "OTA_ACK",
+      "payload": [
+        {
+          "name": "offset",
+          "type": "u32"
+        },
+        {
+          "name": "written",
+          "type": "u32"
+        }
+      ]
+    },
+    {
+      "cmd": "0x2205",
+      "name": "OTA_ABORT",
+      "payload": []
+    },
+    {
+      "cmd": "0x2206",
+      "name": "OTA_VERSION_QUERY",
+      "payload": []
+    },
+    {
+      "cmd": "0x2207",
+      "name": "OTA_VERSION_RSP",
+      "payload": [
+        {
+          "name": "fw_ver",
+          "type": "str_u16len"
+        },
+        {
+          "name": "app_sha256",
+          "type": "bytes_fixed",
+          "len": 32
+        },
+        {
+          "name": "running_slot",
+          "type": "str_u16len"
+        },
+        {
+          "name": "running_seq",
+          "type": "u32"
+        },
+        {
+          "name": "free_slot",
+          "type": "str_u16len"
+        },
+        {
+          "name": "partition_size",
+          "type": "u32"
+        }
+      ]
+    },
+    {
+      "cmd": "0x2210",
+      "name": "OTA_CAPS_QUERY",
+      "payload": []
+    },
+    {
+      "cmd": "0x2211",
+      "name": "OTA_CAPS_RSP",
+      "payload": [
+        {
+          "name": "max_chunk_size",
+          "type": "u16"
+        },
+        {
+          "name": "secure_boot",
+          "type": "u8"
+        },
+        {
+          "name": "flash_encrypt",
+          "type": "u8"
+        },
+        {
+          "name": "rollback_support",
+          "type": "u8"
+        },
+        {
+          "name": "diff_ota_support",
+          "type": "u8"
+        }
+      ]
+    },
+    {
+      "cmd": "0x2212",
+      "name": "OTA_LAST_QUERY",
+      "payload": []
+    },
+    {
+      "cmd": "0x2213",
+      "name": "OTA_LAST_RSP",
+      "payload": [
+        {
+          "name": "last_ota_never",
+          "type": "u8"
+        },
+        {
+          "name": "last_ota_ok",
+          "type": "u8"
+        },
+        {
+          "name": "last_ota_begin_fail",
+          "type": "u8"
+        },
+        {
+          "name": "last_ota_write_fail",
+          "type": "u8"
+        },
+        {
+          "name": "last_ota_end_fail",
+          "type": "u8"
+        },
+        {
+          "name": "last_ota_sha_mismatch",
+          "type": "u8"
+        },
+        {
+          "name": "last_ota_reboot_fail",
+          "type": "u8"
+        },
+        {
+          "name": "last_ota_fw_ver",
+          "type": "str_u16len"
+        },
+        {
+          "name": "last_ota_sha256",
+          "type": "bytes_fixed",
+          "len": 32
+        }
+      ]
+    },
+    {
+      "cmd": "0x2214",
+      "name": "OTA_PARTITION_STATUS",
+      "payload": []
+    },
+    {
+      "cmd": "0x2215",
+      "name": "OTA_PARTITION_STATUS_RSP",
+      "payload": [
+        {
+          "name": "slot0_seq",
+          "type": "u32"
+        },
+        {
+          "name": "slot0_valid",
+          "type": "u8"
+        },
+        {
+          "name": "slot1_seq",
+          "type": "u32"
+        },
+        {
+          "name": "slot1_valid",
+          "type": "u8"
+        },
+        {
+          "name": "running_idx",
+          "type": "u8"
+        }
+      ]
+    },
+    {
+      "cmd": "0x2216",
+      "name": "OTA_VERIFY",
+      "payload": []
+    },
+    {
+      "cmd": "0x2217",
+      "name": "OTA_VERIFY_RSP",
+      "payload": [
+        {
+          "name": "verify_ok",
+          "type": "u8"
+        },
+        {
+          "name": "verify_fail_sha",
+          "type": "u8"
+        },
+        {
+          "name": "verify_fail_header",
+          "type": "u8"
+        },
+        {
+          "name": "verify_fail_crc",
+          "type": "u8"
+        },
+        {
+          "name": "verified_sha256",
+          "type": "bytes_fixed",
+          "len": 32
+        },
+        {
+          "name": "target_slot_seq",
+          "type": "u32"
+        }
+      ]
+    },
+    {
+      "cmd": "0x2218",
+      "name": "OTA_PROGRESS_QUERY",
+      "payload": []
+    },
+    {
+      "cmd": "0x2219",
+      "name": "OTA_PROGRESS_RSP",
+      "payload": [
+        {
+          "name": "image_size",
+          "type": "u32"
+        },
+        {
+          "name": "written",
+          "type": "u32"
+        },
+        {
+          "name": "target_slot",
+          "type": "str_u16len"
+        }
+      ]
+    },
+    {
+      "cmd": "0x221A",
+      "name": "OTA_STATE_QUERY",
+      "payload": []
+    },
+    {
+      "cmd": "0x221B",
+      "name": "OTA_STATE_RSP",
+      "payload": [
+        {
+          "name": "state_idle",
+          "type": "u8"
+        },
+        {
+          "name": "state_writing",
+          "type": "u8"
+        },
+        {
+          "name": "state_verified",
+          "type": "u8"
+        },
+        {
+          "name": "state_error",
+          "type": "u8"
+        },
+        {
+          "name": "target_slot",
+          "type": "str_u16len"
+        }
+      ]
+    },
+    {
+      "cmd": "0x221C",
+      "name": "OTA_ERROR_RSP",
+      "payload": [
+        {
+          "name": "err_begin_partition_conflict",
+          "type": "u8"
+        },
+        {
+          "name": "err_begin_no_partition",
+          "type": "u8"
+        },
+        {
+          "name": "err_begin_size_too_big",
+          "type": "u8"
+        },
+        {
+          "name": "err_write_offset_mismatch",
+          "type": "u8"
+        },
+        {
+          "name": "err_write_flash_fail",
+          "type": "u8"
+        },
+        {
+          "name": "err_write_chunk_too_big",
+          "type": "u8"
+        },
+        {
+          "name": "err_end_validate_fail",
+          "type": "u8"
+        },
+        {
+          "name": "err_end_not_writing",
+          "type": "u8"
+        },
+        {
+          "name": "err_apply_set_boot_fail",
+          "type": "u8"
+        },
+        {
+          "name": "err_not_in_verified_state",
+          "type": "u8"
+        },
+        {
+          "name": "err_already_active",
+          "type": "u8"
+        },
+        {
+          "name": "failed_offset",
+          "type": "u32"
+        },
+        {
+          "name": "written_up_to",
+          "type": "u32"
+        },
+        {
+          "name": "target_slot",
+          "type": "str_u16len"
+        }
+      ]
+    },
+    {
+      "cmd": "0x2220",
+      "name": "OTA_APPLY",
+      "payload": [
+        {
+          "name": "set_boot_only",
+          "type": "u8"
+        },
+        {
+          "name": "restart_delay_ms",
+          "type": "u32"
+        }
+      ]
+    }
+  ]
+}

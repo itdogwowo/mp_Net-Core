@@ -1,0 +1,166 @@
+# mcp\src\bridge.js lines=112
+5:CLASS:Bridge
+49:CONST:pending
+74:CONST:waiter
+78:CONST:timer
+91:CONST:id
+93:CONST:timeout
+99:CONST:sent
+# mcp\src\ide-server.js lines=116
+1:I:import http from 'node:http'
+2:I:import fs from 'node:fs'
+3:I:import path from 'node:path'
+4:I:import { WebSocketServer } from 'ws'
+6:CONST:MIME_TYPES
+20:CLASS:IDEServer
+47:CONST:pathname
+67:CONST:addr
+93:CONST:filePath
+102:CONST:content
+103:CONST:ext
+104:CONST:mime
+# mcp\src\index.js lines=322
+3:I:import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
+4:I:import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
+5:I:import { z } from 'zod'
+6:I:import open from 'open'
+7:I:import path from 'node:path'
+8:I:import fs from 'node:fs'
+9:I:import { fileURLToPath } from 'node:url'
+11:I:import { IDEServer } from './ide-server.js'
+12:I:import { Bridge } from './bridge.js'
+13:I:import { SerialBridge } from './serial-bridge.js'
+15:CONST:__dirname
+18:CONST:buildDir
+37:FUNC:ensureInit
+53:FUNC:ensureBrowser
+63:FUNC:textResult
+64:CONST:text
+68:FUNC:errorResult
+72:CONST:mcp
+94:CONST:result
+118:CONST:tools
+120:TOOLNAME:name: 'viperIDE_connect_device',
+130:TOOLNAME:name: 'viperIDE_disconnect_device',
+136:TOOLNAME:name: 'viperIDE_list_files',
+142:TOOLNAME:name: 'viperIDE_read_file',
+148:TOOLNAME:name: 'viperIDE_write_file',
+157:TOOLNAME:name: 'viperIDE_delete_file',
+163:TOOLNAME:name: 'viperIDE_delete_dir',
+169:TOOLNAME:name: 'viperIDE_mkdir',
+175:TOOLNAME:name: 'viperIDE_open_file',
+181:TOOLNAME:name: 'viperIDE_get_editor',
+187:TOOLNAME:name: 'viperIDE_set_editor',
+193:TOOLNAME:name: 'viperIDE_save_file',
+199:TOOLNAME:name: 'viperIDE_run_file',
+205:TOOLNAME:name: 'viperIDE_stop',
+211:TOOLNAME:name: 'viperIDE_reboot',
+217:TOOLNAME:name: 'viperIDE_read_terminal',
+224:TOOLNAME:name: 'viperIDE_write_terminal',
+230:TOOLNAME:name: 'viperIDE_clear_terminal',
+236:TOOLNAME:name: 'viperIDE_install_package',
+245:TOOLNAME:name: 'viperIDE_create_file',
+254:TOOLNAME:name: 'viperIDE_close_file',
+265:CONST:result
+280:CONST:result
+297:CONST:wsUrl
+320:CONST:transport
+# mcp\src\serial-bridge.js lines=144
+3:FUNC:getSerialPort
+5:CONST:mod
+11:CLASS:SerialBridge
+14:CONST:SP
+15:CONST:url
+16:CONST:encoded
+17:CONST:devicePath
+36:CONST:preHandshakeBuffer
+38:CONST:cleanup
+100:CONST:buf
+109:CONST:SP
+110:CONST:ports
+111:CONST:allPorts
+121:CONST:knownVids
+131:CONST:likelyPorts
+133:CONST:mfr
+134:CONST:vid
+# mcp\test\e2e.js lines=499
+14:I:import { Client } from '@modelcontextprotocol/sdk/client/index.js'
+15:I:import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
+16:I:import path from 'node:path'
+17:I:import { fileURLToPath } from 'node:url'
+19:CONST:__dirname
+20:CONST:SERVER_PATH
+22:CONST:wsUrl
+23:CONST:wsPass
+24:CONST:serialPath
+28:CONST:results
+30:FUNC:test
+32:CONST:result
+45:FUNC:assert
+49:FUNC:assertIncludes
+53:FUNC:callTool
+54:CONST:result
+56:CONST:text
+59:CONST:text
+68:FUNC:sleep
+72:FUNC:waitForBrowser
+73:CONST:start
+76:CONST:status
+86:FUNC:waitForDevice
+87:CONST:start
+89:CONST:status
+96:FUNC:runVMTests
+100:CONST:r
+106:CONST:r
+111:CONST:r
+117:CONST:r
+125:CONST:r
+130:CONST:r
+137:CONST:r
+143:CONST:r
+150:CONST:r
+157:CONST:r
+162:CONST:r
+169:CONST:r
+175:CONST:r
+180:CONST:r
+185:CONST:r
+190:CONST:r
+195:CONST:r
+202:CONST:r
+207:CONST:r
+212:FUNC:runWebREPLTests
+216:CONST:r
+226:CONST:r
+235:CONST:r
+242:CONST:r
+250:CONST:r
+255:CONST:r
+262:CONST:r
+269:CONST:r
+270:CONST:text
+275:CONST:r
+284:CONST:r
+285:CONST:text
+290:CONST:r
+295:CONST:r
+302:CONST:r
+307:FUNC:runSerialBridgeTests
+311:CONST:r
+321:CONST:r
+327:CONST:r
+338:CONST:r
+341:CONST:hasFlash
+346:CONST:testFile
+349:CONST:r
+357:CONST:r
+374:CONST:r
+375:CONST:text
+386:CONST:r
+387:CONST:text
+400:FUNC:runErrorTests
+434:CONST:r
+445:CONST:env
+450:CONST:transport
+459:CONST:line
+463:CONST:client

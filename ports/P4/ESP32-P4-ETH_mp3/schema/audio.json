@@ -1,0 +1,75 @@
+{
+  "group": "audio",
+  "cmds": [
+    {
+      "cmd": "0x3201", "name": "AUDIO_SET",
+      "payload": [
+        {"name": "file_name", "type": "str_u16len"},
+        {"name": "play_mode", "type": "u8"},
+        {"name": "volume", "type": "u8"}
+      ]
+    },
+    {
+      "cmd": "0x3202", "name": "AUDIO_PLAY",
+      "payload": [
+        {"name": "start_ms", "type": "u32"}
+      ]
+    },
+    {"cmd": "0x3203", "name": "AUDIO_STOP", "payload": []},
+    {
+      "cmd": "0x3204", "name": "AUDIO_PAUSE",
+      "payload": [
+        {"name": "pause", "type": "u8"}
+      ]
+    },
+    {
+      "cmd": "0x3205", "name": "AUDIO_SEEK",
+      "payload": [
+        {"name": "target_ms", "type": "u32"}
+      ]
+    },
+    {
+      "cmd": "0x3206", "name": "AUDIO_VOLUME",
+      "payload": [
+        {"name": "volume", "type": "u8"}
+      ]
+    },
+    {
+      "cmd": "0x3207", "name": "AUDIO_READY_ACK",
+      "payload": [
+        {"name": "ok", "type": "u8"},
+        {"name": "duration_ms", "type": "u32"}
+      ]
+    },
+    {
+      "cmd": "0x3209", "name": "AUDIO_PROGRAM_SET",
+      "payload": [
+        {"name": "tracks", "type": "bytes_rest"}
+      ]
+    },
+    {"cmd": "0x320A", "name": "AUDIO_LIST_QUERY", "payload": []},
+    {
+      "cmd": "0x320B", "name": "AUDIO_LIST_RSP",
+      "payload": [
+        {"name": "total", "type": "u8"},
+        {"name": "count", "type": "u8"},
+        {"name": "entries", "type": "bytes_rest"}
+      ]
+    },
+    {"cmd": "0x320C", "name": "AUDIO_LIST_RESCAN", "payload": []},
+    {
+      "cmd": "0x320D", "name": "AUDIO_LIST_REMOVE",
+      "payload": [
+        {"name": "name", "type": "str_u16len"},
+        {"name": "delete_file", "type": "u8"}
+      ]
+    },
+    {
+      "cmd": "0x320E", "name": "AUDIO_LIST_READY",
+      "payload": [
+        {"name": "ok", "type": "u8"},
+        {"name": "count", "type": "u8"}
+      ]
+    }
+  ]
+}

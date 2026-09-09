@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Net‑Core Web</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="bg"></div>
+    <div class="app">
+      <aside class="side">
+        <div class="side__brand">
+          <div class="brand__mark" aria-hidden="true"></div>
+          <div class="side__meta">
+            <div class="side__title">Net‑Core</div>
+            <div class="side__sub" id="deviceLine">裝置：—</div>
+          </div>
+        </div>
+        <nav class="nav">
+          <a class="nav__item" href="#/wifi" data-route="wifi">
+            <span class="nav__dot"></span>
+            <span class="nav__label">Wi‑Fi 設定</span>
+          </a>
+          <a class="nav__item" href="#/console" data-route="console">
+            <span class="nav__dot"></span>
+            <span class="nav__label">指令台</span>
+          </a>
+        </nav>
+        <div class="side__foot">
+          <div class="pill pill--mut" id="netPill">狀態讀取中</div>
+        </div>
+      </aside>
+      <main class="main">
+        <header class="top">
+          <div class="top__title" id="pageTitle">Wi‑Fi 設定</div>
+          <div class="top__right">
+            <div class="pill" id="pagePill">—</div>
+          </div>
+        </header>
+        <div class="content">
+          <section class="page" id="page-wifi" data-page="wifi">
+            <div class="hero">
+              <div class="hero__grid">
+                <section class="card">
+                  <div class="card__head">
+                    <div class="card__title">目前狀態</div>
+                    <button class="btn btn--ghost" id="btnRefresh" type="button">更新</button>
+                  </div>
+                  <div class="kv">
+                    <div class="kv__row"><div class="kv__k">模式</div><div class="kv__v" id="stMode">—</div></div>
+                    <div class="kv__row"><div class="kv__k">SSID</div><div class="kv__v" id="stSsid">—</div></div>
+                    <div class="kv__row"><div class="kv__k">IP</div><div class="kv__v" id="stIp">—</div></div>
+                    <div class="kv__row"><div class="kv__k">Gateway</div><div class="kv__v" id="stGw">—</div></div>
+                  </div>
+                  <div class="hint" id="ipHint"></div>
+                </section>
+                <section class="card">
+                  <div class="card__head">
+                    <div class="card__title">連線設定</div>
+                    <button class="btn btn--ghost" id="btnScan" type="button">掃描</button>
+                  </div>
+                  <form class="form" id="connectForm">
+                    <label class="field">
+                      <span class="field__label">SSID</span>
+                      <input class="field__input" id="ssidInput" name="ssid" autocomplete="off" placeholder="選擇或輸入 Wi‑Fi 名稱" />
+                    </label>
+                    <label class="field">
+                      <span class="field__label">密碼</span>
+                      <div class="pw">
+                        <input class="field__input pw__input" id="pwInput" name="password" type="password" autocomplete="new-password" placeholder="若為開放網路可留空" />
+                        <button class="btn btn--tiny" id="btnTogglePw" type="button">顯示</button>
+                      </div>
+                    </label>
+                    <label class="check">
+                      <input class="check__box" id="saveCheck" type="checkbox" checked />
+                      <span class="check__text">保存到裝置</span>
+                    </label>
+                    <div class="actions">
+                      <button class="btn btn--primary" id="btnConnect" type="submit">連接</button>
+                      <button class="btn btn--quiet" id="btnClear" type="button">清除</button>
+                    </div>
+                    <div class="msg" id="msgLine" role="status" aria-live="polite"></div>
+                  </form>
+                </section>
+              </div>
+            </div>
+            <section class="panel">
+              <div class="panel__head">
+                <div class="panel__title">可用網路</div>
+                <div class="panel__meta" id="scanMeta">—</div>
+              </div>
+              <div class="list" id="netList"></div>
+            </section>
+            <footer class="foot">
+              <div class="foot__muted">提示：如果裝置切換到新的 Wi‑Fi，瀏覽器可能需要改用新的 IP 重新開啟此頁。</div>
+            </footer>
+          </section>
+
+          <section class="page" id="page-console" data-page="console" hidden>
+            <section class="panel">
+              <div class="panel__head">
+                <div class="panel__title">指令台</div>
+                <div class="panel__meta">透過裝置的 HTTP API 送出指令（/api/cmd）</div>
+              </div>
+              <div class="grid2">
+                <section class="card">
+                  <div class="card__head">
+                    <div class="card__title">送出指令</div>
+                    <div></div>
+                  </div>
+                  <label class="field">
+                    <span class="field__label">JSON（cmd + payload，Ctrl/Cmd + Enter 送出）</span>
+                    <textarea class="field__input area" id="wsSendInput" rows="8" placeholder='{"cmd":"0x1003","payload":{}}'></textarea>
+                  </label>
+                  <div class="actions">
+                    <button class="btn btn--primary" id="btnWsSend" type="button">送出</button>
+                    <button class="btn btn--quiet" id="btnWsClear" type="button">清除</button>
+                  </div>
+                  <div class="msg" id="cmdMsg" role="status" aria-live="polite"></div>
+                </section>
+                <section class="card">
+                  <div class="card__head">
+                    <div class="card__title">回覆</div>
+                    <div></div>
+                  </div>
+                  <pre class="pre" id="cmdOut">{}</pre>
+                </section>
+              </div>
+            </section>
+          </section>
+
+        </div>
+      </main>
+    </div>
+    <script type="module" src="/app.mjs"></script>
+  </body>
+</html>
