@@ -279,7 +279,7 @@ class StreamTask(Task):
         stream_actions._STREAM_STATE["mode"] = play_mode
         stream_actions._STREAM_STATE["streaming"] = False
         stream_actions._STREAM_STATE["frame_count"] = 0
-        get_log().info("[Stream] load {} play_mode={}".format(path, play_mode))
+        get_log().info("[Stream] load {} play_mode={}".format(self._path, play_mode))
 
     # ── 檔內絕對幀號 (進度回報用) ──────────────
     def _update_pos(self):
