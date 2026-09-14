@@ -125,14 +125,21 @@ import os
 import subprocess
 
 
-def ensure_netmiko():
-    """檢查 netmiko；沒裝就提示安裝指令並問要不要自動安裝。"""
+def ensure_netmiko(interactive=True):
+    """檢查 netmiko；沒裝就提示安裝指令並問要不要自動安裝。
+
+    interactive=False (網頁/自動化呼叫) 時不問任何問題, 直接報錯退出 ——
+    沒有 stdin 的環境下 input() 會拋 EOFError, 讓錯誤訊息清楚一點。
+    """
     try:
         import netmiko  # noqa: F401
         return
     except ImportError:
         pass
     pip_cmd = "pip install netmiko" if os.name == "nt" else "pip3 install netmiko"
+    if not interactive:
+        print("❌ 找不到 netmiko，無法連線交換器。請先安裝: {}".format(pip_cmd))
+        sys.exit(1)
     print("📦 這個腳本需要 Netmiko 程式庫，但目前的 Python 環境還沒安裝。")
     print(f"手動安裝指令: {pip_cmd}")
     ans = input("要現在自動幫你安裝嗎? (yes/no): ").strip().lower()
@@ -279,9 +286,105 @@ ACTION_INFO = {
     "3": ("開啟 PoE", "只恢復供電"),
 }
 ACTION_MODE = {"1": "restart", "2": "off", "3": "on"}
+MODE_ACTION = {v: k for k, v in ACTION_MODE.items()}
+
+
+# ============================================================
+# 非互動模式 (網頁一鍵呼叫用: NetBusMaster 以子行程執行本腳本)
+# ============================================================
+AUTO_USAGE = ("用法: poe_restart.py [--dry-run] [--switches 1|2|both] "
+              "[--action restart|off|on] [--ports all|3,5,10-15] [--yes]")
+
+
+def parse_auto_args(argv):
+    """解析非互動參數。
+
+    沒帶任何非互動參數 (只有 --dry-run 也算) → 回 None, 走原本的互動流程,
+    保留「單獨執行 python3 poe_restart.py」與既有測試的問答行為。
+    """
+    opts = {"dry_run": False, "switches": None, "action": None,
+            "ports": None, "yes": False}
+    seen_auto = False
+    i = 0
+    while i < len(argv):
+        a = argv[i]
+        if a == "--dry-run":
+            opts["dry_run"] = True
+        elif a in ("--switches", "--action", "--ports"):
+            if i + 1 >= len(argv):
+                raise SystemExit(f"❌ {a} 需要一個值\n{AUTO_USAGE}")
+            opts[a[2:]] = argv[i + 1]
+            seen_auto = True
+            i += 1
+        elif a == "--yes":
+            opts["yes"] = True
+            seen_auto = True
+        else:
+            raise SystemExit(f"❌ 未知參數: {a}\n{AUTO_USAGE}")
+        i += 1
+    return opts if seen_auto else None
+
+
+def run_auto(opts):
+    """非互動執行: 不問任何問題, 只印進度。回傳 exit code。"""
+    dry_run = opts["dry_run"]
+    action = opts["action"] or "restart"
+    if action not in ACTION_MODE.values():
+        raise SystemExit(f"❌ --action 只接受 restart/off/on\n{AUTO_USAGE}")
+
+    sw_arg = opts["switches"] or "both"
+    if sw_arg in ("both", "3"):
+        targets = list(SWITCHES.values())
+    elif sw_arg in SWITCHES:
+        targets = [SWITCHES[sw_arg]]
+    else:
+        raise SystemExit(f"❌ --switches 只接受 1/2/both\n{AUTO_USAGE}")
+
+    ports_arg = opts["ports"] or "all"
+    if ports_arg == "all":
+        ports = set(range(CONTROL_MIN, CONTROL_MAX + 1))
+    else:
+        try:
+            ports = parse_ports(ports_arg)
+        except ValueError as e:
+            raise SystemExit(f"❌ --ports 格式錯誤: {e}\n{AUTO_USAGE}")
+
+    allowed, skipped = filter_protected(ports)
+    if not allowed:
+        print("❌ 剔除受保護 port 之後沒有剩下任何 port，不執行。")
+        return 1
+
+    label, detail = ACTION_INFO[MODE_ACTION[action]]
+    print("=" * 60)
+    print("  🔌 Cisco 3560 PoE Port 電源工具   [非互動模式]"
+          + ("  [DRY-RUN]" if dry_run else ""))
+    print("=" * 60)
+    print("  目標: {}".format(
+        " + ".join("{} ({})".format(s["name"], s["host"]) for s in targets)))
+    print("  動作: {}（{}）".format(label, detail))
+    print("  Port: {}".format(fmt_ports(allowed)))
+    if skipped:
+        print("  注意: port {} 受保護（電腦/互連/router），已自動跳過".format(fmt_ports(skipped)))
+    print("=" * 60)
+    if not dry_run:
+        ensure_netmiko(interactive=False)
+    try:
+        for sw in targets:
+            run_switch_action(sw, allowed, action, dry_run)
+    except ConnectionError as e:
+        # 非互動: 不等待 Enter, 直接以錯誤碼結束 (由呼叫端讀 returncode)
+        print(f"\n❌ {e}")
+        return 1
+    print("\n✅ 全部完成。")
+    return 0
 
 
 def main():
+    # 非互動模式 (網頁一鍵呼叫): 帶了 --switches/--action/--ports/--yes 就走這條
+    auto = parse_auto_args(sys.argv[1:])
+    if auto is not None:
+        sys.exit(run_auto(auto))
+
     dry_run = "--dry-run" in sys.argv
     print()
     print("=" * 60)

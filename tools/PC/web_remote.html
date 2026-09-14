@@ -123,9 +123,15 @@
   .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; flex: 0 0 auto; }
   .dot.on { background: var(--ok); } .dot.off { background: var(--muted); }
 
-  /* ── 狀態燈 (兩邊互看: 音響是否就緒 / MC 階段) ── */
+  /* ── 狀態燈 (兩邊互看: 音響是否就緒 / MC 階段) ──
+     🔧 置頂釘住: 貼在頁首下方, 捲動時不消失 (top 由 JS 量測頁首高度後寫入 --header-h)。
+        需要不透明底色, 否則捲過去的內容會透出來。 */
   .lamps {
     display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 12px;
+    position: sticky; top: var(--header-h, 92px); z-index: 40;
+    background: var(--bg);
+    padding: 8px 0 10px; margin-top: -8px;
+    box-shadow: 0 8px 14px -12px rgba(0, 0, 0, .9);
   }
   .lamp {
     flex: 1 1 45%; min-width: 140px;
@@ -154,6 +160,18 @@
   #log .warn { color: var(--warn); }
   .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
   .hint { color: var(--muted); font-size: 12px; }
+
+  /* ── 防連點提示 (toast) ── */
+  #toast {
+    position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%) translateY(20px);
+    background: #2b3242; border: 1px solid var(--warn); color: var(--text);
+    padding: 10px 18px; border-radius: 10px; font-size: 14px;
+    box-shadow: 0 8px 24px rgba(0,0,0,.45); z-index: 9999;
+    opacity: 0; pointer-events: none; transition: opacity .18s, transform .18s;
+    max-width: min(90vw, 520px); text-align: center;
+  }
+  #toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+  button.cooling { opacity: .65; }
 
   /* ── MC 演出頁: 卡片流水線 ── */
   .mctop {
@@ -357,6 +375,17 @@
       </div>
 
       <div class="card">
+        <h2>PoE 電源重啟 <span class="hint">特殊情況用</span></h2>
+        <button class="danger btn-lg" id="poerestart">⚡ 一鍵重啟 PoE（兩台交換器）</button>
+        <div class="hint" id="poehint" style="margin-top:8px">
+          兩台交換器、全部 45 個 port 斷電 5 秒後復電，所有燈具會重新開機。
+        </div>
+        <div class="hint" style="margin-top:6px">
+          送出後 10 秒內無法再按（防連點）。電腦 / 互連 / router 的 port 不會被動到。
+        </div>
+      </div>
+
+      <div class="card">
         <h2>系統保活</h2>
         <div id="kalive" class="hint" style="margin-bottom:10px"></div>
         <button class="danger btn-lg" id="shutdownall">⛔ 關閉整個系統</button>
@@ -502,6 +531,8 @@
   </div>
 </div>
 
+<div id="toast"></div>
+
 <script>
 (function () {
   var $ = function (s) { return document.querySelector(s); };
@@ -509,6 +540,58 @@
   var logEl = $('#log');
   var logSince = 0;
   var qrUrl = '';
+
+  // ── 防連點: 同一顆按鈕送出後 10 秒內不能再按 ──
+  //  純前端守衛 (後端另有各自的守衛); 目的是防止使用者狂按造成重複發送指令的 bug。
+  var CLICK_COOLDOWN_MS = 10000;
+  var clickLocks = {};          // key → 解鎖時間戳 (ms)
+  var toastTimer = null;
+
+  function showToast(msg) {
+    var el = $('#toast');
+    if (!el) return;
+    el.textContent = msg;
+    el.classList.add('show');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(function () { el.classList.remove('show'); }, 2600);
+  }
+
+  function cooldownLeft(key) {
+    return Math.max(0, ((clickLocks[key] || 0) - Date.now()) / 1000);
+  }
+
+  /** 檢查/設定冷卻。可用 → 回 true 並上鎖; 冷卻中 → 提示並回 false。 */
+  function gateClick(key, label) {
+    var left = cooldownLeft(key);
+    if (left > 0) {
+      showToast('「' + (label || '此按鈕') + '」已送出，' +
+        Math.ceil(left) + ' 秒後才能再按（防止重複發送）');
+      return false;
+    }
+    clickLocks[key] = Date.now() + CLICK_COOLDOWN_MS;
+    return true;
+  }
+
+  /** 按鈕進入冷卻視覺: 變灰 + 倒數, 結束後還原。 */
+  function cooldownButton(btn, key, label) {
+    if (!btn) return;
+    var orig = btn.getAttribute('data-orig') || btn.innerHTML;
+    btn.setAttribute('data-orig', orig);
+    btn.disabled = true;
+    btn.classList.add('cooling');
+    showToast('「' + (label || '此按鈕') + '」已送出，10 秒內無法重複點擊');
+    (function tick() {
+      var left = Math.ceil(cooldownLeft(key));
+      if (left > 0) {
+        btn.innerHTML = '⏳ ' + left + ' 秒後可再按';
+        setTimeout(tick, 250);
+      } else {
+        btn.innerHTML = btn.getAttribute('data-orig') || orig;
+        btn.disabled = false;
+        btn.classList.remove('cooling');
+      }
+    })();
+  }
 
   // 按鈕卡可用的演出動作 (與後端 _SHOW_ACTIONS 一致)
   var SHOW_ACTIONS = [
@@ -526,18 +609,18 @@
   SHOW_ACTIONS.forEach(function (a) { ACTION_LABEL[a[0]] = { zh: a[1], en: a[2] }; });
 
   // 階段 → 允許的動作 (與後端守衛一致, 前端先擋以減少誤觸)
+  //  🔧 音響的「已就緒」只是標記, 不是閘門: awaiting_audio 也允許 show_play。
   var PHASE_ALLOW = {
     idle:            ['show_arm', 'play_loop', 'play_slot'],
     armed:           ['show_request_play', 'show_play', 'show_stop', 'show_end_play', 'show_end', 'play_loop', 'play_slot'],
-    awaiting_audio:  ['show_stop', 'show_end_play', 'show_end'],
+    awaiting_audio:  ['show_play', 'show_stop', 'show_end_play', 'show_end'],
     ready:           ['show_play', 'show_stop', 'show_end_play', 'show_end', 'play_loop', 'play_slot'],
     playing:         ['show_stop', 'show_replay', 'show_end_play', 'show_end'],
-    finished:        ['show_arm', 'show_request_play', 'show_replay', 'show_end', 'play_loop', 'play_slot'],
-    ending:          []
+    finished:        ['show_arm', 'show_request_play', 'show_replay', 'show_end', 'play_loop', 'play_slot']
   };
   var PHASE_LABEL = {
     idle: '待機', armed: '已暖機', awaiting_audio: '等待音響',
-    ready: '可播放', playing: '播放中', finished: '播放結束', ending: '等待音響重置'
+    ready: '可播放', playing: '播放中', finished: '播放結束'
   };
 
   var CONFIG_KEYS = [
@@ -836,7 +919,6 @@
     else audioLamp = ['', '尚未就緒'];
     if (phase === 'playing') mcLamp = ['live', '播放中'];
     else if (phase === 'finished') mcLamp = ['on', '播放結束'];
-    else if (phase === 'ending') mcLamp = ['wait', '結束中'];
     else if (mcArmed) mcLamp = ['on', '已備妥'];
     else mcLamp = ['', '待機'];
 
@@ -884,24 +966,32 @@
       var slot = c.slot || '';
       var label = ACTION_LABEL[act] ? ACTION_LABEL[act][lang] : act;
       var custom = (lang === 'en' ? c.en : c.zh) || '';
-      var on = allowed.indexOf(act) >= 0;
+      var ckey = 'card:' + act + ':' + slot;
+      var cooling = Math.ceil(cooldownLeft(ckey));
+      var on = allowed.indexOf(act) >= 0 && cooling <= 0;
       var cls = !on ? '' :
         (act === 'show_play' || act === 'play_loop' || act === 'play_slot') ? 'primary' :
         (act === 'show_stop' || act === 'show_end') ? 'danger' :
         (act === 'show_replay' || act === 'show_end_play') ? 'warn' : 'primary';
       var attrs = 'data-show="' + esc(act) + '"' + (slot ? ' data-slot="' + esc(slot) + '"' : '');
+      var sub = cooling > 0 ? '（' + cooling + ' 秒後可再按）'
+                            : (on ? '' : '（目前階段不可用）');
       return '<div class="scriptcard">' + idx +
         '<div class="slabel">' + esc(act) + (slot ? ' · ' + esc(slot) : '') + '</div>' +
-        '<button class="' + cls + '" ' + attrs + (on ? '' : ' disabled') + '>' +
+        '<button class="' + cls + (cooling > 0 ? ' cooling' : '') + '" ' + attrs +
+        (on ? '' : ' disabled') + '>' +
         esc(custom || label) +
-        '<span class="sub">' + (on ? '' : '（目前階段不可用）') + '</span>' +
+        '<span class="sub">' + sub + '</span>' +
         '</button></div>';
     }).join('');
     $$('#mccards button[data-show]').forEach(function (b) {
       b.addEventListener('click', function () {
-        b.disabled = true;
         var act = b.getAttribute('data-show');
         var slot = b.getAttribute('data-slot');
+        var ckey = 'card:' + act + ':' + (slot || '');
+        if (!gateClick(ckey, b.textContent.trim())) return;
+        showToast('「' + b.textContent.trim().replace(/（.*/, '') + '」已送出，10 秒內無法重複點擊');
+        b.disabled = true;
         var extra = slot ? { slot: slot } : {};
         post(act, extra).then(pollState);
       });
@@ -916,17 +1006,25 @@
     // 狀態燈: 音響頁看 MC 與自己
     renderLamps($('#audio_lamps'), show, 'audio');
 
-    // armed 階段若已舉手 → 顯示已就緒
+    // 🔧 音響端提示: 「已就緒」純標記, 按了不會擋住 MC 播放。
+    //    播放中 / 播完也能按 (同事可先標記就緒再離開)。
     var map = {
       idle:           ['', '待機中', '等待 MC 開始流程', ''],
       armed:          ready
-                        ? ['ready', '已就緒', '等待 MC 開始播放', '']
-                        : ['', '準備中', 'MC 正在暖機，可先按下方按鈕舉手', 'audio_ready'],
-      awaiting_audio: ['wait', '請準備', '請解除靜音，完成後按下方按鈕', 'audio_ready'],
-      ready:          ['ready', '已就緒', '等待 MC 開始播放', ''],
-      playing:        ['play', '播放中', '音效正在播放', ''],
-      finished:       ['', '播放結束', '等待 MC 下一步', ''],
-      ending:         ['wait', '請重置', '請將音響設備恢復原狀', 'audio_reset']
+                        ? ['ready', '已就緒', '等待 MC 開始播放', 'audio_reset']
+                        : ['', '準備中', 'MC 正在暖機，可先標記就緒', 'audio_ready'],
+      awaiting_audio: ready
+                        ? ['ready', '已就緒', '等待 MC 開始播放', 'audio_reset']
+                        : ['wait', '請準備', '請解除靜音；未標記時 MC 仍可直接播放（無音效）', 'audio_ready'],
+      ready:          ready
+                        ? ['ready', '已就緒', '等待 MC 開始播放', 'audio_reset']
+                        : ['', '尚未標記', '未標記不影響 MC 播放', 'audio_ready'],
+      playing:        ['play', '播放中', ready
+                        ? '已標記就緒'
+                        : '可按下方按鈕標記就緒', ready ? 'audio_reset' : 'audio_ready'],
+      finished:       ['', '播放結束', ready
+                        ? 'MC 結束流程後直接回待機，無需操作'
+                        : '可標記就緒；MC 結束流程後直接回待機', ready ? '' : 'audio_ready']
     };
     var cfg = map[phase] || map.idle;
     stage.className = 'audio-stage ' + cfg[0];
@@ -937,16 +1035,55 @@
       document.title = (cfg[1] ? '【' + cfg[1] + '】' : '') + 'NetBus 音響';
     }
     if (cfg[3]) {
-      var isReady = cfg[3] === 'audio_ready';
-      btns.innerHTML = '<button class="' + (isReady ? 'ok' : 'warn') + ' btn-lg" id="audiobtn">' +
-        (isReady ? '✓ 音響已就緒' : '✓ 已重置') + '</button>';
+      var isMark = cfg[3] === 'audio_ready';      // true=標記就緒, false=取消標記
+      var akey = 'audio:' + cfg[3];
+      var acool = Math.ceil(cooldownLeft(akey));
+      var alabel = isMark ? '✓ 標記音響已就緒' : '✗ 取消就緒標記';
+      btns.innerHTML = '<button class="' + (isMark ? 'ok' : 'warn') + ' btn-lg" id="audiobtn"' +
+        (acool > 0 ? ' disabled' : '') + '>' +
+        (acool > 0 ? '⏳ ' + acool + ' 秒後可再按' : alabel) + '</button>';
       $('#audiobtn').addEventListener('click', function () {
+        if (!gateClick(akey, alabel)) return;
+        showToast('「' + alabel + '」已送出，10 秒內無法重複點擊');
         this.disabled = true;
         post(cfg[3]).then(pollState);
       });
     } else {
       btns.innerHTML = '';
     }
+  }
+
+  // ── 一鍵 PoE 重啟 (技術台) ──
+  //  後端為權威 (冷卻期間會拒絕), 前端只做即時倒數與按鈕鎖定, 避免使用者狂按。
+  var poeLockUntil = 0;      // 本地鎖到這個時間戳 (ms)
+  function renderPoe(poe) {
+    var btn = $('#poerestart'), hint = $('#poehint');
+    if (!btn) return;
+    poe = poe || {};
+    // 後端冷卻剩餘時間 → 同步本地鎖 (重新整理頁面也能延續倒數)
+    if (poe.remain_s > 0) {
+      var until = Date.now() + poe.remain_s * 1000;
+      if (until > poeLockUntil) poeLockUntil = until;
+    }
+    var remain = Math.max(0, (poeLockUntil - Date.now()) / 1000);
+    if (poe.running) {
+      btn.disabled = true;
+      btn.textContent = '⚡ PoE 重啟中…請稍候';
+      hint.textContent = '正在重啟兩台交換器，請等燈具全部重新亮起。';
+      return;
+    }
+    if (remain > 0) {
+      btn.disabled = true;
+      btn.textContent = '⚡ 已送出，' + Math.ceil(remain) + ' 秒後可再按';
+      hint.textContent = '冷卻中（防止重複發送指令）。' +
+        (poe.msg ? '　' + poe.msg : '');
+      return;
+    }
+    btn.disabled = false;
+    btn.textContent = '⚡ 一鍵重啟 PoE（兩台交換器）';
+    hint.textContent = poe.msg
+      ? poe.msg + '　可再次執行。'
+      : '兩台交換器、全部 45 個 port 斷電 5 秒後復電，所有燈具會重新開機。';
   }
 
   // ── 狀態總渲染 ──
@@ -962,7 +1099,7 @@
     var show = s.show || {};
     $('#mcphase').textContent = PHASE_LABEL[show.phase] || show.phase || '待機';
     $('#mcphase').className = 'badge' +
-      (show.phase === 'playing' ? ' on' : (show.phase === 'awaiting_audio' || show.phase === 'ending') ? ' wait' : '');
+      (show.phase === 'playing' ? ' on' : (show.phase === 'awaiting_audio') ? ' wait' : '');
 
     renderDeviceSummary(s.device_summary);
     renderDeviceMini(s.devices);
@@ -975,6 +1112,7 @@
     renderSlots(s.slots);
     renderWifi(s.wifi, typeof s.wifi === 'undefined');
     renderKeepalive(s.keepalive);
+    renderPoe(s.poe);
     renderLamps($('#mc_lamps'), show, 'mc');
     renderMcCards(s.script || { cards: [], lang: 'zh' }, show);
     renderAudio(show);
@@ -1171,6 +1309,10 @@
       } else if (action === 'verify') {
         extra.resource = $('#resource').value;
       }
+      // 防連點: 同一顆按鈕 (含參數) 10 秒內只送一次
+      var key = 'act:' + action + ':' + JSON.stringify(extra);
+      if (!gateClick(key, btn.textContent.trim())) return;
+      cooldownButton(btn, key, btn.textContent.trim());
       post(action, extra);
     });
   });
@@ -1182,6 +1324,8 @@
   });
 
   $('#slotsave').addEventListener('click', function () {
+    if (!gateClick('btn:slotsave', '儲存媒體槽')) return;
+    cooldownButton(this, 'btn:slotsave', '儲存媒體槽');
     var slots = {};
     ['main', 'loop'].forEach(function (name) {
       var res = document.querySelector('[data-slot="' + name + '.resource"]');
@@ -1204,6 +1348,8 @@
   });
 
   $('#savecfg').addEventListener('click', function () {
+    if (!gateClick('btn:savecfg', '儲存全部參數')) return;
+    cooldownButton(this, 'btn:savecfg', '儲存全部參數');
     var jobs = [];
     $$('#configgrid input[data-cfg]').forEach(function (inp) {
       var k = inp.getAttribute('data-cfg');
@@ -1217,6 +1363,8 @@
   });
 
   $('#netapply').addEventListener('click', function () {
+    if (!gateClick('btn:netapply', '套用網卡')) return;
+    cooldownButton(this, 'btn:netapply', '套用網卡');
     post('network', { selector: $('#netiface').value });
   });
 
@@ -1225,6 +1373,8 @@
     var f = parseFloat($('#bright_factor').value);
     if (!p) { pushLine('請先選擇 pxld', 'stderr'); return; }
     if (isNaN(f) || f <= 0) { pushLine('亮度比例無效', 'stderr'); return; }
+    if (!gateClick('btn:brightapply', '產生新檔')) return;
+    cooldownButton(this, 'btn:brightapply', '產生新檔');
     post('brightness', { pxld: p, factor: f / 100 });
   });
 
@@ -1240,9 +1390,14 @@
   $('#scriptsel').addEventListener('change', function () {
     post('set_script', { script_id: this.value }).then(pollState);
   });
-  // 手動強制重置 (任何階段都能解開死結: 例如 ending 時音響沒按)
+  // 手動強制重置 (任何階段都能解開死結: 例如裝置無回應、誤觸流程)
   function doShowReset() {
-    if (!window.confirm('確定要把演出流程重置回待機嗎？\n（正在播放會先停止）')) return;
+    if (!gateClick('btn:showreset', '重置演出流程')) return;
+    if (!window.confirm('確定要把演出流程重置回待機嗎？\n（正在播放會先停止）')) {
+      clickLocks['btn:showreset'] = 0;   // 取消確認 → 解除鎖, 讓使用者能再按
+      return;
+    }
+    showToast('「重置演出流程」已送出，10 秒內無法重複點擊');
     post('show_reset').then(pollState);
   }
   $('#showreset').addEventListener('click', doShowReset);
@@ -1266,6 +1421,19 @@
     if (!window.confirm('確定要關閉整個系統嗎？\n\n主服務與守護程式都會停止，不會自動重啟。\n（需要重新啟動才能恢復）')) return;
     this.disabled = true;
     post('shutdown_all');
+  });
+
+  // 一鍵 PoE 重啟: 點一下就走 (兩台交換器全 port) → 本地鎖 10 秒 (後端也會再擋一次)
+  $('#poerestart').addEventListener('click', function () {
+    if (Date.now() < poeLockUntil) return;
+    this.disabled = true;
+    poeLockUntil = Date.now() + 10000;
+    renderPoe({ cooldown_s: 10 });
+    post('poe_restart').then(function (j) {
+      // 後端拒絕 (冷卻中/執行中) → 解除本地鎖, 讓使用者能重試
+      if (j && j.ok === false) { poeLockUntil = 0; }
+      pollState();
+    });
   });
   $('#edcancel').addEventListener('click', closeEditor);
   $('#edsave').addEventListener('click', function () {
@@ -1334,6 +1502,8 @@
       : '尚未設定 SSID，QR Code 只會顯示頁面網址';
   }
   $('#wifisave').addEventListener('click', function () {
+    if (!gateClick('btn:wifisave', '儲存 Wi-Fi 設定')) return;
+    cooldownButton(this, 'btn:wifisave', '儲存 Wi-Fi 設定');
     var auth = $('#wifi_auth').value;
     // 無密碼模式不送密碼 (避免殘留舊值)
     var pw = auth === 'NOPASS' ? '' : $('#wifi_pw').value;
@@ -1370,6 +1540,16 @@
   });
 
   $('#clearlog').addEventListener('click', function () { logEl.innerHTML = ''; });
+
+  // ── 狀態燈置頂: 量頁首高度寫進 --header-h, 讓 .lamps 貼在頁首正下方 ──
+  function syncHeaderHeight() {
+    var h = document.querySelector('header');
+    if (!h) return;
+    document.documentElement.style.setProperty('--header-h', Math.round(h.getBoundingClientRect().height) + 'px');
+  }
+  syncHeaderHeight();
+  window.addEventListener('resize', syncHeaderHeight);
+  window.addEventListener('orientationchange', syncHeaderHeight);
 
   pollState();
   pollLogs();

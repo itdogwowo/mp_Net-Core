@@ -316,6 +316,7 @@ class _WebHandler(BaseHTTPRequestHandler):
             # 🔧 Wi-Fi QR 憑證 (密碼不回傳給前端, 只回是否有設定)
             "wifi": _WebHandler._wifi_public(m),
             "keepalive": m.remote_keepalive_status(),
+            "poe": m.remote_poe_status(),
         }
 
     @staticmethod
@@ -452,6 +453,9 @@ class _WebHandler(BaseHTTPRequestHandler):
             return {"ok": ok, "msg": msg}
         if action == "play_slot":
             ok, msg = m.remote_play_slot(data.get("slot"))
+            return {"ok": ok, "msg": msg}
+        if action == "poe_restart":
+            ok, msg = m.remote_poe_restart()
             return {"ok": ok, "msg": msg}
         if action == "save_wifi":
             ok, msg = m.remote_save_wifi(
@@ -1422,10 +1426,12 @@ class NetBusMaster:
         self._dev_finished = set()        # 🔧 本次會話「已自然播完」的設備 (重連不再自動續播)
         self._stop_was_manual = False     # 🔧 本次播放是否由使用者手動停止 (s/q), 決定要不要補「延遲停止」
         # 🔧 演出狀態機 (MC / 音響 兩頁共用的同步來源, 全部走 _build_state 曝光):
-        #    idle → armed → awaiting_audio → ready → playing → finished → ending → idle
+        #    idle → armed → awaiting_audio → ready → playing → finished → idle
+        #    🔧 audio_ready 只是「音響同事自己按的標記」, MC 播放不依賴它
+        #       (音響沒人就沒聲音, 燈效照播)。
         self.show_phase = "idle"          # 目前演出階段
         self.show_slot = "main"           # 目前使用的媒體槽 ("main" / "loop")
-        self.audio_ready = False          # 音響同事是否已按「音響已就緒」
+        self.audio_ready = False          # 音響同事是否已按「音響已就緒」(純標記)
         self._show_started_at = 0.0       # 本輪演出擊發時刻 (除錯/顯示用)
         self._show_watch_stop = threading.Event()   # 完成偵測執行緒停止訊號
         self._show_watch_thread = None
@@ -1435,6 +1441,13 @@ class NetBusMaster:
         self._dev_heal_last_knock = {}    # 🔧 每台設備上次自癒敲門時間戳 (rate limit, 防循環)
         self._progress_poll_stop = threading.Event()   # 🔧 播放進度輪詢執行緒
         self._progress_poll_thread = None
+        # 🔧 一鍵 PoE 重啟 (技術台): 兩台交換器全 port 斷電→復電。冷卻時間防止連點,
+        #    後端為權威 (前端只是先擋), 冷卻期間再按直接回剩餘秒數。
+        self._poe_lock = threading.Lock()
+        self._poe_last_start = 0.0        # 上次啟動時間戳 (冷卻起算點)
+        self._poe_running = False         # 子行程是否還在跑
+        self._poe_cooldown_s = 10.0       # 連點冷卻秒數
+        self._poe_msg = ""                # 最後一次結果訊息 (給網頁顯示)
         
         self.config_file = config_file
         self.config = copy.deepcopy(DEFAULT_CONFIG)
@@ -7395,6 +7408,89 @@ class NetBusMaster:
         self.panel.start()
 
     # ==================== Step 9: PoE Restart (Cisco 交換器 PoE port 重啟) ====================
+    def remote_poe_status(self):
+        """一鍵 PoE 重啟的狀態 (供網頁顯示倒數/進度)。回傳 dict。"""
+        with self._poe_lock:
+            running = self._poe_running
+            last = self._poe_last_start
+            msg = self._poe_msg
+            cd = self._poe_cooldown_s
+        remain = 0.0
+        if last > 0:
+            remain = max(0.0, cd - (time.time() - last))
+        return {
+            "running": running,
+            "cooldown_s": cd,
+            "remain_s": round(remain, 1),
+            "last_start": last,
+            "msg": msg,
+        }
+
+    def remote_poe_restart(self):
+        """技術台: 一鍵重啟 PoE —— 兩台交換器全 port 斷電→復電。回傳 (ok, msg)。
+
+        走 poe_restart.py 的非互動模式 (--switches both --action restart --ports all),
+        子行程執行, 不阻塞 HTTP 回應。10 秒冷卻防止重複點擊: 冷卻期間直接拒絕,
+        連按也不會多發指令。全 port 重啟會斷掉燈具電源, 所以先停播放避免狀態錯亂。
+        """
+        now = time.time()
+        with self._poe_lock:
+            if self._poe_running:
+                return False, "PoE 重啟正在執行中, 請稍候"
+            remain = self._poe_cooldown_s - (now - self._poe_last_start)
+            if self._poe_last_start > 0 and remain > 0:
+                return False, "請等待 {:.0f} 秒後再按 (防連點)".format(remain + 0.5)
+            self._poe_running = True
+            self._poe_last_start = now
+            self._poe_msg = "已啟動, 兩台交換器全 port 斷電→復電中"
+
+        # 先停播放: 斷電會讓燈具離線, 留著播放狀態會讓進度輪詢/自癒一直敲門
+        try:
+            self._stop_show_watcher()
+            if self.play_session_active:
+                self.remote_stop()
+            if self.show_phase == "playing":
+                self._set_phase("finished", "PoE 重啟, 已停止播放")
+        except Exception as e:
+            self.panel.log("warn", "[PoE] 停止播放時發生問題: {}".format(e))
+
+        threading.Thread(target=self._poe_restart_worker, daemon=True).start()
+        return True, "已啟動 PoE 重啟 (兩台交換器、全 port)，約需 20-40 秒"
+
+    def _poe_restart_worker(self):
+        """背景執行 poe_restart.py 非互動模式, 結束後記錄結果。"""
+        script = os.path.join(SCRIPT_DIR, "poe_restart.py")
+        cmd = [sys.executable, "-B", script,
+               "--switches", "both", "--action", "restart", "--ports", "all", "--yes"]
+        self.panel.log("info", "[PoE] 執行: {}".format(" ".join(cmd)))
+        rc = -1
+        try:
+            proc = subprocess.run(cmd, cwd=SCRIPT_DIR, timeout=180,
+                                  stdin=subprocess.DEVNULL,
+                                  capture_output=True, text=True)
+            rc = proc.returncode
+            for line in (proc.stdout or "").splitlines():
+                if line.strip():
+                    self.panel.log("info", "[PoE] " + line)
+            if proc.stderr and proc.stderr.strip():
+                for line in proc.stderr.splitlines():
+                    if line.strip():
+                        self.panel.log("warn", "[PoE] " + line)
+        except subprocess.TimeoutExpired:
+            self.panel.log("err", "[PoE] 執行逾時 (180s), 可能連不上交換器")
+        except Exception as e:
+            self.panel.log("err", "[PoE] 執行失敗: {}".format(e))
+
+        if rc == 0:
+            msg = "PoE 重啟完成 (兩台交換器全 port)"
+            self.panel.log("ok", "[PoE] " + msg)
+        else:
+            msg = "PoE 重啟失敗 (returncode={}), 請看 Log".format(rc)
+            self.panel.log("err", "[PoE] " + msg)
+        with self._poe_lock:
+            self._poe_running = False
+            self._poe_msg = msg
+
     def step_9_poe_restart(self):
         """呼叫 tools/PC/poe_restart.py — 遠端重啟 Cisco 3560 交換器的 PoE port。
 
@@ -7853,9 +7949,12 @@ class NetBusMaster:
     # ==================== 演出流程 (MC ↔ 音響 同步) ====================
     #  完整流程:
     #    idle --[MC 邀請觀眾準備]--> armed --[MC 準備播放]--> awaiting_audio
-    #         --[音響按「音響已就緒」]--> ready --[MC 播放]--> playing
-    #         --[自然播完 / MC 停止]--> finished --[MC 結束流程]--> ending
-    #         --[音響按「已重置」]--> idle
+    #         --[音響按「音響已就緒」(可選)]--> ready --[MC 播放]--> playing
+    #         --[自然播完 / MC 停止]--> finished --[MC 結束流程]--> idle
+    #  🔧 音響的「已就緒」只是標記, 不是閘門: MC 在 armed / awaiting_audio / ready
+    #     都能直接播放; 音響沒按、沒人就沒聲音, 燈效照播。
+    #  🔧 結束流程 = 直接回待機 (舊版進 ending 等音響按「已重置」, loop 之後現場
+    #     無人看管會整場卡住, 已移除)。
     #  MC 頁的按鈕卡依 phase 自動啟用/變灰; 音響頁只看 phase 顯示對應提示。
     # 🔧 媒體槽名稱 (固定兩個: 主秀 / 備用)。label 由技術台自訂。
     _SLOT_NAMES = ("main", "loop")
@@ -7953,35 +8052,42 @@ class NetBusMaster:
         return True, "已通知音響同事準備"
 
     def remote_audio_ready(self):
-        """音響: 音響已就緒 —— 告知 MC 可以隨時播放。回傳 (ok, msg)。
+        """音響: 音響已就緒 —— 標記自己的狀態。回傳 (ok, msg)。
 
-        🔧 armed 階段也接受: 音響不必等 MC 按「準備播放」才能舉手 (兩人在不同
-        位置時, 音響可先確認好設備並標記就緒)。此時只設 audio_ready=True,
-        階段維持 armed, 等 MC 按「準備播放」後會直接跳過等待 (見 request_play)。
+        🔧 純標記: 只設 audio_ready=True, 不影響 MC 能不能播 (有沒有聲音是另一回事)。
+        🔧 除 idle 外任何階段都接受: 音響不必等在「準備播放」才舉手, 第一段播完
+           (finished)、甚至播放中都能先按一下再離場; armed 階段按了會記住,
+           MC 之後按「準備播放」會直接跳到 ready, 不再多等一輪。
         """
-        if self.show_phase not in ("awaiting_audio", "ready", "armed"):
-            return False, "目前階段不需要就緒回報"
+        if self.show_phase == "idle":
+            return False, "目前沒有進行中的流程"
         self.audio_ready = True
         if self.show_phase == "armed":
             self._set_phase("armed", "音響已預先就緒 (等待 MC 準備播放)")
             return True, "已預先回報就緒"
-        self._set_phase("ready", "音響已就緒")
-        return True, "已回報就緒"
+        if self.show_phase == "awaiting_audio":
+            self._set_phase("ready", "音響已就緒")
+            return True, "已回報就緒"
+        # ready / playing / finished: 只更新標記, 不動階段
+        self.panel.log("info", "[Show] 音響標記就緒 (階段={})".format(self.show_phase))
+        return True, "已標記就緒"
 
     def remote_audio_reset(self):
-        """音響: 已重置 —— 結束流程後回到待機。回傳 (ok, msg)。"""
-        if self.show_phase != "ending":
-            return False, "目前階段不需要重置"
+        """音響: 取消自己的就緒標記。回傳 (ok, msg)。
+
+        🔧 結束流程已改由 MC 一鍵直接回待機, 這裡只剩「我剛按錯了, 取消」用途,
+           不影響演出階段; 保留是為了舊版快取頁面仍能送出而不報錯。
+        """
+        if not self.audio_ready:
+            return True, "目前沒有就緒標記"
         self.audio_ready = False
-        self.show_slot = "main"
-        self._set_phase("idle", "音響已重置, 回到待機")
-        return True, "已重置"
+        self.panel.log("info", "[Show] 音響取消就緒標記")
+        return True, "已取消就緒標記"
 
     def remote_show_reset(self):
         """手動強制重置流程 → idle (任何階段都可呼叫)。
 
-        逃生門: ending 階段只有音響能解 (按「已重置」), 音響手機沒電/關頁/忘了按
-        就整場卡死, 只能重啟程式。這顆讓 MC 或技術台自己解開。
+        逃生門: 任何階段卡住都能自己解開 (例如裝置無回應、誤觸流程)。
         正在播放會先停止; 不動媒體槽設定與講稿。
         """
         was = self.show_phase
@@ -8028,14 +8134,16 @@ class NetBusMaster:
         return os.path.splitext(os.path.basename(r))[0] if r else ""
 
     def remote_show_play(self, slot=None):
-        """MC: 播放 (需音響已就緒)。回傳 (ok, msg)。"""
+        """MC: 播放。回傳 (ok, msg)。
+
+        🔧 不依賴音響的「已就緒」: armed / awaiting_audio / ready 都能直接播
+           (音響沒人就沒聲音, 燈效照播)。awaiting_audio 也能播是為了避免音響
+           同事離場後 MC 卡在等待。
+        """
         if slot in ("main", "loop"):
             self.show_slot = slot
-        if self.show_phase not in ("ready", "armed"):
-            return False, "目前階段無法播放"
-        if self.show_phase == "armed":
-            # 尚未經過「準備播放→音響就緒」, 允許但仍標記 (操作員可能自播自聽)
-            self.audio_ready = True
+        if self.show_phase not in ("ready", "armed", "awaiting_audio"):
+            return False, "目前階段無法播放 (需先「邀請觀眾準備」)"
         return self._show_do_play(self.show_slot)
 
     def remote_show_replay(self):
@@ -8049,7 +8157,7 @@ class NetBusMaster:
 
     def remote_show_stop(self):
         """MC: 停止 —— 停止播放並進入「播放結束」。回傳 (ok, msg)。"""
-        if self.show_phase not in ("playing", "ready", "armed"):
+        if self.show_phase not in ("playing", "ready", "armed", "awaiting_audio"):
             return False, "目前階段無法停止"
         self._stop_show_watcher()
         self.remote_stop()
@@ -8061,15 +8169,21 @@ class NetBusMaster:
         return self.remote_show_stop()
 
     def remote_show_end(self):
-        """MC: 結束流程 —— 通知音響同事重置。回傳 (ok, msg)。"""
-        if self.show_phase not in ("finished", "playing", "ready", "armed"):
+        """MC: 結束流程 —— 停止播放並直接回到待機。回傳 (ok, msg)。
+
+        🔧 不再進 ending 等音響按「已重置」: loop 階段現場無人看管, 音響同事
+           也不可能長期掛起, 等待會讓整場卡死。MC 一鍵直接回待機, 音響端只是
+           跟著看到「已結束」, 什麼都不用做。
+        """
+        if self.show_phase not in ("finished", "playing", "ready", "armed", "awaiting_audio"):
             return False, "目前階段無法結束流程"
         self._stop_show_watcher()
         if self.show_phase == "playing":
             self.remote_stop()
         self.audio_ready = False
-        self._set_phase("ending", "已通知音響重置")
-        return True, "已通知音響同事重置"
+        self.show_slot = "main"
+        self._set_phase("idle", "結束流程, 回到待機")
+        return True, "已結束流程 (回到待機)"
 
     def remote_play_loop(self):
         """MC: 播放備用槽媒體 (切到 loop 槽, 循環播放)。回傳 (ok, msg)。"""
@@ -8079,7 +8193,6 @@ class NetBusMaster:
         n = self.remote_select_all()
         if not n:
             return False, "沒有在線裝置 (請先掃描)"
-        self.audio_ready = True
         return self._show_do_play("loop")
 
     def remote_play_slot(self, slot):
@@ -8092,7 +8205,6 @@ class NetBusMaster:
         n = self.remote_select_all()
         if not n:
             return False, "沒有在線裝置 (請先掃描)"
-        self.audio_ready = True
         return self._show_do_play(slot)
 
     def _start_show_watcher(self, slot, has_mp3, loop):

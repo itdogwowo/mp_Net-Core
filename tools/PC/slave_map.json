@@ -15,7 +15,7 @@
     "transfer_retry_count": 3,
     "latency_samples": 5,
     "latency_log_file": "latency_log.csv",
-    "loop_play": 0,
+    "loop_play": 1,
     "active_sync_fps": 0,
     "active_sync_interval_s": 10.0,
     "progress_poll_interval_s": 1.0,
@@ -28,6 +28,10 @@
     "web_enable": 1,
     "web_port": 8080,
     "web_open_browser": 1,
+    "keepalive_enable": 1,
+    "keepalive_heartbeat_s": 2.0,
+    "keepalive_timeout_s": 10.0,
+    "keepalive_restart_max_delay_s": 30.0,
     "play_fps": 0,
     "midjoin_lead_frames": 3,
     "latency_probe_auto": 0,
@@ -36,6 +40,24 @@
     "audio_delay_base_ms": 0,
     "midjoin_settle_s": 0.5,
     "midjoin_latency_samples": 3,
+    "media_slots": {
+        "main": {
+            "label": "破鏡高達燈光秀",
+            "resource": "02_Monumentous_Ship_v_Final_45_bar_2",
+            "mp3": "zionnewsong_1854_english.mp3",
+            "delay_ms": 150,
+            "active_sync_fps": 0,
+            "loop": 0
+        },
+        "loop": {
+            "label": "備用媒體",
+            "resource": "Monumentous_Ship_SEP11_VFinal draft_bright50",
+            "mp3": "",
+            "delay_ms": 150,
+            "active_sync_fps": 0,
+            "loop": 1
+        }
+    },
     "reconnect_knock_interval_s": 10.0,
     "mapping": {
         "80F1B2D1F7DE": {

@@ -87,12 +87,12 @@ def test_build_power_cmds_groups_of_five():
 
 
 def test_dry_run_end_to_end():
-    """互動流程整條跑一次（dry-run，零網路）。輸入: SW-01 / 部分 / 10-15,47 / yes"""
+    """互動流程整條跑一次（dry-run，零網路）。輸入: 重啟 / SW-02 / 部分 / 10-15,47 / yes"""
     import subprocess
     here = os.path.dirname(os.path.abspath(__file__))
     proc = subprocess.run(
         [sys.executable, os.path.join(here, "poe_restart.py"), "--dry-run"],
-        input="1\n2\n10-15,47\nyes\n",
+        input="1\n2\n2\n10-15,47\nyes\n",
         capture_output=True,
         text=True,
         timeout=30,
@@ -104,6 +104,60 @@ def test_dry_run_end_to_end():
     assert "power inline auto" in out
     assert "47" in out and "跳過" in out      # protected port warning shown
     assert "GigabitEthernet0/47" not in out   # protected port never in commands
+
+
+def test_auto_args_parse():
+    from poe_restart import parse_auto_args
+    assert parse_auto_args(["--dry-run"]) is None            # 只有 --dry-run → 互動模式
+    assert parse_auto_args([]) is None
+    o = parse_auto_args(["--switches", "both", "--action", "restart",
+                         "--ports", "all", "--yes"])
+    assert o == {"dry_run": False, "switches": "both", "action": "restart",
+                 "ports": "all", "yes": True}
+
+
+def test_auto_args_rejects_bad_input():
+    from poe_restart import parse_auto_args
+    for bad in (["--switches"], ["--bogus"], ["--action"]):
+        try:
+            parse_auto_args(bad)
+        except SystemExit:
+            continue
+        raise AssertionError(f"parse_auto_args({bad!r}) should raise SystemExit")
+
+
+def test_auto_mode_dry_run_end_to_end():
+    """非互動模式（網頁一鍵呼叫的路徑）: 零 stdin、零網路、兩台全 port。"""
+    import subprocess
+    here = os.path.dirname(os.path.abspath(__file__))
+    proc = subprocess.run(
+        [sys.executable, os.path.join(here, "poe_restart.py"),
+         "--dry-run", "--switches", "both", "--action", "restart",
+         "--ports", "all", "--yes"],
+        input="",
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    out = proc.stdout
+    assert proc.returncode == 0, f"exit={proc.returncode}\n{out}\n{proc.stderr}"
+    assert "非互動模式" in out
+    assert "Light-SW-01" in out and "Light-SW-02" in out
+    assert "interface range GigabitEthernet0/1 - 45" in out
+    assert "GigabitEthernet0/46" not in out and "GigabitEthernet0/48" not in out
+    assert "EOF" not in out and "EOF" not in proc.stderr
+
+
+def test_auto_mode_bad_action_and_ports():
+    import subprocess
+    here = os.path.dirname(os.path.abspath(__file__))
+    for args in (["--action", "nope"], ["--ports", "99"], ["--switches", "9"]):
+        proc = subprocess.run(
+            [sys.executable, os.path.join(here, "poe_restart.py"), "--dry-run"] + args,
+            input="", capture_output=True, text=True, timeout=30,
+        )
+        assert proc.returncode != 0, f"{args} should fail\n{proc.stdout}"
+        assert "EOF" not in proc.stderr
 
 
 def run():
