@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "id": 5,
+  "name": "motor_seq",
+  "index": 5,
+  "play_loop": -1,
+  "play_count": 1,
+  "play_interval": 0,
+  "maxF": 0,
+  "mapping": "matrix",
+  "map": [
+    {"group": "matrix.motors", "effect": "motor_seq1", "write": "w", "range": "0:1"},
+    {"group": "matrix.motors", "effect": "motor_seq2", "write": "w", "range": "1:2"},
+    {"group": "matrix.motors", "effect": "motor_seq3", "write": "w", "range": "2:3"},
+    {"group": "matrix.motors", "effect": "motor_seq4", "write": "w", "range": "3:4"},
+    {"group": "matrix.motors", "effect": "motor_seq5", "write": "w", "range": "4:5"}
+  ],
+  "_note": "五台各自獨立的 generator：range 把 matrix.motors 拆成 5 段（第幾顆 = config address 排序的第幾台），每段配自己的一支效果 → 每台的延遲/伸/停/縮長度都可以不同。"
+}

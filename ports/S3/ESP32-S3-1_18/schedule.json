@@ -1,11 +1,12 @@
 {
   "repeat": 0,
+  "_note": "開機 auto 先跑 motor_home（五台全部回收）；+8s 由 vBus 發 MODE_SET id5 = motor_seq（五推順序伸→停→縮，波長 5.5s 循環）；+21s MODE_STOP 全停（填中性值 0x80——行進波要這樣才會停在死區）。要改時序就改 ms。",
   "schedule": [
     {
       "addr": "0xFFFF",
       "ms": 8000,
       "bus": "vBus",
-      "cmds": {"cmd": "0x3105", "payload": "00 02 00 00 FF"}
+      "cmds": {"cmd": "0x3105", "payload": "00 05 00 00 FF"}
     },
     {
       "addr": "0xFFFF",

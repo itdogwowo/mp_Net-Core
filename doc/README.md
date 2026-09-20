@@ -58,6 +58,9 @@
 | [05_psram_zero_block_plan.md](03_notes/05_psram_zero_block_plan.md) | PSRAM framebuffer 零阻塞直送計劃（方案 A / B） |
 | [06_raw_sd_plan.md](03_notes/06_raw_sd_plan.md) | Raw SD 繞過 FAT 兩階段計劃（Python 層 + Async C module） |
 | [07_pixel_test_results.md](03_notes/07_pixel_test_results.md) | pixel 測試結果：準確度 / 性能基準 / 未來方向 |
+| [17_tx_render_center_plan.md](03_notes/17_tx_render_center_plan.md) | **統一渲染輸出中心（TxCenter）**：問題與目標（為什麼要把所有匯流排的發射集中到單一模組；做法待設計） |
+
+> ⚠️ 本表目前只列到 07；`03_notes/` 實際已有 08~17（audio 系列、upload/WDT 診斷、panel 臨時改動等），索引待補。
 
 ---
 
