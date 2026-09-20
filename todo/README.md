@@ -16,6 +16,7 @@
 |---|---|---|
 | [01_file_update.md](01_file_update.md) | 檔案更新流程（FILE_* 0x20xx） | loopback 自測通過，實測待補 |
 | [02_rs485_de.md](02_rs485_de.md) | RS485 半雙工 DE 控制（1ms / rs485_hd 全自動） | 1ms 實測通過，rs485_hd 待真機驗證 |
+| [03_signal_router.md](03_signal_router.md) | 訊號 Router（頻道間轉送 / 路由表） | P1 離線自測 74 項通過，P2~P6 待做 |
 | `_template.md` | 新清單範本 | — |
 
 ## 待開清單的模組（依 doc/02_guides 順序）
@@ -27,10 +28,11 @@
 - [ ] `07_jpeg` — JPEG 解碼
 - [ ] `08_pixel_subsystem` — pixel 播放
 - [ ] `09_cores` — 核心實例
+- [x] `16_signal_router` — 訊號 Router（[03_signal_router.md](03_signal_router.md)）
 
 ## 待跟進的目標（integration / hardware）
 
 - [ ] **master_timer_slave 整合**（合作方合同，含 OTA 0x22xx 對接）
-- [ ] **MCU ↔ MCU 對等傳輸**（需先補「來源位址 + 回給來源」的定址機制）
+- [ ] **MCU ↔ MCU 對等傳輸**（需先補「來源位址 + 回給來源」的定址機制）— 轉送面由 [03_signal_router.md](03_signal_router.md) 接手；跨裝置多跳環仍無防護
 - [ ] 傳輸通道：UART（RS485）/ ESP-NOW / WS 各自實測
 - [ ] 不同硬體（ESP32-S3 變體、無 SD 卡的 fallback `/sd` 在 flash 上）
