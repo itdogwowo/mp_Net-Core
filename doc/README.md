@@ -48,6 +48,7 @@
 | [14_audio_bringup.md](02_guides/14_audio_bringup.md) | **音訊上板教學**：挑腳（S3 Octal-SPIRAM 33–37 不可用）/ 接線 / 出聲回歸 / irq 探針 / block vs irq A/B |
 | [15_schedule.md](02_guides/15_schedule.md) | 定時指令排程（schedule 任務）：vBus 注入原理 / 排程檔格式 |
 | [16_signal_router.md](02_guides/16_signal_router.md) | **訊號 Router**：頻道間互相轉送（ESP-NOW ↔ UART ↔ 網路）/ 路由表 `in`→`out` / `self` 保留字 / 循環問題與已否決方案 / 分期施工 |
+| [17_timer.md](02_guides/17_timer.md) | **Timer 計時器**：絕對時間週期表 / `poll()`+`done()` 用法 / 三個邊界語意 / 適用範圍（幀驅動的東西別用）/ bus_speed 遷移案例 |
 
 ## 03_notes — 筆記
 

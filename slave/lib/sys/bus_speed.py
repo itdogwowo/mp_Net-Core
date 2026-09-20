@@ -2,10 +2,10 @@
 # 臨時提速狀態機 (協商式 + 超時回滾)
 #
 # 流程 (同步點 = SPEED_ACK 0x1404):
-#   master 發 SPEED_SET → slave 記 old_baud/target/timeout_at → 回 SPEED_ACK(舊速)
+#   master 發 SPEED_SET → slave 記 old/target 並武裝 _t_sync → 回 SPEED_ACK(舊速)
 #   → slave 送出 ACK 後立即切速 (同 handler); master 收 ACK 後立即切速
 #   → master 用 STATUS_GET/IDENTIFY_REQ 敲門驗證
-#   → 驗證 OK → SPEED_COMMIT 鎖定(取消回滾); 否則 timeout_at 到 → 自動回滾 old_baud
+#   → 驗證 OK → SPEED_COMMIT 鎖定(停 _t_sync、交棒 _t_idle); 否則超時 → 回滾 old_baud
 #   → 傳輸完成 → SPEED_REVERT 還原
 #
 # 設計要點:
@@ -17,6 +17,7 @@
 
 import time
 from lib.sys.sys_bus import bus
+from lib.sys.timer import Timer
 
 # 狀態
 STATE_IDLE = 0
@@ -24,6 +25,12 @@ STATE_SYNCING = 1    # 已切速、待 COMMIT (回滾計時中)
 STATE_COMMITTED = 2  # 已鎖定 (不回滾)
 
 _STATE_KEY = "_bus_speed"
+
+# 兩層超時計時器（絕對時間、零漂移；由 lib/sys/timer.py 統一管理）
+#   _t_sync : SYNCING 未 COMMIT 的回滾保險
+#   _t_idle : COMMITTED 後「多久沒有通訊」的回滾
+_t_sync = Timer()
+_t_idle = Timer()
 
 
 def _get_state():
@@ -106,7 +113,7 @@ def _reinit_uart(uart, bus_id, baud):
 
 
 def bus_speed_set(bus_type, bus_id, speed, timeout_ms):
-    """SPEED_SET: 記 old/target/timeout_at, 進 SYNCING（**不切速**）。
+    """SPEED_SET: 記 old/target、武裝 _t_sync, 進 SYNCING（**不切速**）。
     回 (ok, cur_speed, target_speed)。SPI/I2C 尚未實作 → ok=0。
 
     同步點 = SPEED_ACK：slave 先回 ACK（舊速），master 收到後兩邊一起切速。
@@ -130,8 +137,14 @@ def bus_speed_set(bus_type, bus_id, speed, timeout_ms):
     s["bus_id"] = int(bus_id)
     s["old_baud"] = old
     s["target_baud"] = target
-    s["timeout_at"] = time.ticks_add(time.ticks_ms(), timeout_ms) if timeout_ms > 0 else 0
     s["idle_timeout_ms"] = timeout_ms   # 進入 COMMITTED 後的 idle 上限（暫復用同一 timeout，見註）
+    # 兩層超時都武裝；idle 在 COMMITTED 才會有 poll 路徑去讀它
+    if timeout_ms > 0:
+        _t_sync.start(timeout_ms, loop=False)
+        _t_idle.start(timeout_ms, loop=False)
+    else:
+        _t_sync.stop()
+        _t_idle.stop()
     print("🔀 [BusSpeed] UART{} {} → {} (SYNCING, timeout {}ms)".format(bus_id, old, target, timeout_ms))
     return 1, old, target
 
@@ -164,34 +177,35 @@ def bus_speed_apply():
 
 def bus_speed_poll(now=None):
     """CircuitTask.loop 每輪呼叫。兩層超時：
-    1) SYNCING：deadline(timeout_at) 到仍未 COMMIT → 回滾（設定階段敲門失敗）。
-    2) COMMITTED：idle_timeout_at 到（進入通訊後 N 秒無通訊）→ 回滾（通訊層空閒超時）。
-    純時間檢查，不依賴收到指令；即使新速下收不到有效幀也會回滾。"""
+    1) SYNCING：_t_sync 到期仍未 COMMIT → 回滾（設定階段敲門失敗）。
+    2) COMMITTED：_t_idle 到期（進入通訊後 N 秒無通訊）→ 回滾（通訊層空閒超時）。
+    純時間檢查，不依賴收到指令；即使新速下收不到有效幀也會回滾。
+    now 參數保留給舊呼叫端相容（實際上以 Timer 內部時鐘為準）。"""
     s = bus.shared.get(_STATE_KEY)
     if not isinstance(s, dict):
         return
-    if now is None:
-        now = time.ticks_ms()
     st = s.get("state")
     if st == STATE_SYNCING:
-        timeout_at = s.get("timeout_at", 0)
-        if timeout_at and time.ticks_diff(now, timeout_at) >= 0:
+        if _t_sync.poll():
             _revert()
     elif st == STATE_COMMITTED:
-        idle_at = s.get("idle_timeout_at", 0)
-        if idle_at and time.ticks_diff(now, idle_at) >= 0:
+        if _t_idle.poll():
             print("⏰ [BusSpeed] idle timeout → revert")
             _revert()
 
 
 def bus_speed_touch():
-    """收到任何有效通訊時呼叫：刷新 COMMITTED 的 idle 倒數（通訊層空閒超時重置）。"""
+    """收到任何有效通訊時呼叫：刷新 COMMITTED 的 idle 倒數（通訊層空閒超時重置）。
+
+    做法 = 回報完成（done()）後以同一期長重新起算 —— 這正是 Timer 的設計語意，
+    不需要另外記 idle_timeout_at。"""
     s = bus.shared.get(_STATE_KEY)
     if not isinstance(s, dict) or s.get("state") != STATE_COMMITTED:
         return
     idle = s.get("idle_timeout_ms", 0)
     if idle > 0:
-        s["idle_timeout_at"] = time.ticks_add(time.ticks_ms(), idle)
+        _t_idle.done()                       # 清掉可能已到期未回報的狀態
+        _t_idle.start(idle, loop=False)      # 重新起算一整個 idle 週期
 
 
 def _revert():
@@ -203,6 +217,8 @@ def _revert():
         _reinit_uart(uart, s.get("bus_id", 0), old)
     print("↩️  [BusSpeed] revert UART{} → {} (IDLE)".format(s.get("bus_id"), old))
     s["state"] = STATE_IDLE
+    _t_sync.stop()
+    _t_idle.stop()
 
 
 def bus_speed_commit(bus_type, bus_id):
@@ -213,9 +229,12 @@ def bus_speed_commit(bus_type, bus_id):
     if int(bus_type) != s.get("bus_type") or int(bus_id) != s.get("bus_id"):
         return 0
     s["state"] = STATE_COMMITTED
-    s["timeout_at"] = 0
+    _t_sync.stop()                       # SYNCING 保險任務結束
     idle = s.get("idle_timeout_ms", 0)
-    s["idle_timeout_at"] = time.ticks_add(time.ticks_ms(), idle) if idle > 0 else 0
+    if idle > 0:
+        _t_idle.start(idle, loop=False)  # 交棒：COMMITTED 的 idle 超時
+    else:
+        _t_idle.stop()
     print("🔒 [BusSpeed] UART{} COMMITTED @ {} (idle {}ms)".format(
         bus_id, s.get("target_baud"), idle))
     return 1
@@ -240,6 +259,6 @@ def bus_speed_query(bus_type, bus_id):
         cur = _config_baud(bus_id)
     target = s.get("target_baud", cur)
     remain = 0
-    if state == STATE_SYNCING and s.get("timeout_at", 0):
-        remain = max(0, time.ticks_diff(s.get("timeout_at"), time.ticks_ms()))
+    if state == STATE_SYNCING:
+        remain = _t_sync.until_next_ms()
     return state, int(bus_type), int(bus_id), cur, target, remain
