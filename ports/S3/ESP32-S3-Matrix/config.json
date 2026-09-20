@@ -35,6 +35,10 @@
         "ESP_now": { "enable": 0, "channel": 6 }
     },
     "CircuitDecode": { "enable": 0, "list": [] },
+    "Router": {
+      "enable": 0,
+      "routes": []
+    },
     "SPI": { "enable": 0, "list": [] },
     "I2C": { "enable": 0, "list": [] },
     "UART": { "enable": 0, "list": [] },

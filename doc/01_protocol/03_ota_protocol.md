@@ -7,7 +7,7 @@
 > **比對基準**：
 > - 舊 I2C OTA：`協議規格_master_timer_slave_精簡版.md §二.7`（CMD 0x01~0x08）
 > - 舊 RS485 OTA：`協議規格_slaveUART.md §OTA`（透過 0x40 OTA_COMMAND / 0x41 OTA_RESPONSE 子母包裝）
-> - **本專案現況**：`slave/` 無任何 partition OTA 程式碼；只有 `FILE_* 0x20xx` 檔案傳輸。此 0x22xx 為合作方合同，見 `02_command_index.md §9`。
+> - **本專案現況**：`slave/` 無任何 partition OTA 程式碼；只有 `FILE_* 0x20xx` 檔案傳輸。此 0x22xx 為合作方合同，見 `02_command_index.md §10`。
 
 ---
 

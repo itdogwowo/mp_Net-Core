@@ -66,6 +66,10 @@
       }
     ]
   },
+  "Router": {
+    "enable": 0,
+    "routes": []
+  },
   "PCM5102": {
     "enable": 1,
     "list": [

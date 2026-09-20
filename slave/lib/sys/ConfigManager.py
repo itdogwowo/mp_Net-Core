@@ -536,7 +536,15 @@ class ConfigManager:
                            if isinstance(k, str) and not k.startswith("_")}
             with open(tmp_path, 'w') as f:
                 self._pretty_dump(config_only, f)
-            os.replace(tmp_path, self.path)
+            # ⚠️ MicroPython 的 os 模組**沒有 replace()**（只有 rename）。
+            #    原本直接呼叫 os.replace 會讓整個「標準保存」失敗，而且只印一行
+            #    「✗ 保存出錯」—— 無損更新（update_key）以外的存檔全部無效。
+            #    （router_board_test.py §5 在板上抓到；自動註冊寫回 config 就靠這條路。）
+            _rep = getattr(os, "replace", None)
+            if _rep is not None:
+                _rep(tmp_path, self.path)
+            else:
+                os.rename(tmp_path, self.path)
             # 🔧 sync 落盤：標準保存也一樣，避免 rename 後立刻 reset 丟寫入
             if hasattr(os, 'sync'):
                 os.sync()

@@ -50,6 +50,10 @@
             { "GPIO": { "uart": 0 } }
         ]
     },
+    "Router": {
+      "enable": 0,
+      "routes": []
+    },
     "SPI": {
         "enable": 0,
         "list": [

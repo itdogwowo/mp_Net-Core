@@ -42,6 +42,7 @@ class CircuitTask(Task):
         all_by_id = {}
         buses = []
         by_id = {}
+        matched = set()          # P4: 真的對到線的宣告（用來抓「宣告了卻沒作用」）
         lst = uart_cfg.get("list", []) or []
         for idx, item in enumerate(lst):
             uid = int(item.get("id", 1) or 1)
@@ -64,6 +65,8 @@ class CircuitTask(Task):
             bus.register_service(svc, cb)
 
             if selected is None or ("uart", idx) in selected or svc in selected:
+                matched.add(("uart", idx))
+                matched.add(svc)
                 buses.append(cb)
                 by_id[uid] = cb
                 self._ctx_by_bus_id[id(cb)] = ctx_extra
@@ -73,6 +76,11 @@ class CircuitTask(Task):
         bus.register_service("circuit_bus_all_by_id", all_by_id)
         bus.register_service("circuit_bus_list", buses)
         bus.register_service("circuit_bus_by_id", by_id)
+
+        # P4: 宣告了卻對不到線 → 出聲（原本完全靜默，設錯看不出來）
+        if selected is not None:
+            self._warn_unmatched(selected, matched, len(lst), len(uart_list))
+
         sources = bus.get_service("bus_sources")
         if not sources:
             sources = BusSources()
@@ -82,6 +90,41 @@ class CircuitTask(Task):
 
         if buses:
             get_log().info("🔌 [CircuitTask] {} circuit bus(es) online".format(len(buses)))
+
+    def _warn_unmatched(self, selected, matched, n_cfg, n_hw):
+        """P4: `CircuitDecode` 宣告了、卻對不到任何線時出聲（純加法，無行為變更）。
+
+        原本完全靜默 —— 寫錯索引（或多寫了 spi/i2c/can）跟「沒寫」在板上長得一樣，
+        沒有任何人能看出設定沒生效。
+
+        ⚠️ 語意: `GPIO.uart` 的值是 **`UART.list` 的索引（0-based）**，不是 `id`
+        （見 doc/02_guides/16_signal_router.md §3.2）—— 所以 `uart: 5` 在只有 2 條線的
+        板子上什麼都選不到，而 `id=1` 的那條要用 `uart: 0` 選。
+        """
+        uart_miss = []
+        other_miss = []
+        for sel in selected:
+            if sel in matched:
+                continue
+            if isinstance(sel, tuple):
+                kind, idx = sel
+                if kind == "uart":
+                    uart_miss.append(str(idx))
+                else:
+                    other_miss.append("{}:{}".format(kind, idx))
+            else:
+                other_miss.append("service '{}'".format(sel))
+
+        if uart_miss:
+            get_log().warn(
+                "[CircuitTask] CircuitDecode 宣告 uart:{} → 對不到任何 UART，宣告沒有作用。"
+                "（uart 的值是 UART.list 的索引，0-based；UART.list 有 {} 條、實體 uart_list 有 {} 條）"
+                .format("/".join(sorted(uart_miss)), n_cfg, n_hw))
+        if other_miss:
+            get_log().warn(
+                "[CircuitTask] CircuitDecode 宣告 {} → CircuitTask 目前只建 UART bus，"
+                "這些 key 永遠對不到線（已知缺口，見 doc/02_guides/16_signal_router.md §3.2）"
+                .format("、".join(sorted(other_miss))))
 
     def _get_selected_sources(self):
         cfg = bus.shared.get("CircuitDecode", {}) or {}

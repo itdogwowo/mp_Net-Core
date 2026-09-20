@@ -793,3 +793,91 @@ python -B slave/lib/sw/pixel_layout.py    # 自檢
   hash 一檔、每 256KB 讓步；WDT 由 core0 餵 → 掃描唔會觸發 WDT。
 - 後備 workaround（舊韌體）：手動刪 `/manifest.json` → 軟重啟 → 開機自動重建
   （詳見 `doc/03_notes/12_upload_wdt_diagnosis.md` §6）。
+
+---
+
+## 29) `proto.py` 寫入路徑：成本模型修正 + 按大小選寫法（2026-09）
+
+### 29.1 為什麼會去看這一行
+
+真機量到 `StreamParser.feed()+pop_frame()` 每幀 ~870us（ESP32-S3 @160MHz），與預期不符。
+
+### 29.2 根因：MicroPython 切片賦值的成本模型
+
+**「寫入長度」不是成本，成本是「目標視圖的長度」。** 真機二維實測
+（`test/protocol/bench_slice_assign.py`、`test_proto_writes.py` §7）：
+
+| 目標 buffer | 寫 16B | 寫 113B | 寫 512B | 寫 2000B | 寫 4000B |
+|---|---|---|---|---|---|
+| `b[a:c] = x`（舊） | 34 | 34 | 34 | 34 | 34 | ← 256B buffer
+| `b[a:c][:] = x`（新） | 21 | 28 | 58 | 170 | 320 |
+
+- 舊寫法 `b[a:c] = x`：成本 = **0.076us × 緩衝區總長**（寫 1 byte 與寫 4000 bytes 一樣貴）
+- 新寫法 `b[a:c][:] = x`：成本 = **0.076us × 寫入長度 + ~20us 固定**
+- 兩者交叉點：`寫入長度 + 256 < 緩衝區長度`
+
+**所以「寫入接近填滿緩衝區」時舊寫法反而較快（最多 ~6%）**，不能無腦全改。
+
+### 29.3 為什麼當初那樣寫（查證結果）
+
+`mp4_testkit/lib/proto.py` 的舊版是：
+
+```python
+_viper_append(self._buf, data, self._end, ln)      # @micropython.viper 逐 byte 迴圈
+_viper_compact(self._buf, self._start, self._end, keep)
+```
+
+`doc/01_protocol/08_performance_benchmark.md:109` 記載的「**改 memoryview slice 賦值
+（memmove，替代 viper 逐 byte）**」以及「快 ~17x」，是**相對 viper 逐 byte 迴圈**。
+本次改動**沒有退回 byte 迴圈**，只是把「memmove」的成本假設修正——
+原註解「memoryview slice 賦值 = C 層 memmove」只在緩衝區不大時成立。
+
+### 29.4 改動（語意完全相同，只影響效能）
+
+`lib/sys/proto.py` 三個寫入點，全部按 `寫入量 + 256 < 緩衝區` 選寫法：
+
+| 位置 | 舊 | 新 |
+|---|---|---|
+| `StreamParser.feed()` append | `self._mv[e:e+ln] = data` | 小量→`self._mv[e:e+ln][:] = data`；接近填滿→原寫法 |
+| `StreamParser.feed()` compact | `self._mv[:keep] = self._mv[s:e]` | 同上規則 |
+| `_write_frame()` payload | `b[a:c] = payload` | 同上規則 |
+
+⚠️ `bytearray[a:c]` 回傳的是**副本**（不是視圖），所以 `_write_frame` 要求 `b` 是 memoryview；
+`Proto.pack_into()` 對非 memoryview 的輸入自動包一層。
+
+### 29.5 實測
+
+| | 舊 | 新 |
+|---|---|---|
+| `feed+pop`（113B 幀, max_len=8192） | 876 us/幀 | **196 us/幀（4.5×）** |
+| `feed+pop`（max_len=64） | 78 | 70 |
+| 大視圖寫 16B（8205B buffer） | 631 us | **24 us（26×）** |
+| 寫 4000B（4115B buffer，接近填滿） | **324 us** | 327 us（分界選回舊寫法，不吃虧）|
+
+### 29.6 驗證（核心零件，所以驗得比較兇）
+
+- `test/protocol/test_proto_writes.py`（**PC + 真機都能跑，89 項**）
+  - §1 與舊寫法**隨機對拍** 120 輪（隨機幀長/切包/4 種 max_len）逐位元組相同
+  - §2 compact 邊界，含**來源與目的重疊**（唯一有語意風險的情況）
+  - §3 輸入型別（bytes/bytearray/memoryview）與**餵自己緩衝區**的別名情況
+  - §4 錯誤行為一致（長度不符的例外型別、唯讀來源、容量不足）
+  - §5 `pack` / `pack_into` / `_build_frame` 對**獨立參考實作**（bytes 拼接）逐位元組相同
+  - §6 500 輪 feed 記憶體不成長；建/丟 parser 第二輪不再成長
+  - §7 成本曲面 + 「沒有任何 (buffer, 寫入量) 組合比舊寫法慢」
+- `router_selftest.py` §14（新增）+ 全套 499 項；`router_board_test.py` 真機 114 項
+
+### 29.7 已知取捨（誠實記錄）
+
+`Proto.pack()` 為與 `pack_into()` 共用內核而呼叫 `_write_frame()`，**多一次 Python 函式呼叫**。
+交錯量測（順序輪換，消除位置偏誤）顯示這塊固件上「一次呼叫」約 **+80us 固定成本**
+（小封包比例難看，如 113B 1.4~2.0x；大封包 1.0x）。**寫入本身沒有退步**（§29.5 已證）。
+- 這塊固件每個基本操作都比正常 MicroPython 慢 10~100 倍（連 `sys.modules` 都是空的），
+  正常固件一次呼叫 ~2us。
+- 若日後真的要壓這 80us：把 `_write_frame` 的內容在 `pack()` 就地展開即可
+  （與 `pack_into()` 各一份，用 §5 的逐位元組測試鎖住兩份不分歧）。
+  **目前選擇保留單一內核**，因為在核心檔案裡放兩份組幀邏輯的風險大於一次呼叫。
+
+### 29.8 其他同類寫入點（**未動**，屬其他子系統）
+
+`circuit_bus.py` `poll()` 的 `pv[:n] = raw_bytes`、`_commit()` 的 `cview[:take] = view[:take]`、
+`net_bus.py` 同類路徑 —— 目標視圖都是 4115B 級，預期各 ~320us/次。要用同一套方法量過再改。

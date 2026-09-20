@@ -66,6 +66,10 @@
       }
     ]
   },
+  "Router": {
+    "enable": 0,
+    "routes": []
+  },
   "SPI": {
     "enable": 1,
     "force_machine": 0,

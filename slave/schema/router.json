@@ -1,0 +1,48 @@
+{
+  "group": "router",
+  "cmds": [
+    {
+      "cmd": "0x1601",
+      "name": "ROUTER_STATUS",
+      "payload": []
+    },
+    {
+      "cmd": "0x1602",
+      "name": "ROUTER_ROUTE_ADD",
+      "payload": [
+        {"name": "route_json", "type": "str_u16len"}
+      ]
+    },
+    {
+      "cmd": "0x1603",
+      "name": "ROUTER_ROUTE_DEL",
+      "payload": [
+        {"name": "in_name", "type": "str_u16len"}
+      ]
+    },
+    {
+      "cmd": "0x1604",
+      "name": "ROUTER_TABLE_GET",
+      "payload": [
+        {"name": "page", "type": "u8"}
+      ]
+    },
+    {
+      "cmd": "0x1605",
+      "name": "ROUTER_SAVE",
+      "payload": [
+        {"name": "enable", "type": "u8"}
+      ]
+    },
+    {
+      "cmd": "0x1606",
+      "name": "ROUTER_ACK",
+      "payload": [
+        {"name": "ok", "type": "u8"},
+        {"name": "code", "type": "u16"},
+        {"name": "message", "type": "str_u16len"},
+        {"name": "data_json", "type": "str_u16len"}
+      ]
+    }
+  ]
+}

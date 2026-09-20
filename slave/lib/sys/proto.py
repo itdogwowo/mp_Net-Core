@@ -53,6 +53,48 @@ _pack_mv = None      # memoryview(_pack_buf)
 _pack_cap = 0
 
 
+def _write_frame(b, off, cmd, addr, payload):
+    """把一幀 NC4 寫進 b[off:]。回傳總長度（HDR + payload + CRC）。
+
+    pack() 與 Proto.pack_into() 的**共用內核** —— 兩條路徑的輸出必須位元組完全相同
+    （test/protocol/router_selftest.py 有逐位元組對比）。呼叫端負責保證容量足夠。
+
+    幀格式: SOF(2) + ver(1) + addr(2) + cmd(2) + len(2) | payload | CRC32(4)
+    CRC 範圍 = header[2:] + payload（不含 SOF/ver），與舊版一致。
+
+    ⚠️ b 必須是 **memoryview**（見下面 payload 那一行的理由）。
+    """
+    ln = len(payload)
+    total = HDR_LEN + ln + CRC_LEN
+    # 1. header (9B)
+    struct.pack_into("<2sBHHH", b, off, SOF, CUR_VER, addr, cmd, ln)
+    # 2. payload (直接寫進 buffer, 不建新 bytes)
+    #
+    # ⚠️ 兩種寫法**語意完全相同**，但成本模型不同（真機 ESP32-S3 實測，見
+    #    test/protocol/bench_slice_assign.py 與 test_proto_writes.py §7）:
+    #
+    #      b[a:c] = payload      成本 = 0.076us × **緩衝區總長**（與寫入量無關）
+    #      b[a:c][:] = payload   成本 = 0.076us × **寫入長度** + ~20us 固定
+    #
+    #    →「寫入遠小於緩衝區」時後者快得多（實測最多 60x）；
+    #      「寫入接近填滿」時前者較快（最多 ~6%）。
+    #      這裡用 `ln + 256` 當分界（256 = 固定開銷 20us ÷ 0.076us/byte）。
+    #      分界選錯只影響效能、不影響正確性。
+    #
+    #    ⚠️ 大視圖切片賦值的成本是 O(緩衝區)，**不是**舊註解說的 memmove ——
+    #       「memoryview slice 賦值 = C 層 memmove」只在緩衝區不大時成立。
+    #       （bytearray[a:c] 會回傳「副本」，所以 b 必須是 memoryview 才有視圖語意。）
+    if ln:
+        if ln + 256 < len(b):
+            b[off + HDR_LEN:off + HDR_LEN + ln][:] = payload
+        else:
+            b[off + HDR_LEN:off + HDR_LEN + ln] = payload
+    # 3. CRC32 (ver..payload_end, 同舊版範圍 header[2:])
+    crc_val = binascii.crc32(b[off + 2:off + HDR_LEN + ln], 0) & 0xFFFFFFFF
+    struct.pack_into("<I", b, off + HDR_LEN + ln, crc_val)
+    return total
+
+
 class Proto:
     @staticmethod
     def crc32_update(data, crc=0):
@@ -67,7 +109,8 @@ class Proto:
            不可跨下一次 pack() 持有。專案內所有呼叫點都是 send(pack(...)) 立即消費,
            已通過審計 (不存在持有兩個 pack 結果的場景)。
 
-        內核: 寫進模組級 _pack_buf (struct.pack_into + 切片賦值), 不做 bytes 拼接。
+        內核: 寫進模組級 _pack_buf (_write_frame: struct.pack_into + 切片賦值),
+        不做 bytes 拼接。與 pack_into() 共用同一組幀邏輯。
         效能: 較舊版 (header+payload+crc 拼接) 快 ~17x (協議開銷 -79% → -22%)。"""
         global _pack_buf, _pack_mv, _pack_cap
         if payload is None:
@@ -80,15 +123,34 @@ class Proto:
             _pack_buf = bytearray(_pack_cap)
             _pack_mv = memoryview(_pack_buf)
         b = _pack_mv
-        # 1. header (9B): SOF + ver + addr + cmd + payload_len
-        struct.pack_into("<2sBHHH", b, 0, SOF, CUR_VER, addr, cmd, ln)
-        # 2. payload (直接寫進 buffer, 不建新 bytes)
-        if ln:
-            b[HDR_LEN:HDR_LEN + ln] = payload
-        # 3. CRC32 (ver..payload_end, 同舊版範圍 header[2:])
-        crc_val = Proto.crc32_update(b[2:HDR_LEN + ln], 0) & 0xFFFFFFFF
-        struct.pack_into("<I", b, HDR_LEN + ln, crc_val)
+        _write_frame(b, 0, cmd, addr, payload)
         return b[:total]
+
+    @staticmethod
+    def pack_into(buf, offset, cmd: int, payload: bytes = b"", addr: int = ADDR_BROADCAST):
+        """把一幀 NC4 寫進**呼叫端提供的** buffer（不回傳共享 memoryview）。
+
+        與 pack() 共用 _write_frame 內核 → 輸出**位元組完全相同**（selftest 對比）。
+        存在的理由: pack() 回傳的是模組級共享 buffer 的 view，下一次 pack() 就覆蓋；
+        「同一幀要送多個目的地」或「需要跨呼叫持有」的呼叫端（Router 轉送）需要
+        一塊自己的 buffer，否則一對多時第二個目的地會拿到髒資料。
+
+        buf    : bytearray / memoryview（可寫，容量需 >= offset + 一幀）
+        offset : 寫入起點
+        回傳   : 寫入長度；容量不足回 **-1**（不寫、不 raise —— 由呼叫端決定怎麼報）
+        """
+        if payload is None:
+            payload = b""
+        ln = len(payload)
+        total = HDR_LEN + ln + CRC_LEN
+        if offset < 0 or (offset + total) > len(buf):
+            return -1
+        # 只有 memoryview 的切片才是「視圖」；bytearray 切片會回傳副本，
+        # 用 [:]= 寫會寫到副本上（靜默無效）。這裡統一成 memoryview。
+        if not isinstance(buf, memoryview):
+            buf = memoryview(buf)
+        _write_frame(buf, offset, cmd, addr, payload)
+        return total
 
 
 class StreamParser:
@@ -114,8 +176,11 @@ class StreamParser:
             keep = self._end - self._start
             if keep:
                 # compact: 把未消費段搬到開頭。
-                # memoryview slice 賦值 = C 層 memmove, 比 viper 逐 byte 迴圈快。
-                self._mv[:keep] = self._mv[self._start:self._end]
+                # 寫法選擇的理由與成本模型見 _write_frame 的註解。
+                if keep + 256 < cap:
+                    self._mv[0:keep][:] = self._mv[self._start:self._end]
+                else:
+                    self._mv[0:keep] = self._mv[self._start:self._end]
             self._start = 0
             self._end = keep
             free = cap - self._end
@@ -125,8 +190,11 @@ class StreamParser:
             self._end = 0
             return
 
-        # append: memoryview slice 賦值 (C 層 memmove, 最快, 替代 viper 逐 byte 複製)
-        self._mv[self._end:self._end + ln] = data
+        # append（成本模型與寫法選擇見 _write_frame 註解）。
+        if ln + 256 < cap:
+            self._mv[self._end:self._end + ln][:] = data
+        else:
+            self._mv[self._end:self._end + ln] = data
         self._end += ln
 
     def pop_frame(self):

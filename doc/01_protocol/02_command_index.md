@@ -2,7 +2,7 @@
 
 > **用途**：單一查詢表，收錄本專案全部指令域的完整指令定義。對接/新增指令前先查這裡。
 > **分類**：協議層（01_protocol）
-> **最後更新**：2026-08-21
+> **最後更新**：2026-09（新增 0x16xx router）
 > **權威來源**：`slave/schema/*.json`；本文件是整理後的說明，衝突以 schema 為準。
 > **指令碼分配**：
 
@@ -13,6 +13,7 @@
 0x13xx — now         ESP-NOW
 0x14xx — hw          硬體控制 + 臨時提速
 0x15xx — waiting_to_trash  待清理功能
+0x16xx — router     訊號 Router（頻道間轉送 / 路由表）
 0x18xx — bench       性能測試（通用接收吞吐）
 0x20xx — file        檔案傳輸/查詢
 0x22xx — ota         韌體 OTA（合作方合同）
@@ -131,7 +132,24 @@
 
 ---
 
-## 7) bench.json（0x18xx）— 性能測試
+## 7) router.json（0x16xx）— 訊號 Router
+
+> 讓 ESP-NOW / 網路 / 實體線之間互相轉送。設計唯一真相：`doc/02_guides/16_signal_router.md`。
+
+| CMD | 名稱 | 方向 | Payload | 說明 |
+|-----|------|------|---------|------|
+| 0x1601 | ROUTER_STATUS | Master→Slave | (空) | 回 0x1606：介面清單 / 每條 route 的 hit·fwd·drop / load 錯誤 |
+| 0x1602 | ROUTER_ROUTE_ADD | Master→Slave | `route_json(str)` | 新增或覆寫一條 route（單行 JSON `{"in":"now","out":["uart1"]}`），**立即生效** |
+| 0x1603 | ROUTER_ROUTE_DEL | Master→Slave | `in_name(str)` | 依 `in` 刪除一條 route |
+| 0x1604 | ROUTER_TABLE_GET | Master→Slave | `page(u8)` | 回 0x1606，`data_json` = `{page,pages,page_size,total,routes}` |
+| 0x1605 | ROUTER_SAVE | Master→Slave | `enable(u8)` | 存回 `config.json`；`0xFF`=只存檔、`0`=關、`1`=開（存檔成功才切換）|
+| 0x1606 | ROUTER_ACK | Slave→Master | `ok(u8)` `code(u16)` `message(str)` `data_json(str)` | 唯一回覆 |
+
+> `ROUTER_ACK.code`：0=OK、1=router 未啟動、2=route_json 不是合法 JSON、3=route 驗證失敗、4=存檔失敗（設定未變更）。
+
+---
+
+## 8) bench.json（0x18xx）— 性能測試
 
 | CMD | 名稱 | 方向 | Payload | 說明 |
 |-----|------|------|---------|------|
@@ -142,7 +160,7 @@
 
 ---
 
-## 8) file.json（0x20xx）— 檔案傳輸
+## 9) file.json（0x20xx）— 檔案傳輸
 
 | CMD | 名稱 | 方向 | Payload | 說明 |
 |-----|------|------|---------|------|
@@ -180,7 +198,7 @@
 
 ---
 
-## 9) ota.json（0x22xx）— 韌體 OTA
+## 10) ota.json（0x22xx）— 韌體 OTA
 
 > 合作方合同（fastLED master_timer_slave 整合），**不動、不增減、不實作、不用**。
 > 完整設計見 `03_ota_protocol.md`。
@@ -211,7 +229,7 @@
 
 ---
 
-## 10) stream.json（0x30xx）— 像素串流
+## 11) stream.json（0x30xx）— 像素串流
 
 | CMD | 名稱 | 方向 | Payload | 說明 |
 |-----|------|------|---------|------|
@@ -226,7 +244,7 @@
 
 ---
 
-## 11) pixel.json（0x31xx）— 模式播放
+## 12) pixel.json（0x31xx）— 模式播放
 
 > 原 jpeg.json（0x31xx）已移除；0x31xx 域改由 pixel（模式播放）使用。權威定義見 `slave/schema/pixel.json`。
 > 詳細定義見 `04_pixel_protocol.md`。
@@ -247,7 +265,7 @@
 
 ---
 
-## 12) audio.json（0x32xx）— 音訊播放（WAV 串流，dj_task）
+## 13) audio.json（0x32xx）— 音訊播放（WAV 串流，dj_task）
 
 > 設計定案見 `doc/03_notes/13_audio_wav_stream_plan.md`。音檔 = PC 端預轉 WAV
 > （16-bit PCM/44.1kHz/stereo，檔名自述 `name_<rate>_<bits>_<ch>.wav`）。

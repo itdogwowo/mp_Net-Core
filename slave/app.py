@@ -2,6 +2,8 @@
 from lib.sys.schema_loader import SchemaStore
 from lib.sys.dispatch import Dispatcher
 from lib.sys.proto import StreamParser, MAX_PAYLOAD, ADDR_BROADCAST
+# ★ Router 關卡的判定常數（純常數，模組本身零裝置依賴）
+from lib.sys.signal_router import V_OK, V_EXECUTE
 # from lib.file_rx import FileRx # 已移除
 from action.registry import register_all
 from lib.sys.sys_bus import bus
@@ -42,9 +44,21 @@ class App:
         return StreamParser(max_len=MAX_PAYLOAD)
 
     @micropython.native
-    def handle_stream(self, parser, data, transport_name="Bus", send_func=None, extra_ctx=None):
+    def handle_stream(self, parser, data, transport_name="Bus", send_func=None, extra_ctx=None,
+                      router=None, src_bus=None):
         """
         處理數據流，並確保解析出當前 buffer 內所有的封包
+
+        router / src_bus（P3，選填）:
+          解碼鏈上的 Router 關卡。`src_bus` 是這一幀從哪個 bus 進來的（NowBus /
+          NetBus / CircuitBus），Router 用它查路由表。兩者都給 None 時行為與
+          未導入 Router 前**完全相同**。
+
+          ★ gate() 放在 ADDR 過濾**之前**:
+            被轉送的幀不必是「給本機」的 —— 這正是「Remote 的指令轉給下層節點」
+            的用途（doc §1）。cID 未指派時 bus.cid = 0xFFFF = 廣播，全網都收，
+            所以位置不改也不影響常見情境；改放前面則多支援「過路轉運」。
+            enable=0 時 gate() 立刻回 V_OK，下面每一行與舊版一模一樣。
         """
         parser.feed(data)
         
@@ -69,6 +83,15 @@ class App:
             if r is None:
                 break
             _ver, addr, cmd, payload = r
+
+            # ★ Router 關卡（唯一的判定點）: 轉送在此發生, verdict 決定要不要本地執行。
+            #   注意 `addr` 已帶進 gate()，但目前的政策與 addr 無關（in/out 決定一切）。
+            if router is not None:
+                verdict = router.gate(src_bus, addr, cmd, payload)
+                if verdict != V_OK and not (verdict & V_EXECUTE):
+                    # 只轉發（V_FORWARD）或沒配對（V_DROP）→ 不進本地解碼鏈
+                    continue
+
             if addr != ADDR_BROADCAST and addr != my_cid:
                 continue
             packet_found = True
