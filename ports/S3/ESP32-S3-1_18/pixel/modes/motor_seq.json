@@ -4,16 +4,12 @@
   "name": "motor_seq",
   "index": 5,
   "play_loop": -1,
-  "play_count": 1,
+  "play_count": -1,
   "play_interval": 0,
   "maxF": 0,
   "mapping": "matrix",
   "map": [
-    {"group": "matrix.motors", "effect": "motor_seq1", "write": "w", "range": "0:1"},
-    {"group": "matrix.motors", "effect": "motor_seq2", "write": "w", "range": "1:2"},
-    {"group": "matrix.motors", "effect": "motor_seq3", "write": "w", "range": "2:3"},
-    {"group": "matrix.motors", "effect": "motor_seq4", "write": "w", "range": "3:4"},
-    {"group": "matrix.motors", "effect": "motor_seq5", "write": "w", "range": "4:5"}
+    {"group": "matrix.motors", "effect": "motor_seq", "write": "w"}
   ],
-  "_note": "五台各自獨立的 generator：range 把 matrix.motors 拆成 5 段（第幾顆 = config address 排序的第幾台），每段配自己的一支效果 → 每台的延遲/伸/停/縮長度都可以不同。"
+  "_note": "一條 entry 吃整組 matrix.motors（五台）：波在 effects.json id10 的 program；五個位置的啟動時間差 = spacing（相位公式 (t//speed)*step + i*spacing + offset，reverse=true 時 i→n-1-i）。play_loop -1 常駐、play_count -1；波長 200 幀 = 4s 一循環。"
 }

@@ -11,81 +11,77 @@ driver 建**一個** `UartMotor` 實例、`show_all()` 一次過串發 5 個單�
 2. **schedule(vBus)**:+8s `MODE_SET id5` → `motor_seq` **五推各自獨立伸→停→縮**(循環 300 幀 = 6s,見下)
 3. **+21s `MODE_STOP`** → 全停,保持中性值 2048(0x80,電機死區停,不再動)
 
-## 五推各自獨立伸→停→縮(`motor_seq`,mode id5)
+## 五推順序伸→停→縮(`motor_seq`,mode id5)
 
-**五台是五個獨立的 generator,不是同一條波平移。** 一台推 = 一個 pixel,每一台配**自己的一支效果**
-(自己的 `program` = 自己的延遲 / 伸 / 停 / 縮長度),靠 mode map 的 **`range`** 把群組 `matrix.motors`
-拆成 5 段(`0:1`…`4:5`)各配一支:
+**路 A 純 json,一行 py 都唔寫。** 機制就係文件寫嘅兩件事(`08_pixel_subsystem.md` §2.1、
+`11_developing_effects.md` §4/§5):
+
+- **一個波** = json `program`(段序列)→ 框架 `Effect` 開機 `warm_up()` 先算好波表
+  (`Effect._wave[x] == PixelMathMethod.value_at(compile(program), x)` —— 已用真碼對過)。
+- **每個位置幾時開始** = `spacing`。相位 = `(t // speed) * step + i * spacing + offset`
+  (`reverse=true` 時 `i → n-1-i`),即第 i 顆 = 第 0 顆嘅波**平移 `i * spacing` 幀**。
+
+`effects.json` id10(只用文件有嘅欄位:`program` / `step` / `spacing` / `offset` / `speed` / `reverse`):
 
 ```json
-"map": [
-  {"group": "matrix.motors", "effect": "motor_seq1", "write": "w", "range": "0:1"},
-  ... 共 5 條,一條一台 ...
-]
+{ "id": 10, "name": "motor_seq", "pixel_n": 5,
+  "program": [
+    {"type": "math_now", "F": 5, "l_max": 4080, "l_lim": 2048, "phi": 3071, "end_Time": 20},
+    {"type": "math_now", "F": 5, "l_max": 4080, "l_lim": 2048, "phi": 1023, "end_Time": 40},
+    {"type": "keep",     "F": 1, "l_max": 2048, "l_lim": 2048, "phi": 0,    "end_Time": 70},
+    {"type": "math_now", "F": 5, "l_max": 2048, "l_lim": 0,    "phi": 1023, "end_Time": 90},
+    {"type": "math_now", "F": 5, "l_max": 2048, "l_lim": 0,    "phi": 3071, "end_Time": 110},
+    {"type": "keep",     "F": 1, "l_max": 2048, "l_lim": 2048, "phi": 0,    "end_Time": 200}
+  ],
+  "step": 1, "spacing": 40, "offset": 40, "speed": 1, "reverse": true }
 ```
 
-真碼驗證:`PixelTask._parse_mode` 每條 entry 各自 `sub_offsets()` 得到 `[0]`,`[1]`…;
-`_make_player` 每條 entry 各建一個 generator;`_tick_player` 每幀對 5 條各 `scatter_offs` 一次
-→ 五台同一幀裡帶著**各自的**raw byte 出門(一張 UART 幀同時更新五台)。
-「第幾顆」= config address 排序的第幾台(硬體真值),效果裡不重複宣告 address。
+| 波嘅段 | 意思 |
+|---|---|
+| `math_now l_lim 2048 l_max 4080 phi 3071` | **伸**:由停(2048)加速到全速伸(4080) |
+| `math_now` 同上但 `phi 1023` | **伸**:減速返停(到位)—— 兩段 = 一個鐘形 |
+| `keep l_max 2048` | **停留**:輸出 2048 → W=0x80 死區斷力 |
+| `math_now l_max 2048 l_lim 0 phi 1023` | **縮**:由停加速到全速收(0) |
+| `math_now` 同上但 `phi 3071` | **縮**:減速返停 |
+| `keep l_max 2048` 尾停 | 收尾,順便決定波長(呢度 200 幀 = 4s) |
 
-預設組合(在 `pixel/effects/effects.json` id10-14,一台一支;改數字即可):
+`F=5` = 該段走半個週期;`phi 3071` = 由谷底上升、`phi 1023` = 由峰值下降(`PixelMathMethod.value_at` 真碼)。
+⚠️ 唔好用 `starter`(恆 0 = **全速收**)。
 
-| 台 | 效果 id | 延遲 | 伸(升+降) | 停留 | 縮(降+升) | 尾停 | 總長 |
-|---|---|---|---|---|---|---|---|
-| 1 | 10 `motor_seq1` | 20 | 20+20 | 30 | 20+20 | 170 | 300 |
-| 2 | 11 `motor_seq2` | 40 | 25+25 | 40 | 25+25 | 120 | 300 |
-| 3 | 12 `motor_seq3` | 60 | 30+30 | 50 | 30+30 | 70 | 300 |
-| 4 | 13 `motor_seq4` | 80 | 15+15 | 20 | 15+15 | 140 | 300 |
-| 5 | 14 `motor_seq5` | 100 | 35+35 | 50 | 35+35 | 10 | 300 |
-
-一支效果的 `program` 就是這 7 段(值 = 12-bit,`end_Time` **累加**):
-
-| 段 | 寫法 | 意思 |
+| 空間參數 | 呢度設 | 真碼實測行為 |
 |---|---|---|
-| 延遲 | `keep l_max 2048` | 還沒輪到我 → 0x80 死區停 |
-| 伸(升) | `math_now l_lim 2048 l_max 4080 phi 3071` | 由停加速到全速伸 |
-| 伸(降) | 同上但 `phi 1023` | 由全速伸減速回停(到位) |
-| 停留 | `keep l_max 2048` | 0x80 死區斷力(推桿停在原地) |
-| 縮(降) | `math_now l_max 2048 l_lim 0 phi 1023` | 由停加速到全速收 |
-| 縮(升) | 同上但 `phi 3071` | 由全速收減速回停 |
-| 尾停 | `keep l_max 2048` | 做完休息,順便把總長拉到 300 |
+| `spacing` | 40 | 相鄰兩台相差 40 幀(0.8s,= 「伸」嘅長度) |
+| `reverse` | true | 第1台先;**false 會變第5台先**(實測起跑 162,122,82,42,2) |
+| `offset` | 40 | `= 波長 − 4×spacing` → 第1台喺 t=0 起跑 |
+| `step` / `speed` | 1 | 每幀相位 +1;`speed=2` = 每格輸出兩次(減速) |
 
-實測時間軸(50fps;真碼 `_tick_player` → `scatter_offs` → `UartMotor` 逐幀解回 raw):
+真碼實測(真 `_tick_player` → scatter → `UartMotor` 逐幀解回 raw;內建 `Effect` 播放,零 py):
 
 ```
- addr | 起跑 | 伸完 | 開始縮 | 縮完 | 動作長
-   1  |  22  |  58  |   90   | 129  |  107 幀 (2.1s)
-   2  |  42  |  88  |  130   | 179  |  137 幀 (2.7s)
-   3  |  62  | 118  |  170   | 229  |  167 幀 (3.3s)
-   4  |  82  | 118  |  150   | 189  |   80 幀 (1.6s)  ← 晚動、最短促
-   5  | 103  | 168  |  220   | 289  |  186 幀 (3.7s)
+ addr | 伸起跑 | 伸完 | 縮完 | 起跑後前 6 幀 raw
+   1  |     2  |   39 |  110 | 80 83 86 8C 92 9A
+   2  |    42  |   79 |  150 | 80 83 86 8C 92 9A
+   3  |    82  |  119 |  190 | 80 83 86 8C 92 9A
+   4  |   122  |  159 |  230 | 80 83 86 8C 92 9A
+   5  |   162  |  199 |  270 | 80 83 86 8C 92 9A
 ```
 
-改數字的三個動作:
-1. **延遲**(晚點動)→ 改第一段 `keep` 的 `end_Time`,**後面所有 `end_Time` 一起加同樣的量**。
-2. **伸/縮長度**(動久一點)→ 改對應那兩段 `math_now` 的 `end_Time`(升/降各一半 = 對稱的 bell)。
-3. **循環長度** → 改最後一段 `keep` 的 `end_Time`;**五支要改成同一個值**,整組才會整齊重複
-   (本檔 300 幀 = 6s;要每台跑不同週期也可以,那就把總長設不一樣)。
+五台係**同一個波**,只係每台遲 `spacing` 幀;週期 = 波長 200 幀 = 4s,第二輪起跑 = +200。
+*(要每台伸/停/縮長度都唔同,一行 py 都唔加係做唔到 —— 咁就要每台一支 json 效果 +
+mode 5 條 `range`,嗰個版本喺 git `4b2792e`。)*
 
-段型語義(`lib/sw/PixelMathMethod.py` 真碼):`keep` 恆定 = **`l_max`**;`math_now` 正弦在
-`l_lim..l_max` 之間,`phi 3071` = 由谷底上升、`phi 1023` = 由峰值下降,`F=5` = 該段走半個週期
-(`F=10` = 一整個週期)。
-⚠️ 別用 `starter`(恆 0 = **全速收**,不是「靜止」)。
-
-> 五支都是內建 `Effect`(永不 StopIteration)→ 會一直循環播到 `MODE_STOP`
-> (`render.clear_all()` 填中性值 0x80);想只跑一輪就設 mode `maxF`(= 循環長度或其倍數)。
-> 另:五台雖然同一幀出門,但同一幀內第 1 台與第 5 台差 16.7ms(見下面「緩衝設計」)。
+值 = 12-bit → W 通道 `>>4`:`2048`→`0x80` 死區停、`4080`→`0xFF` 全速伸、`0`→`0x00` 全速收。
+收尾:內建 `Effect` 唔會 StopIteration → 一直循環,`MODE_STOP` 收(`clear_all()` 填 0x80)。
 
 ## delta 檔案清單(相對 slave/ 覆蓋,一次過上傳)
 | 檔案 | 內容 |
 |---|---|
 | `config.json` | uartMotor addr **1-5** @UART list[1](9600 GPIO12)、RS485 id1 115200 |
-| `pixel/effects/effects.py` | slave 基礎 + `uart_motor_sine` + bench 行程類別(motor_home / motor_test_cycle)—— **motor_seq 不需要動它** |
-| `pixel/effects/effects.json` | effects id:1-6 基礎、7 uart_motor_sine、8 motor_home、9 motor_test_cycle、**10-14 motor_seq1-5(一台一支,純 json 畫波)** |
+| `pixel/effects/effects.py` | **唔使動** —— motor_seq 係路 A 純 json,內建 `Effect` 播 |
+| `pixel/effects/effects.json` | effects id:1-6 基礎、7 uart_motor_sine、8 motor_home、9 motor_test_cycle、**10 motor_seq(program + spacing)** |
 | `pixel/modes/motor_home.json` | mode id3(開機 auto 歸位,五台同收) |
 | `pixel/modes/motor_test_cycle.json` | mode id4(五台一起:伸10s/收12s 一次) |
-| `pixel/modes/motor_seq.json` | **mode id5(五條 map entry × range 0:1..4:5,各配一台自己的效果,`play_loop:-1` 常駐)** |
+| `pixel/modes/motor_seq.json` | **mode id5(一條 entry 吃整組 motors;`play_loop:-1` + `play_count:-1`)** |
 | `pixel/registry.json` | `auto_play:true, list:["motor_home"]` |
 | `schedule.json` | 開機 +8s 經 vBus 發 `MODE_SET 00 05 00 00 FF`(id5)、+21s `MODE_STOP` |
 | `README.md` | 本檔 |

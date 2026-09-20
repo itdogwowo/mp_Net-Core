@@ -144,103 +144,22 @@
     },
     {
       "id": 10,
-      "name": "motor_seq1",
-      "pixel_n": 1,
+      "name": "motor_seq",
+      "pixel_n": 5,
       "program": [
-        {"type": "keep",     "F": 1, "l_max": 2048, "l_lim": 2048, "phi": 0,    "end_Time": 20},
-        {"type": "math_now", "F": 5, "l_max": 4080, "l_lim": 2048, "phi": 3071, "end_Time": 40},
-        {"type": "math_now", "F": 5, "l_max": 4080, "l_lim": 2048, "phi": 1023, "end_Time": 60},
-        {"type": "keep",     "F": 1, "l_max": 2048, "l_lim": 2048, "phi": 0,    "end_Time": 90},
-        {"type": "math_now", "F": 5, "l_max": 2048, "l_lim": 0,    "phi": 1023, "end_Time": 110},
-        {"type": "math_now", "F": 5, "l_max": 2048, "l_lim": 0,    "phi": 3071, "end_Time": 130},
-        {"type": "keep",     "F": 1, "l_max": 2048, "l_lim": 2048, "phi": 0,    "end_Time": 300}
+        {"type": "math_now", "F": 5, "l_max": 4080, "l_lim": 2048, "phi": 3071, "end_Time": 20},
+        {"type": "math_now", "F": 5, "l_max": 4080, "l_lim": 2048, "phi": 1023, "end_Time": 40},
+        {"type": "keep",     "F": 1, "l_max": 2048, "l_lim": 2048, "phi": 0,    "end_Time": 70},
+        {"type": "math_now", "F": 5, "l_max": 2048, "l_lim": 0,    "phi": 1023, "end_Time": 90},
+        {"type": "math_now", "F": 5, "l_max": 2048, "l_lim": 0,    "phi": 3071, "end_Time": 110},
+        {"type": "keep",     "F": 1, "l_max": 2048, "l_lim": 2048, "phi": 0,    "end_Time": 200}
       ],
       "step": 1,
-      "spacing": 0,
-      "offset": 0,
+      "spacing": 40,
+      "offset": 40,
       "speed": 1,
-      "reverse": false,
-      "_comment": "第1台（延遲 20 / 伸 20+20 / 停 30 / 縮 20+20 / 尾停 170，總長 300 幀 = 6s = 循環長度）。五台各自獨立：靠 mode 的 range 把 matrix.motors 拆 5 段、各配一支效果（各自一個 generator），所以每台的延遲與伸縮長度都可以不同。延遲 = 最前面那段 keep；伸 = 兩段 math_now 升/降；停 = keep 2048；縮 = 兩段 math_now；尾停把總長拉到 300（五支要一樣才整齊循環）。"
-    },
-    {
-      "id": 11,
-      "name": "motor_seq2",
-      "pixel_n": 1,
-      "program": [
-        {"type": "keep",     "F": 1, "l_max": 2048, "l_lim": 2048, "phi": 0,    "end_Time": 40},
-        {"type": "math_now", "F": 5, "l_max": 4080, "l_lim": 2048, "phi": 3071, "end_Time": 65},
-        {"type": "math_now", "F": 5, "l_max": 4080, "l_lim": 2048, "phi": 1023, "end_Time": 90},
-        {"type": "keep",     "F": 1, "l_max": 2048, "l_lim": 2048, "phi": 0,    "end_Time": 130},
-        {"type": "math_now", "F": 5, "l_max": 2048, "l_lim": 0,    "phi": 1023, "end_Time": 155},
-        {"type": "math_now", "F": 5, "l_max": 2048, "l_lim": 0,    "phi": 3071, "end_Time": 180},
-        {"type": "keep",     "F": 1, "l_max": 2048, "l_lim": 2048, "phi": 0,    "end_Time": 300}
-      ],
-      "step": 1,
-      "spacing": 0,
-      "offset": 0,
-      "speed": 1,
-      "reverse": false,
-      "_comment": "第2台（延遲 40 / 伸 25+25 / 停 40 / 縮 25+25 / 尾停 120）。五台各自獨立：靠 mode 的 range 把 matrix.motors 拆 5 段、各配一支效果（各自一個 generator），所以每台的延遲與伸縮長度都可以不同。延遲 = 最前面那段 keep；伸 = 兩段 math_now 升/降；停 = keep 2048；縮 = 兩段 math_now；尾停把總長拉到 300（五支要一樣才整齊循環）。"
-    },
-    {
-      "id": 12,
-      "name": "motor_seq3",
-      "pixel_n": 1,
-      "program": [
-        {"type": "keep",     "F": 1, "l_max": 2048, "l_lim": 2048, "phi": 0,    "end_Time": 60},
-        {"type": "math_now", "F": 5, "l_max": 4080, "l_lim": 2048, "phi": 3071, "end_Time": 90},
-        {"type": "math_now", "F": 5, "l_max": 4080, "l_lim": 2048, "phi": 1023, "end_Time": 120},
-        {"type": "keep",     "F": 1, "l_max": 2048, "l_lim": 2048, "phi": 0,    "end_Time": 170},
-        {"type": "math_now", "F": 5, "l_max": 2048, "l_lim": 0,    "phi": 1023, "end_Time": 200},
-        {"type": "math_now", "F": 5, "l_max": 2048, "l_lim": 0,    "phi": 3071, "end_Time": 230},
-        {"type": "keep",     "F": 1, "l_max": 2048, "l_lim": 2048, "phi": 0,    "end_Time": 300}
-      ],
-      "step": 1,
-      "spacing": 0,
-      "offset": 0,
-      "speed": 1,
-      "reverse": false,
-      "_comment": "第3台（延遲 60 / 伸 30+30 / 停 50 / 縮 30+30 / 尾停 70）。五台各自獨立：靠 mode 的 range 把 matrix.motors 拆 5 段、各配一支效果（各自一個 generator），所以每台的延遲與伸縮長度都可以不同。延遲 = 最前面那段 keep；伸 = 兩段 math_now 升/降；停 = keep 2048；縮 = 兩段 math_now；尾停把總長拉到 300（五支要一樣才整齊循環）。"
-    },
-    {
-      "id": 13,
-      "name": "motor_seq4",
-      "pixel_n": 1,
-      "program": [
-        {"type": "keep",     "F": 1, "l_max": 2048, "l_lim": 2048, "phi": 0,    "end_Time": 80},
-        {"type": "math_now", "F": 5, "l_max": 4080, "l_lim": 2048, "phi": 3071, "end_Time": 95},
-        {"type": "math_now", "F": 5, "l_max": 4080, "l_lim": 2048, "phi": 1023, "end_Time": 110},
-        {"type": "keep",     "F": 1, "l_max": 2048, "l_lim": 2048, "phi": 0,    "end_Time": 130},
-        {"type": "math_now", "F": 5, "l_max": 2048, "l_lim": 0,    "phi": 1023, "end_Time": 145},
-        {"type": "math_now", "F": 5, "l_max": 2048, "l_lim": 0,    "phi": 3071, "end_Time": 160},
-        {"type": "keep",     "F": 1, "l_max": 2048, "l_lim": 2048, "phi": 0,    "end_Time": 300}
-      ],
-      "step": 1,
-      "spacing": 0,
-      "offset": 0,
-      "speed": 1,
-      "reverse": false,
-      "_comment": "第4台（延遲 80 / 伸 15+15 / 停 20 / 縮 15+15 / 尾停 140，總長 300 幀 = 6s = 循環長度）。五台各自獨立：靠 mode 的 range 把 matrix.motors 拆 5 段、各配一支效果（各自一個 generator），所以每台的延遲與伸縮長度都可以不同。延遲 = 最前面那段 keep；伸 = 兩段 math_now 升/降；停 = keep 2048；縮 = 兩段 math_now；尾停把總長拉到 300（五支要一樣才整齊循環）。"
-    },
-    {
-      "id": 14,
-      "name": "motor_seq5",
-      "pixel_n": 1,
-      "program": [
-        {"type": "keep",     "F": 1, "l_max": 2048, "l_lim": 2048, "phi": 0,    "end_Time": 100},
-        {"type": "math_now", "F": 5, "l_max": 4080, "l_lim": 2048, "phi": 3071, "end_Time": 135},
-        {"type": "math_now", "F": 5, "l_max": 4080, "l_lim": 2048, "phi": 1023, "end_Time": 170},
-        {"type": "keep",     "F": 1, "l_max": 2048, "l_lim": 2048, "phi": 0,    "end_Time": 220},
-        {"type": "math_now", "F": 5, "l_max": 2048, "l_lim": 0,    "phi": 1023, "end_Time": 255},
-        {"type": "math_now", "F": 5, "l_max": 2048, "l_lim": 0,    "phi": 3071, "end_Time": 290},
-        {"type": "keep",     "F": 1, "l_max": 2048, "l_lim": 2048, "phi": 0,    "end_Time": 300}
-      ],
-      "step": 1,
-      "spacing": 0,
-      "offset": 0,
-      "speed": 1,
-      "reverse": false,
-      "_comment": "第5台（延遲 100 / 伸 35+35 / 停 50 / 縮 35+35 / 尾停 10）。五台各自獨立：靠 mode 的 range 把 matrix.motors 拆 5 段、各配一支效果（各自一個 generator），所以每台的延遲與伸縮長度都可以不同。延遲 = 最前面那段 keep；伸 = 兩段 math_now 升/降；停 = keep 2048；縮 = 兩段 math_now；尾停把總長拉到 300（五支要一樣才整齊循環）。"
+      "reverse": true,
+      "_comment": "一個波 × 五個位置（路 A 純 json，不寫 py）。波 = 伸(20+20) 停(30) 縮(20+20) 尾停(90) = 200 幀；值 = 12-bit → W 通道 >>4（2048→0x80 停、4080→0xFF 全速伸、0→0x00 全速收）。spacing=40 = 相鄰兩台差 40 幀（0.8s，剛好等於「伸」的長度）；reverse=true = 第1台先（false 會變第5台先，實測反向）；offset = 波長−4×spacing = 40 → 第1台在 t=0 起跑。週期 = 波長 200 幀 = 4s，五台依序 1→5 循環。"
     }
   ]
 }
