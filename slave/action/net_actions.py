@@ -64,6 +64,22 @@ def _ips_json():
         return "{}"
 
 
+def on_identify_rsp(ctx, args):
+    """0x100E IDENTIFY_RSP —— **收**方（Master 側 / 面板側）。
+
+    這是「自己素描到什麼 slave」的登記點：把回覆的 cid + slave_id + ip
+    連同收幀當下的射頻 MAC（ctx["_peer_mac"]）記進 PeerRegistry。
+    自己送出的 0x100D 會走到 on_identify_req；收到的回覆走這裡，兩者對稱。
+    """
+    reg = bus.get_service("peers")
+    if reg is None:
+        return
+    try:
+        reg.learn_from_identify_rsp(ctx, args)
+    except Exception as e:
+        print("[Net] peers learn failed: {}".format(e))
+
+
 def on_identify_req(ctx, args):
     """0x100D: 逐 address 素描。帶 reply_addr 告知 master_cid, 回應 cid+slave_id+IP。"""
     reply_addr = args.get("reply_addr", 0xFFFF) & 0xFFFF
@@ -182,6 +198,7 @@ def on_webui_ctrl(ctx, args):
 
 def register(app):
     app.disp.on(CMD_IDENTIFY_REQ, on_identify_req)
+    app.disp.on(CMD_IDENTIFY_RSP, on_identify_rsp)
     app.disp.on(CMD_REBOOT, on_reboot)
     app.disp.on(CMD_WREPL_CTRL, on_wrepl_ctrl)
     app.disp.on(CMD_NET_START, on_net_start)

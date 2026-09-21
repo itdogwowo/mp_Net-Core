@@ -23,10 +23,37 @@ class SysBus:
         self.master_cid = 0xFFFF # 回應定址目標 (uint16); 0xFFFF=廣播(未設定), 由 SET_MASTER/IDENTIFY 設定, 僅內存
         self._gpio_claims = {}
 
+    # 會影響 Router 介面表的服務名（= 真的是一條「通道」的那些）。
+    # 其餘服務（uart_list / pin_list / st_pixel…）註冊時不必驚動 Router。
+    _ROUTER_IFACE_SVCS = (
+        "NowBus", "net_bus_ctrl", "net_bus_discovery",
+        "circuit_bus_all_list", "bus_sources", "circuit_bus_list",
+    )
+
     def register_service(self, name, obj):
         if name in self._services:
             return False
         self._services[name] = obj
+        # ── 通道上線 → 立刻通知 Router（事件驅動，不靠輪詢）──────────
+        #   為什麼掛在這裡：這是**所有通道註冊的唯一入口**，所以在這裡通知
+        #   是完備的（不會漏），而且在「真的有東西上線」的那一刻才做事
+        #   （沒有東西上線就完全不做事）。
+        #
+        #   原本的做法是 BusDecodeTask 每 100ms 呼叫 router.sync_ifaces()，
+        #   理由是「各 Task 上線順序不定，錯過了要等下一輪」——
+        #   但那是**症狀的解法**：真正的原因是 BusDecodeTask.on_start 跑在
+        #   NowTask/NetworkTask 之前，第一輪 sync 時 NowBus 還不存在。
+        #   改成事件驅動後，那個輪詢就不需要了。
+        #
+        #   注意：Router 是 BusDecodeTask 建立後才註冊成服務，所以這裡要
+        #   容錯「Router 還沒出生」的情況（回 None 就跳過）。
+        if name in self._ROUTER_IFACE_SVCS:
+            r = self._services.get("signal_router")
+            if r is not None:
+                try:
+                    r.sync_ifaces(self)
+                except Exception:
+                    pass
         return True
 
     def get_service(self, name):

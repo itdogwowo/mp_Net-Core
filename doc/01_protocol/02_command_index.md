@@ -139,7 +139,7 @@
 | CMD | 名稱 | 方向 | Payload | 說明 |
 |-----|------|------|---------|------|
 | 0x1601 | ROUTER_STATUS | Master→Slave | (空) | 回 0x1606：介面清單 / 每條 route 的 hit·fwd·drop / load 錯誤 |
-| 0x1602 | ROUTER_ROUTE_ADD | Master→Slave | `route_json(str)` | 新增或覆寫一條 route（單行 JSON `{"in":"now","out":["uart1"]}`），**立即生效** |
+| 0x1602 | ROUTER_ROUTE_ADD | Master→Slave | `route_json(str)` | 新增或覆寫一條 route（單行 JSON `{"in":"now","out":["uart0"]}`），**立即生效** |
 | 0x1603 | ROUTER_ROUTE_DEL | Master→Slave | `in_name(str)` | 依 `in` 刪除一條 route |
 | 0x1604 | ROUTER_TABLE_GET | Master→Slave | `page(u8)` | 回 0x1606，`data_json` = `{page,pages,page_size,total,routes}` |
 | 0x1605 | ROUTER_SAVE | Master→Slave | `enable(u8)` | 存回 `config.json`；`0xFF`=只存檔、`0`=關、`1`=開（存檔成功才切換）|

@@ -17,19 +17,33 @@
 #   "Router": {
 #     "enable": 0,
 #     "routes": [
-#       { "in": "now",   "out": ["uart1"] },
-#       { "in": "uart1", "out": ["self"] },
-#       { "in": "net",   "out": ["uart2"] }
+#       { "in": "now",   "out": ["uart0"] },
+#       { "in": "uart0", "out": ["self"] },
+#       { "in": "self",  "out": ["self"] },      ← 本機發起的幀（vBus 注入）
+#       { "in": "net",   "out": ["uart1"] }
 #     ]
 #   }
+#   （uartN 的 N = UART.list 的索引，0-based；見 circuit.py 與 doc §3.3）
 #
 # 規則:
 #   enable=0              → 完全不作用（與未導入前 100% 相同）
 #   in 沒配對             → 不執行、不轉發（沒配對＝沒路走）
-#   out=["uart1"]         → 只轉發，本地不執行
+#   out=["uart0"]         → 只轉發，本地不執行
 #   out=["self"]          → 只本地執行，不轉發
 #   out=["self","net"]    → 本地執行 ＋ 同時轉發
+#   out=[]                → 明確不執行也不轉發
 #   out 含 in             → 開機拒絕該 route（自我反射，永遠是錯的）
+#
+# ★ "self" 同時是**來源**也是**目的地**（對稱）:
+#     in:  "self"   → 本機發起的幀（vBus 注入等 io=None 的迴路；見 is_local_bus）
+#     out: ["self"] → 進本地解碼鏈執行
+#   本機來源**不進 ifaces**（ifaces 是出口表），要轉發自己請寫
+#   { "in": "self", "out": ["now"] } —— out 那側才是出口。
+#
+# ⚠️ 要「不受路由政策影響、絕對執行」時，不要繞 Router —— 那會連 CRC 與
+#    ADDR 過濾都跳過。程式內部直呼 handler 請用 app.disp.dispatch()
+#    （見 tasks/web_ui.py 的 /api/cmd），語意是「我呼叫一個函式」，
+#    而不是「我假裝收到一幀」。兩者場合不同，不要混用。
 #
 # 生命週期契約:
 #   pack() 風格 — 本模組的 _forward() **同步**寫出，不持有 memoryview 跨呼叫。
@@ -51,27 +65,50 @@ V_DROP = 0       # 不執行、不轉發
 SELF = "self"    # out 裡的保留字：進本地解碼鏈
 
 # ── 邏輯名 ↔ bus label 的對應（唯一真相，只寫一次）──────────────────────
-# 路由表用的是「邏輯名」（now / net / udp / uart1 / vbus），
+# 路由表用的是「邏輯名」（now / net / udp / uart0 / self），
 # 而 BusDecodeTask 傳進來的 transport label 是各 bus 自帶的實體名。
 # 這兩個名字本來就不同調，所以在此集中翻譯一次 —— 各 Task 不需要重複註冊別名。
 #
 #   now   ← NowBus.label        "NOW-Bus"
 #   net   ← NetBus(TYPE_WS)     "CTRL-WS"      （控制通道；不叫 lan，因為 WS 也可能跑在 WiFi 上）
 #   udp   ← NetBus(TYPE_UDP)    "UDP-DISCV"    （發現通道）
-#   uartN ← CircuitBus(uartN)   "CIRCUIT-UARTn"
-#   vbus  ← CircuitBus(io=None) "VBUS"
+#   uartN ← CircuitBus(uartN)   "CIRCUIT-UARTn"  ← N = UART.list 的**索引(0-based)**
+#                                                 （不是 config 的 `id`；見 circuit.py 的說明）
+#   self  ← CircuitBus(io=None) "VBUS"           ← 本機來源（見 is_local_bus）
 _LABEL_EXACT = {
     "NOW-BUS": "now",
     "CTRL-WS": "net",
     "UDP-DISCV": "udp",
-    "VBUS": "vbus",
-}
+    "VBUS": "self",          # ★ vBus 的實質就是「把幀餵回自己的解碼鏈」
+}                            #   → 它是**來源 SELF**，不是一條叫 vbus 的出口
 _LABEL_PREFIX = (
     ("CIRCUIT-UART", "uart"),
     ("CIRCUIT-", "uart"),        # 舊標籤相容
 )
-_KNOWN_IFACES = ("now", "net", "udp", "vbus", "self",
-                 "uart1", "uart2", "uart3", "uart4")
+_KNOWN_IFACES = ("now", "net", "udp", "self",
+                 "uart0", "uart1", "uart2", "uart3")
+
+# 幾乎必然存在的來源 —— autofill **不判斷**它存不存在，一律進路由表。
+#   self : 本機發起的幀。任何裝置都有「自己」，不需要等 vBus 上線。
+#
+# ⚠️ vBus **不在這裡**（2026-09 定案）：它「只負責發送」，不是一條可路由的來源。
+#    它的幀一律以來源名 `self` 進 Router（見 is_local_bus），
+#    所以在路由表裡不該出現 `in: "vbus"` 這種條目 —— 那會是第二個名字指同一件事。
+#    使用者在 in 寫 vbus 會被當成「不存在的通道」跳過；在 out 寫 vbus 會被無視。
+ALWAYS_PRESENT = (SELF,)
+
+
+def is_local_bus(obj):
+    """這個 bus 是不是「本機來源」（把幀餵回自己解碼鏈的迴路）。
+
+    判準：CircuitBus 的 `io is None` —— 它不接任何實體腳位，唯一用途就是
+    被注入 rx_hub（`schedule._get_vbus()` 的 `CircuitBus(None, label="VBUS")`）。
+    全樹只有 vBus 一個（真實線路都帶 uart 物件），所以這個判準穩定。
+
+    為什麼不用 label 判斷：label 是給 log 看的名字，機制不該綁在字串上；
+    哪天有人改 label，來源身分不該跟著壞掉。
+    """
+    return obj is not None and getattr(obj, "io", "missing") is None
 
 # ── 介面來源（邏輯名 ↔ bus 服務名）────────────────────────────────────
 # 由 BusDecodeTask 週期性呼叫 sync_ifaces() 補註冊（各 Task 上線順序不定）。
@@ -100,6 +137,16 @@ def iface_name_from_label(label):
         if key.startswith(pre):
             return base + key[len(pre):]
     return label
+
+
+def _route_order(name):
+    """路由表的排序鍵：**`self` 排第一**，其餘照字母序。
+
+    為什麼 self 要排第一：它是本機來源，讀路由表的人第一眼就該看到
+    「我自己發的幀往哪走」，而不是在一堆線路名中間找它。
+    （用「self 優先」而不是字典序 —— 字典序會讓它夾在 now 與 uart0 之間。）
+    """
+    return (0, "") if name == SELF else (1, name)
 
 
 def _is_bad_key(k):
@@ -150,11 +197,23 @@ class SignalRouter:
         # {in: 線路, out: ["self"]}（＝該線自己收自己執行，與未導入 Router 前相同），
         # 並由呼叫端寫回 config.json —— 使用者打開 config 就看到全部真實線路，
         # 只要改想轉送的那幾條。
+        #   ⚠️ 2026-09：**不再寫回 config.json**（`_persist_autofill()` 只記錄）。
+        #      原因：使用者刪掉的 route 會被補回來並寫進檔案、通道晚上線會被
+        #      預設值覆蓋並寫進檔案 —— 設定檔會自己長出他沒寫過的東西。
+        #      要落盤請明確用 ROUTER_SAVE（0x1605）。
+        #   本機來源（vBus，見 is_local_bus）也會被補成 {in: "self", out: ["self"]}，
+        #   所以「自己發的指令會被自己執行」是預設行為，不必手寫。
         #   _auto_done : 已經自動檢查過的線路（同一 session 不重複補；
         #                ROUTE_DEL 刪掉後不會被下一次 sync 又補回來）
         #   _autofilled: 這次補了哪幾條，等呼叫端 take_autofill() 取走去存檔
+        #   _locals    : 本機迴路（vBus 等）。它們不進 ifaces（那是出口表），
+        #                所以 _autofill 要另外走這一份，否則會「隱形」不被補 route。
         self._auto_done = set()
         self._autofilled = []
+        self._locals = {}
+        # 使用者寫了、但通道還不確定的 route（等 sync_ifaces 結算，見 load）
+        self._pending = []
+        self._skipped = []
 
     # ─────────────────────────────────────────────────────────────
     # 介面註冊（各 Task 在 on_start 呼叫；重複註冊同一 name 為 no-op）
@@ -162,7 +221,9 @@ class SignalRouter:
     def register_iface(self, name, bus_obj, label=None):
         """把邏輯名綁到實際 bus 物件（各 Task 在 on_start 呼叫）。
 
-        name  : 路由表用的邏輯名（"uart1" / "now" / "net" / "udp" / "vbus"）
+        name  : 路由表用的邏輯名（"uart0" / "now" / "net" / "udp"）
+                —— **不要傳 "self"**：本機來源不進 ifaces（見 is_local_bus），
+                   它由 name_of() 直接判別，不需要註冊。出口側才需要 ifaces。
         bus_obj: 有 .label 與 .write() 的物件（NetBus / CircuitBus / NowBus）
         label : 選填；bus_obj 沒有 .label 時用來補（比對 decode 送的 label）
 
@@ -190,14 +251,30 @@ class SignalRouter:
         """bus 物件 → 邏輯名。
 
         優先序:
-          1. register_iface 註冊過 → 直接命中
-          2. bus_obj.label 經 iface_name_from_label 翻譯（"NOW-Bus" → "now"）
-        兩者都沒有則回 None（gate 會視為 V_OK，不介入）。
+          1. 本機來源（io=None 的迴路，如 vBus）→ **SELF**（"self"）
+             —— 這條是「來源」不是「出口」：本機發起的幀，其來源就是自己。
+          2. register_iface 註冊過 → 直接命中
+          3. bus_obj.label 經 iface_name_from_label 翻譯（"NOW-Bus" → "now"）
+        都沒有則回 None（gate 會視為 V_OK，不介入）。
         """
+        if is_local_bus(bus_obj):
+            return SELF
         n = self._by_id.get(id(bus_obj))
         if n is not None:
             return n
         return iface_name_from_label(getattr(bus_obj, "label", None))
+
+    def _is_live(self, name):
+        """這條 route 的來源「現在真的存在」嗎？
+
+        特例（見 ALWAYS_PRESENT）：`self` 與 `vbus` 一律算存在 ——
+        它們是語意上必然有的來源，不該因為「本機迴路還沒被建立」
+        就被誤報成 unbound（寫了卻不存在的來源）。
+        其餘照舊查 ifaces。
+        """
+        if name in ALWAYS_PRESENT:
+            return True
+        return name in self.ifaces
 
     def sync_ifaces(self, registry):
         """把「已經上線的通道」補註冊進來。回傳這次新註冊的數量。
@@ -212,7 +289,8 @@ class SignalRouter:
         來源三處（依權威性排序）:
           1. 具名服務   → now / net / udp
           2. 全部 UART  → circuit_bus_all_list（含**沒進 CircuitDecode** 的線）
-          3. 解碼來源   → bus_sources（vbus 等沒有具名服務的線）
+          3. 解碼來源   → bus_sources（其餘沒有具名服務的線；
+                          本機迴路 vBus 也在這裡，但登記成來源 self）
         """
         get = getattr(registry, "get_service", None)
         if get is None:
@@ -243,44 +321,120 @@ class SignalRouter:
             except Exception:
                 lst = None
         for b in (lst or ()):
+            # 本機來源（vBus 等 io=None 的迴路）**不進 ifaces** —— ifaces 是「出口表」，
+            # 而本機來源只當來源（見 name_of 的說明）。它由 _by_id 對應到 SELF。
+            if is_local_bus(b):
+                self._locals[id(b)] = b
+                self._by_id[id(b)] = SELF
+                continue
             nm = iface_name_from_label(getattr(b, "label", None))
             if nm and self.ifaces.get(nm) is not b:
                 if self.register_iface(nm, b):
                     n += 1
 
-        # ★ 每次啟動（與每次有新線路上線）都跑一次：沒 route 的線路自動補 self
-        self._autofill()
+        # ── 先看表：使用者寫的 route，通道在就註冊 ────────────────
+        #   **一定要排在 autofill 前面** —— 順序反了的話，新通道會先被
+        #   autofill 標成「已處理」，使用者的 route 才被判跳過（實際踩過）。
+        self._reconcile_pending()
 
         return n
+
+    def _reconcile_pending(self):
+        """把「使用者寫了、且通道現在存在」的 route 補進表；其餘留在 pending。
+
+        `load()` 跑在 `sync_ifaces()` 之前，開機當下通道都還沒註冊，
+        所以使用者的 route 必須延後到這裡結算 —— 但**不能一次就判死**：
+        通道可能是幾秒後才上線的（vBus 惰性建立、ESP-NOW 等 WiFi 就緒），
+        所以「還沒看到」的繼續留在 `_pending` 等下一輪。
+        真的不存在的，由 `finalize()` 在開機結束時統一判跳過。
+        """
+        if not self._pending:
+            return
+        still = []
+        for idx, r in self._pending:
+            src = r.get("in")
+            if not isinstance(src, str):
+                continue
+            if src.strip() in self.ifaces:
+                # 通道在 → 用**使用者寫的**（不是 autofill 的預設值）
+                self._add_route(idx, r, overwrite_ok=True,
+                                where="routes[{}]".format(idx))
+            else:
+                still.append((idx, r))
+        self._pending = still
+
+    def finalize(self):
+        """開機結束時呼叫一次：結算 pending，然後補預設。
+
+        為什麼要分開（不再由 sync_ifaces 每輪做）：
+          1. `sync_ifaces()` 每 ~100ms 跑一次。若它每次都補預設，
+             **任何通道晚上線都會立刻被填預設值** —— 包含使用者已經寫了、
+             只是還沒輪到結算的那些。
+          2. 使用者的規格：補預設**只在開機做一次 + 使用者主動要求**。
+
+        ★ pending **不在此清空** —— 通道可能幾分鐘後才上線（vBus 惰性建立、
+          ESP-NOW 等 WiFi 就緒），那時 `sync_ifaces()` 的 `_reconcile_pending()`
+          會用**使用者寫的內容**把它註冊進表（而不是 autofill 的預設值）。
+
+        回傳這次補出來的來源名稱。
+        """
+        self._reconcile_pending()
+        # 還沒對到的通道 → 這一輪不註冊（不進表、不生效、不顯示），
+        # 但**保留在 _pending** 等它上線。記一筆讓使用者知道就好。
+        if self._pending:
+            names = sorted(set(r.get("in") for _, r in self._pending
+                               if isinstance(r.get("in"), str)))
+            self._warn(
+                "{} 條 route 的通道目前不存在（{}）—— 暫不註冊；"
+                "該通道上線時會用你寫的內容自動註冊".format(len(names), "、".join(names)))
+        return self._autofill()
 
     # ─────────────────────────────────────────────────────────────
     # 自動註冊 —— 每次啟動的固定動作（沒有開關）
     # ─────────────────────────────────────────────────────────────
     def _autofill(self):
-        """為「實際存在、但 config 裡沒有 route」的線路補上 `out: ["self"]`。
+        """把「現在存在的通道」補進路由表 —— 使用者沒寫的，補預設。
 
-        為什麼是 self: 這正是未導入 Router 前的行為（每條線自己收、自己執行）。
-        自動補完之後，**打開 `enable:1` 不會讓任何一條線失效** —— 使用者只需要改
-        想轉送的那幾條，不必先把每條線都寫一遍。
+        規則（2026-09 定案）：
 
-        只對「這一輪新看到的線路」動手（`_auto_done`）:
+          1. **self 與 vbus 幾乎必然存在，不判斷** —— 不管 `_locals` 有沒有東西，
+             這兩個來源一律進表（見 `ALWAYS_PRESENT`）。
+          2. **self 的預設是 `out: []`** —— `self` **不指向自己**。
+             （因為 vBus 注入的幀「已經在本地」了，`out` 再寫 self 等於
+              多 dispatch 一次；使用者要本地執行就自己寫 `["self", ...]`。）
+          3. **其他通道的預設是 `out: ["self"]`** —— 這正是未導入 Router 前的
+             行為（每條線自己收、自己執行），所以打開 `enable:1` 不會讓任何
+             一條線失效。
+          4. 使用者寫過的那條，一個字都不動（`auto: False`）。
+
+        只對「這一輪新看到的通道」動手（`_auto_done`）:
           - 同一條線不會被重複補，也不會在使用者 ROUTE_DEL 之後又被補回來
           - 但**每次啟動都是全新的一輪**（`_auto_done` 清空）→ 一定會重新檢查建立
 
-        回傳這一輪補出來的來源名稱（給呼叫端寫回 config.json）。
+        ★ 本機迴路（vBus）不進 ifaces（見 is_local_bus），所以要另外走 `_locals`。
+        ★ 這裡只在**記憶體**裡建表，不寫回 config.json —— 避免使用者的設定檔
+          被自動塞進他沒寫過的 route（要落盤請用 ROUTER_SAVE / 0x1605）。
+
+        回傳這一輪補出來的來源名稱。
         """
         new = []
-        for name in sorted(self.ifaces.keys()):
+        names = set(self.ifaces.keys())
+        if self._locals:
+            names.add(SELF)
+        names |= set(ALWAYS_PRESENT)     # self / vbus 不判斷，一律進表
+        for name in sorted(names, key=_route_order):
             if name in self._auto_done:
                 continue
             self._auto_done.add(name)
             if name in self.by_in:
                 continue                      # 使用者已經寫了 → 尊重他
+            # self 不指向自己（預設空）；其他通道預設自己收自己執行
+            outs = () if name == SELF else (SELF,)
             self.by_in[name] = {
                 "id": len(self.by_in),
                 "in": name,
-                "out": (SELF,),
-                "verdict": V_EXECUTE,
+                "out": outs,
+                "verdict": self._verdict_of(outs),
                 "auto": True,
                 "hit": 0, "fwd": 0, "drop": 0, "nomatch": 0,
             }
@@ -341,9 +495,22 @@ class SignalRouter:
             return 0
 
         n = 0
+        self._pending = []
+        self._skipped = []
         for idx, r in enumerate(routes):
-            if self._add_route(idx, r):
-                n += 1
+            if not isinstance(r, dict) or not isinstance(r.get("in"), str):
+                # 明顯壞掉的（型別錯）當場報錯 —— 這與「通道不存在」不同，
+                # 前者是設定寫錯，後者只是還沒上線。
+                self._add_route(idx, r)
+                continue
+            src = r["in"].strip()
+            if src in ALWAYS_PRESENT or src in self.ifaces:
+                # 已知存在的通道 → 當場註冊
+                if self._add_route(idx, r):
+                    n += 1
+            else:
+                # 還不確定 → 等 sync_ifaces() 看到它上線再結算（見 _reconcile_pending）
+                self._pending.append((idx, r))
 
         # ⚠️ 不在這裡警告「enable=1 卻沒有 route」—— 自動註冊會在 sync_ifaces()
         #    之後把實際存在的線路補上，`routes: []` 是**正常初始狀態**。
@@ -395,7 +562,11 @@ class SignalRouter:
             self._warn("{}: 'out' 是空的 → 這條 route 沒有作用".format(tag))
 
         # ── 結構檢查（永遠是錯的設定，開機就拒絕）──────────
-        if src in outs:
+        # 反自我反射：{"in":"now","out":["now"]} 會把幀轉回自己來的線 → 無限迴圈。
+        # ★ 例外：來源是 SELF（本機發起的幀）。
+        #   {"in":"self","out":["self"]} 不是迴圈，而是「我自己發、我自己執行」
+        #   —— 這正是本機迴路（vBus）的預設語意，_autofill() 補的就是這一條。
+        if src in outs and src != SELF:
             self._bad("{}: 'out' 不可包含 'in'（{}）— 自我反射，永遠是錯的"
                       .format(tag, src))
             return False
@@ -431,8 +602,14 @@ class SignalRouter:
 
     @staticmethod
     def _verdict_of(outs):
+        """由 out 清單推導 verdict。
+
+        `self` 是「本地執行」的開關；`vbus` **不是出口**（見 _forward），
+        所以它也不算「有轉發目標」—— `["vbus"]` 推導成 V_DROP（不執行、不轉發），
+        與使用者的規格一致：「vBus 不存在、無視他，他只負責發送」。
+        """
         has_self = SELF in outs
-        has_fwd = any(o != SELF for o in outs)
+        has_fwd = any(o != SELF and o != "vbus" for o in outs)
         if has_self and has_fwd:
             return V_BOTH
         if has_self:
@@ -490,7 +667,8 @@ class SignalRouter:
         page_size 只是為了讓 payload 守在 MAX_PAYLOAD(8192) 以內 —— 實務上
         路由表只有個位數條，第一頁就全部回完。
         """
-        names = sorted(n for n in self.by_in.keys() if n in self.ifaces)
+        names = sorted((n for n in self.by_in.keys() if self._is_live(n)),
+                       key=_route_order)
         total = len(names)
         try:
             size = int(page_size)
@@ -521,11 +699,15 @@ class SignalRouter:
         }
 
     def snapshot(self):
-        """目前生效的設定（可寫回 config.json 的 Router 區塊）。"""
+        """目前生效的設定（可寫回 config.json 的 Router 區塊）。
+
+        ⚠️ autofill **不會**自動呼叫這個來落盤（2026-09 起）。
+        只有明確的 `ROUTER_SAVE`（0x1605）與 `router_actions` 會用它。
+        """
         return {
             "enable": 1 if self.enable else 0,
             "routes": [{"in": n, "out": list(self.by_in[n]["out"])}
-                       for n in sorted(self.by_in.keys())],
+                       for n in sorted(self.by_in.keys(), key=_route_order)],
         }
 
     # ─────────────────────────────────────────────────────────────
@@ -570,7 +752,11 @@ class SignalRouter:
     # 轉送
     # ─────────────────────────────────────────────────────────────
     def _forward(self, spec, src_bus, addr, cmd, payload):
-        """把幀送到 spec['out'] 的每個出口（self 已由 verdict 處理，不在這裡）。
+        """把幀送到 spec['out'] 的每個出口。
+
+        兩個保留字**不會**被寫出（在 verdict 階段就處理掉了）：
+          `self` —— 本地執行的開關
+          `vbus` —— **只負責發送，不是出口**（見下）
 
         契約: 逐出口同步寫出；**每個出口各組一份自己的 bytes**
         （不能共用 Proto 的模組級共享 buffer — 一對多時第二個會拿到髒資料）。
@@ -579,6 +765,13 @@ class SignalRouter:
         frame = None
         for name in outs:
             if name == SELF:
+                continue
+            if name == "vbus":
+                # vBus 只當「來源」，不能當出口 —— 它沒有 io（CircuitBus(None)，
+                # write() 永遠回 False），也刻意不進 ifaces（那是出口表）。
+                # 使用者若在 out 寫了它 → **無視，不轉送、不警告、不當錯誤**
+                # （規格：不存在，無視他，他只負責發送）。
+                self._bump(name, "ignored")
                 continue
             dst = self.ifaces.get(name)
             if dst is None:
@@ -660,19 +853,20 @@ class SignalRouter:
     def status(self):
         """回傳可 JSON 化的狀態（P5 的 ROUTER_STATUS 用）。"""
         routes = []
-        for name in sorted(self.by_in.keys()):
+        for name in sorted(self.by_in.keys(), key=_route_order):
             s = self.by_in[name]
             routes.append({
                 "id": s["id"], "in": s["in"], "out": list(s["out"]),
                 "auto": s.get("auto", False),
-                "live": name in self.ifaces,
+                "live": self._is_live(name),
                 "hit": s["hit"], "fwd": s["fwd"], "drop": s["drop"],
             })
         return {
             "enable": self.enable,
             "ifaces": sorted(self.ifaces.keys()),
+            "local": SELF in self.by_in and bool(self._locals),
             # 寫了但實體不存在 → 無視它、跳過它的建立（route 仍在 config 裡等上線）
-            "unbound": [n for n in self.by_in.keys() if n not in self.ifaces],
+            "unbound": [n for n in self.by_in.keys() if not self._is_live(n)],
             "routes": routes,
             "seen": dict(self.seen),
             "stats": dict(self.stats),

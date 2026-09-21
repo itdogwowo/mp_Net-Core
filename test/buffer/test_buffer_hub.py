@@ -51,17 +51,18 @@ if not IS_MICROPYTHON:
         _mp.viper = _noop_decorator
         sys.modules["micropython"] = _mp
 
-# 把專案根（slave new 的上層）加入路徑，使 from lib.buffer_hub import ... 成立
+# 把 slave/ 加入路徑，使 from lib.sys.buffer_hub import ... 成立
 # 僅 CPython 需要：裝置上 lib/ 已在根目錄，直接可 import；且 MicroPython 無 os.path。
+# （lib/ 三級分類重構後：buffer_hub 在 lib/sys/，舊路徑 lib.buffer_hub 已不存在）
 if not IS_MICROPYTHON:
     import os
     _HERE = os.path.dirname(os.path.abspath(__file__))
-    _ROOT = os.path.dirname(_HERE)
-    _SLAVE_NEW = os.path.join(_ROOT, "slave new")
-    if os.path.isdir(_SLAVE_NEW) and _SLAVE_NEW not in sys.path:
-        sys.path.insert(0, _SLAVE_NEW)
+    _ROOT = os.path.dirname(os.path.dirname(_HERE))
+    _SLAVE = os.path.join(_ROOT, "slave")
+    if os.path.isdir(_SLAVE) and _SLAVE not in sys.path:
+        sys.path.insert(0, _SLAVE)
 
-from lib.buffer_hub import AtomicStreamHub, alloc_dma, free_dma  # noqa: E402
+from lib.sys.buffer_hub import AtomicStreamHub, alloc_dma, free_dma  # noqa: E402
 
 # --- 測試公用 -----------------------------------------------------------------
 _failed = 0
@@ -261,7 +262,7 @@ def test_bounce_removed():
     """整合時已刪除 DmaBounceBuf / try_bounce / bounce_into / has_bounce。
     這些符號若重新出現，代表有人違反 buffer-conventions 技能，測試要抓出來。"""
     print("\n[8] 回歸：bounce 符號已移除")
-    import lib.buffer_hub as bh
+    import lib.sys.buffer_hub as bh
 
     _check("buffer_hub 無 DmaBounceBuf", not hasattr(bh, "DmaBounceBuf"))
     _check("AtomicStreamHub 無 bounce_into 方法",

@@ -1,11 +1,49 @@
 # 訊號 Router（Router 任務）
 
 > **用途**：追蹤「ESP-NOW / 網路 / 實體線互相轉送」功能的落地與驗收。
-> **最後更新**：2026-09（P1~P5 + P7 自動註冊落地；離線自測 440 項全過；P6 待上板）
+> **最後更新**：2026-09（P1~P5 + P7 落地；**再經一輪語意統一與 autofill 改版，見 §近期變更**）
 > **相關文件**：[doc/02_guides/16_signal_router.md](../doc/02_guides/16_signal_router.md)（設計與規則唯一真相）
 > 　　　　　　[doc/01_protocol/02_command_index.md §7](../doc/01_protocol/02_command_index.md)（0x16xx 指令索引）
-> **離線驗證**：`python3 -B test/protocol/router_selftest.py` → 440 項（PC 可跑，不需硬體）
-> **真機驗證**：`test/protocol/router_board_test.py` → **114 項全過（ESP32-S3 @160MHz, MicroPython 1.29.0-preview）**
+> **離線驗證（現行）**：`python3 -B test/protocol/router_self_selftest.py` → **43 項全過**（PC，不需硬體）
+> **輔助工具**：`python3 -B test/protocol/router_show_defaults.py` → dump autofill 的實際預設
+> （含 `snapshot()` / `table()` / `status()` 的輸出），改排序或預設時看這支。
+>
+> ⚠️ **下面多處引用的兩份測試檔目前不存在於 repo**：
+> `test/protocol/router_selftest.py`（文中稱 440 / 499 項）與
+> `test/protocol/router_board_test.py`（真機 114 項）。
+> 第 13 行甚至有一條已勾選的「**這份檔案原本不存在，已補齊**」。
+> **我沒有重建它們**（440 項不是能憑空還原的）；`router_self_selftest.py` 至少把
+> `self` 來源、autofill 預設、跳過不存在通道這幾條新行為鎖住了。
+> 要重建或改引用，見 §近期變更的最後一條。
+
+## 近期變更（2026-09，語意統一 ＋ autofill 改版）
+
+> 這一輪把 Router 的幾個語意收乾淨，**與上面 P1~P7 的記載有多處不同**。
+
+- [x] **介面名索引化**：`uartN` 的 N 由 `item["id"]` 改成 **`UART.list` 索引（0-based）**
+      —— 與 `uart_list[idx]` / `CircuitDecode.GPIO.uart` / `bus_speed.bus_id` 三層對齊。
+      動到 `circuit.py`（label/svc 產生）+ `signal_router.py`（`_LABEL_EXACT` / `_KNOWN_IFACES`）+ 兩份 schedule.py。
+- [x] **`self` 成為一等來源**：本機迴路（`CircuitBus(io=None)`，即 vBus）的幀一律以
+      來源名 `self` 進 Router（`is_local_bus()` 判別，**不靠 label 字串**）。
+      `In in: "vbus"` 這個名字**移除** —— vBus 只負責發送，不是可路由的來源。
+- [x] **`out` 的保留字**：`self`（本地執行開關）、`vbus`（**無視**，不是出口）。
+      `out` 含 `in` 的自我反射檢查**對 `self` 例外**（`self → self` 是合法語意，不是迴圈）。
+- [x] **autofill 改版**：
+      - `self` 預設 **`[]`**（不指向自己）；其他通道預設 `["self"]`。
+      - 只補缺口，**永不覆蓋使用者的**（護欄：`if name in self.by_in: continue`）。
+      - **不再寫回 config.json**（`_persist_autofill()` 只記錄；落盤改用 `ROUTER_SAVE` 0x1605）。
+      - 時機改為**開機一次**（`SignalRouter.finalize()`）＋ 使用者主動要求。
+- [x] **通道可見性三段機制**：分層（主要）＋ `SysBus.register_service()` hook ＋
+      ~~每 100ms 輪詢~~（**已移除** —— 那是「順序錯了就等下一輪」的症狀解法）。
+- [x] **分層修正**：`bus_decode` 移到 **layer 1**，排在「產生通道」的任務（network / circuit / now）之後
+      —— 保證 Router 出生時看得到 boot 期所有通道。slave + Control_Panel 兩份 Core_Manager 已改。
+- [x] **`vBus` 在 `on_start` 建立**（原本惰性）：讓它跟其他通道同時在場，Router 開機就看得到。
+- [x] **`schedule` 的直通出口移除**：`circuit:<i>` / `net:<i>`（`cb.write(frame)`，繞過 Router）刪掉，
+      出口一律經路由表。※ 附帶查到那條路**從來沒生效過**（`_load()` 沒放 `"bus"`）。
+- [ ] **重建或改引用那兩份遺失的測試檔** —— 目前 6 個檔案（本檔、doc 16、doc 01 changelog、
+      `proto.py`、`signal_router.py`、`todo` 自身）都還在引用它們。
+- [ ] **`self` 的來源語意是否要延伸到「非 vBus 的本地機制」** ——
+      目前判定靠 `io is None`，若將來有別的本地迴路要納入，這個判準要放寬。
 
 ## 已完成（程式碼 + 離線自測）
 
@@ -39,10 +77,13 @@
   - [x] selftest §11 用**真的 schema + 真的 codec** 走完整 0x16xx 往返（含存檔成功／失敗兩條路）
 - [x] **P7 自動註冊 config**（使用者新要求，每次啟動都跑、**不是開關**）
   - [x] `_autofill()`：檢視實際存在的線路，`routes` 沒有的自動補 `{"in": 線路, "out": ["self"]}`
-  - [x] 補出來的**寫回 config.json**（`BusDecodeTask._persist_autofill()`，只在有新線路時寫一次）
+  - [x] ~~補出來的**寫回 config.json**（`BusDecodeTask._persist_autofill()`，只在有新線路時寫一次）~~
+        → **2026-09 反轉**：不再寫回（設定檔會自己長出使用者沒寫過的東西）。
+        落盤改用 `ROUTER_SAVE`（0x1605）。**看 §近期變更的 autofill 改版那一條為準。**
   - [x] 使用者寫過的不覆蓋；`enable: 0` 時照樣註冊（方便先看 config 再決定要不要開）
-  - [x] 寫了但**實體不存在**的來源 → 無視、跳過建立（不生效、不列在 `ROUTER_TABLE_GET`），
-        route 留在 config；**線路上線就自動生效**（不必重啟）
+  - [x] ~~寫了但**實體不存在**的來源 → 無視、跳過建立~~
+        → **2026-09 改**：暫不註冊但**留在 `_pending`**；該通道之後上線時
+        用**使用者寫的內容**註冊（不是預設值）。看 §近期變更為準。
   - [x] `ROUTE_DEL` 掉自動補的 → 同 session 不會被下一次 sync 補回來
   - [x] selftest §12（39 項）
 - [x] 文件同步：doc §2.2 / §3.1 / §4.4 / §5 / §10 / §11 / §12 / §13、指令索引新增 §7

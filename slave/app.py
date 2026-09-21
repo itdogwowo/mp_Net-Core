@@ -38,6 +38,17 @@ class App:
         except Exception:
             pass
 
+        # 5. 素描紀錄（peers）：0x100D 掃到誰、從哪條線、用什麼位址再找到他。
+        #    面板做「定向查詢」的前提（doc/03_notes/18_pixel_panel_control_path.md §7.2）。
+        #    只建立 + 載入，學習由 net_actions（0x100E）與 bus_decode（被動）餵。
+        try:
+            from lib.sys.peer_registry import PeerRegistry
+            reg = PeerRegistry()
+            reg.load()
+            bus.register_service("peers", reg)
+        except Exception as e:
+            print("[App] peer registry init failed:", e)
+
     def create_parser(self):
         # 協議負載上限統一由 lib.proto.MAX_PAYLOAD 決定 (純 payload, 不含 header/CRC)。
         # StreamParser 內部會自動加 9B header + 4B CRC 建立緩衝, 這裡不需再乘 2。

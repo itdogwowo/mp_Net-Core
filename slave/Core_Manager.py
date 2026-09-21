@@ -78,7 +78,6 @@ def launcher():
     tm.register_task("log", LogTask, default_affinity=(1, 0), layer=0)
     tm.register_task("network", NetworkTask, default_affinity=(1, 0), layer=0)
     tm.register_task("circuit", CircuitTask, default_affinity=(1, 0), layer=0)
-    tm.register_task("bus_decode", BusDecodeTask, default_affinity=(1, 0), layer=0)
     tm.register_task("now", NowTask, default_affinity=(1, 0), layer=0)
     tm.register_task("stream", StreamTask, default_affinity=(1, 0), layer=0)
     tm.register_task("fs_scan", FsScanTask,  default_affinity=(0, 1), layer=0)
@@ -86,18 +85,39 @@ def launcher():
     tm.register_task("hw_sample", HwSampleTask, default_affinity=(0, 1), layer=0)
 
     # ═══════════════════════════════════════════════════════════════════
+    # ▍第 1.5 區：解碼鏈（Router 在這裡出生）—— **必須排在「產生通道」的任務之後**
+    #   ★ 為什麼 bus_decode 不跟上面那群同層（這是一個踩過的坑）：
+    #     `BusDecodeTask.on_start` 會建立 Router 並做第一次 `sync_ifaces()`
+    #     —— 那一刻「現在有哪些通道」就定下來了。
+    #     但 `NowBus` / `net_bus_ctrl` / `net_bus_discovery` 是
+    #     **NetworkTask / NowTask 在自己的 on_start 裡才註冊**的，
+    #     不是 boot.py 建的。所以 bus_decode 若跟它們同層且排在前面，
+    #     第一次 sync 時那些通道還不存在 → Router 看不到它們。
+    #
+    #     原本的補救是「BusDecodeTask.loop() 每 100ms 重試 sync_ifaces()」——
+    #     那是症狀的解法。**用分層直接解掉**：layer N+1 的任務要等 layer N
+    #     全部 on_start 跑完才啟動（見 task_manager._check_boot_layer_done），
+    #     所以放到 layer 1 就保證看到所有 layer 0 註冊的通道。
+    #
+    #   ⚠️ 為什麼不會因為晚啟動而掉幀：各通道的 rx_hub 是環形緩衝
+    #      （u8_rx_slots=8 槽），bus_decode 起來前收到的幀暫存在那裡，
+    #      起來後照樣被消費；ESP-NOW/WiFi 本來也要等 radio 就緒。
+    # ═══════════════════════════════════════════════════════════════════
+    tm.register_task("bus_decode", BusDecodeTask, default_affinity=(1, 0), layer=1)
+
+    # ═══════════════════════════════════════════════════════════════════
     # ▍第二區：應用任務（Application）—— 使用者面向功能，依需要增刪
     #   佈署時要拿掉某個功能，直接註解掉對應一行即可
     # ═══════════════════════════════════════════════════════════════════
-    tm.register_task("web_ui",  WebUITask,   default_affinity=(0, 0), layer=1)
+    tm.register_task("web_ui",  WebUITask,   default_affinity=(0, 0), layer=2)
 
     # ── pixel 子系統（雙核播放）──
     #   core1（計算核）PixelTask：初始化 effects/mapping/modes/registry + 效果計算 → pixel_stream hub
     #   core0（播放核）RenderTask：固定 fps（20ms/50fps）從 hub 取幀推硬體（tasks/render.py）──
     from tasks.pixel_task import PixelTask
     from tasks.render import RenderTask
-    tm.register_task("pixel", PixelTask, default_affinity=(1, 0), layer=1)
-    tm.register_task("render", RenderTask, default_affinity=(0, 1), layer=1)
+    tm.register_task("pixel", PixelTask, default_affinity=(1, 0), layer=2)
+    tm.register_task("render", RenderTask, default_affinity=(0, 1), layer=2)
 
     # ── 音訊子系統（兩任務：合成端 dj + 播放端 audio_player，對稱 pixel）──
     #   dj（_thread core1）= 合成端：playlist + 讀檔 + 混音 → audio_stream hub
@@ -107,16 +127,16 @@ def launcher():
     #   無 audio_dac（I2S/PCM5102 未啟用）時兩者 on_start 自行停用（disabled）。
     from tasks.dj_task import DjTask
     from tasks.audio_player_task import AudioPlayerTask
-    tm.register_task("dj", DjTask, default_affinity=(0, 1), layer=1)
-    tm.register_task("audio_player", AudioPlayerTask, default_affinity=(1, 0), layer=1)
+    tm.register_task("dj", DjTask, default_affinity=(0, 1), layer=2)
+    tm.register_task("audio_player", AudioPlayerTask, default_affinity=(1, 0), layer=2)
 
-    # ── Layer 1: LVGL UI（依賴 TFT/LCD，沒 LCD 整段跳過）──
+    # ── LVGL UI（依賴 TFT/LCD，沒 LCD 整段跳過）──
     # affinity=(1,0)=CPU0: LVGL 完整 UI 不能在 _thread(CPU1)裡跑
     # (MicroPython threading 限制:完整 UI 的 widget 操作在 thread 裡會崩潰)。
     # CPU1 跑其他 task(採樣等)。
     if bus.has_lcd():
         from tasks.lvgl_task import LvglTask
-        tm.register_task("lvgl", LvglTask, default_affinity=(1, 0), layer=1)
+        tm.register_task("lvgl", LvglTask, default_affinity=(1, 0), layer=2)
     else:
         log.info("⏭ [CoreManager] lvgl skipped — no LCD/TFT on bus")
 
@@ -129,8 +149,8 @@ def launcher():
     #     - 執行裝置(無 LCD):在 temp/motor 的 Core_Manager 啟用 motor。
     #   預設全關，要用才把註解打開。
     # ═══════════════════════════════════════════════════════════════════
-    tm.register_task("cpanel", ControlPanelTask, default_affinity=(1, 0), layer=1)
-    tm.register_task("pixel_cpanel", PixelControlPanelTask, default_affinity=(1, 0), layer=1)
+    tm.register_task("cpanel", ControlPanelTask, default_affinity=(1, 0), layer=2)
+    tm.register_task("pixel_cpanel", PixelControlPanelTask, default_affinity=(1, 0), layer=2)
     # tm.register_task("motor", ActionTask1, default_affinity=(1, 0), layer=0)
     # tm.register_task("action", ActionTask, default_affinity=(1, 0), layer=0)
 
@@ -138,7 +158,7 @@ def launcher():
     #   找到就依時間軸把 NC4 指令寫進 vBus（內部虛擬總線）→ 走解碼/執行鏈路；
     #   檔案不存在時第一次啟動自動產生空範本，之後 idle。
     from tasks.schedule import ScheduleTask
-    tm.register_task("schedule", ScheduleTask, default_affinity=(1, 0), layer=1)
+    tm.register_task("schedule", ScheduleTask, default_affinity=(1, 0), layer=2)
 
     tm.finalize()
 

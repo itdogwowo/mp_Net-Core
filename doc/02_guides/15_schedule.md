@@ -4,25 +4,40 @@
 > 找到就依時間軸把 NC4 指令**寫進 vBus**（內部虛擬總線），走
 > 收指令 → 解碼 → 分派 → 執行 的內部鏈路（可當指令模擬器，或未來通用定時任務）。
 > **位置**：`slave/tasks/schedule.py`（Core_Manager 常駐註冊；檔案無項目時 idle）
+>
+> **2026-09 變更**：
+> ① 唯一的 `bus` 值就是 `vBus` —— 舊的 `circuit:<i>` / `net:<i>` **直通出口已移除**
+>    （那條路是 `cb.write(frame)`，繞過 `Router.gate()`，讓路由政策管不到排程）。
+>    ※ 附帶查到：那條路**從來沒生效過** —— `_load()` 建立 items 時沒放 `"bus"`，
+>    所以 `it.get("bus", "vBus")` 永遠回預設值。這次移除是純清理。
+> ② 要送去別的地方**一律經 Router**：注入後的來源是 `self`，
+>    由 `{ "in": "self", "out": [...] }` 決定去哪（見 §2）。
+> ③ vBus 改在 `on_start` 建立（原本惰性），讓 Router 開機時就看得見它。
 
 ---
 
 ## 1. 為什麼只寫 vBus
 
-- 實體總線（uart1/uart2）的 rx_hub 是 SPSC：`CircuitTask.poll()` 與
+- 實體總線（uart0/uart1）的 rx_hub 是 SPSC：`CircuitTask.poll()` 與
   `BusDecodeTask` 各自不斷寫入/讀走，外部再塞幀既不是「寫入讀取緩衝」的語義，
   又會與輪詢競爭 → 不可行。
 - **vBus** = schedule 自己建立的內部虛擬總線（`CircuitBus(io=None)`，不碰任何
   腳位），註冊進 `bus_sources`，由 `BusDecodeTask` 當一般來源消費。
   唯一寫入者是 schedule → 乾淨、無競爭，等同「master 從線上交了一幀進來」。
+- **出口一律交給 Router**（不再有直通 `.write()`）：
+  注入的幀來源是 `self`，去向由路由表決定 ——
+  `{ "in": "self", "out": ["now"] }` ＝ 從 ESP-NOW 送出去。
 
 ### vBus 注入的實際寫法（schedule.py）
 
 ```python
 # 1) 建立虛擬總線（io=None → 不接任何實體腳位），註冊進解碼來源
+#    ★ 在 on_start 就建（不要等第一次真要注入才建）：
+#      Router（BusDecodeTask, layer 1）在 on_start 做第一次 sync_ifaces()，
+#      那一刻看到的通道就決定了路由表；惰性建立會趕不上。
 self._vbus = CircuitBus(None, label="VBUS")
 sources = bus.get_service("bus_sources")   # 沒有就建一個 BusSources()
-sources.add(self._vbus)                    # BusDecodeTask 每 ~100ms 刷新來源會看到它
+sources.add(self._vbus)
 
 # 2) 注入 = 把完整 NC4 訊框寫進它的 rx_hub（與實體線收到的格式一模一樣）
 def _inject(self, cb, frame):
@@ -33,6 +48,9 @@ def _inject(self, cb, frame):
     hub.commit()                           # 標成 READY → 解碼端可取
 ```
 
+> 通道怎麼被 Router 看到：**分層**（`bus_decode` 排在「產生通道」的任務之後）
+> ＋ `SysBus.register_service()` 的即時通知。**不再有每 100ms 的輪詢**。
+
 ### 注入之後（與實體收到的位元組走同一條鏈）
 
 ```
@@ -40,12 +58,23 @@ BusDecodeTask.loop()
   └─ bus_sources → 每個來源有 rx_hub
        ├─ hub.get_read_view() → 2-byte 長度 + data
        └─ app.handle_stream(parser, data, label="VBUS", ...)
-            └─ StreamParser.pop_frame() → Dispatcher.dispatch(cmd, payload)
-                 └─ action（0x3105 → gmode.set_mode → bus.shared["mode_id"] 共用狀態）
-                      └─ PixelTask / MP3 等消費方跟狀態執行
+            └─ router.gate(bus, addr, cmd)
+                 │    name_of(vBus) = "self"（io is None → 本機來源）
+                 │    → 查 by_in["self"]
+                 ├─ verdict 不含 V_EXECUTE → 不進本地解碼鏈（continue）
+                 └─ verdict 含 V_EXECUTE
+                      └─ StreamParser.pop_frame() → Dispatcher.dispatch(cmd, payload)
+                           └─ action（0x3105 → gmode.set_mode → bus.shared["mode_id"] 共用狀態）
+                                └─ PixelTask / MP3 等消費方跟狀態執行
 ```
 
 log 上 `(VBUS)` label 與 `🔹 [VBUS] STATUS_GET (0x1101)` 就是這條路徑的證據。
+
+> ⚠️ **`Router.enable=1` 時排程會不會生效，取決於 `self` 那條 route**：
+> 預設 `self` 是 `out: []`（`self` 不指向自己）→ **注入的幀不執行也不轉發**。
+> 要讓排程生效就要明寫，例如：
+> `{ "in": "self", "out": ["self"] }`（本地執行）
+> 或 `{ "in": "self", "out": ["now"] }`（只從 ESP-NOW 送出去，不在本地執行）。
 
 ## 2. 排程檔格式（/schedule.json）
 
@@ -70,7 +99,7 @@ log 上 `(VBUS)` label 與 `🔹 [VBUS] STATUS_GET (0x1101)` 就是這條路徑�
 | `schedule[]` | 每筆 = 一個發射時機 |
 | 筆內 `ms` | 由任務啟動起算第幾 ms 發送 |
 | 筆內 `addr` | 目標位址（0xFFFF = 廣播，可選） |
-| 筆內 `bus` | `vBus`（預設）= 注入給自己（走內部解碼鏈）；`circuit:<i>` / `net:<i>` = 從 circuit bus 列表 / net bus 列表選第 i 項，用該物件的 `write()` 發出去（不需知道實體是 uart 還是網路） |
+| 筆內 `bus` | **只支援 `vBus`**（預設）= 注入自己的解碼鏈。要送去別的地方**一律經 Router**：注入後的來源是 `self`，由 `{ "in": "self", "out": [...] }` 決定去哪 |
 | 筆內 `cmds` | 單個 `{cmd,payload}`（自動打包 NC4 含 CRC32）、多筆清單、或純 hex 字串 = raw 完整訊框 |
 
 `cmd`/`payload`/`addr` 都支援 `0x` 前綴與空格分隔的 hex；payload 欄位順序依

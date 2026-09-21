@@ -56,10 +56,17 @@ class CircuitTask(Task):
                 continue
             uart = uart_list[idx]
 
-            label = "CIRCUIT-UART{}".format(uid)
+            # 介面名一律用 **list 索引（0-based）**，不用 `item["id"]`：
+            #   `id` 是 `machine.UART(id)` 的硬體周邊號（1 起），只在 init_uart 用；
+            #   「第幾條線」用索引 —— 與 uart_list[idx] / CircuitDecode.GPIO.uart /
+            #   bus_speed.bus_id 三層的既有語意一致（見 doc/02_guides/16 §3.3）。
+            #   好處：改硬體 id（例如 SPI 換 id=4）時只動 config，次序不變則
+            #   Router 的 `uart0` 不用跟著改；反之 id 與 list 位置不一致時，
+            #   舊寫法（用 id）會讓 uart1/uart2 兩個名字同時都是騙人的。
+            label = "CIRCUIT-UART{}".format(idx)
             cb = CircuitBus(uart, label=label)
             ctx_extra = self._build_link_ctx(uid, baud, tx, rx, item)
-            svc = "circuit_bus_uart{}".format(uid)
+            svc = "circuit_bus_uart{}".format(idx)
             all_buses.append(cb)
             all_by_id[uid] = cb
             bus.register_service(svc, cb)

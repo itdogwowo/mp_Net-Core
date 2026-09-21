@@ -6,7 +6,7 @@ schedule.py — 定時指令排程任務（ScheduleTask）
 找不到就（第一次）自動生成一個空範本並 idle。
 
 為什麼只寫 vBus：
-  - 實體總線（uart1/uart2）的 rx_hub 同時被 CircuitTask.poll()/BusDecodeTask
+  - 實體總線（uart0/uart1）的 rx_hub 同時被 CircuitTask.poll()/BusDecodeTask
     不斷寫入與讀走（單寫入者 SPSC），外部再塞幀既非「寫入讀取緩衝」的語義、
     又會與輪詢競爭 → 不可行。
   - vBus = 任務自己建立的內部虛擬總線（io=None，不碰任何腳位），註冊進
@@ -29,10 +29,12 @@ schedule.py — 定時指令排程任務（ScheduleTask）
   schedule[] 每一筆：
     ms   : 由任務啟動起算第幾 ms 發送
     addr : 目標位址（0xFFFF = 廣播，可選）
-    bus  : "vBus"（預設）＝注入給自己（走內部解碼鏈）
-           "circuit:<i>" ＝ 選 circuit bus 列表第 i 項，用物件.write() 發出去
-           "net:<i>"     ＝ 選 net bus 列表第 i 項，用物件.write() 發出去
-           （從列表選取，不需要知道它是 uart 還是網路段）
+    bus  : 只支援 "vBus"（預設）＝注入自己的解碼鏈。
+           ★ 沒有其他值 —— 要送去別的地方**一律經 Router**：
+             注入後的來源是 `self`，Router 的
+             `{ "in": "self", "out": ["self", "now"] }` 決定它去哪。
+           （舊版的 "circuit:<i>" / "net:<i>" 直通出口已移除：那條路
+             繞過 Router.gate()，讓路由政策管不到排程送出的東西。）
     cmds : 一個 {cmd, payload}（自動打包 NC4 含 CRC32）
            或 [ {cmd,payload}, ... ] 多筆、或純 hex 字串（raw 完整訊框原樣送出）
   cmd / payload / addr 都支援 0x 前綴與空格分隔 hex。
@@ -57,7 +59,6 @@ from lib.sys.proto import RX_BUF_SIZE
 
 SCHEDULE_FILE = "/schedule.json"
 TRACE_FILE = "/schedule_trace.log"
-VBUS_NAME = "vbus"   # 唯一允許的 bus 值（大小寫不拘）
 
 SOF = b"NC"
 VER = 4
@@ -118,6 +119,12 @@ class ScheduleTask(Task):
     # ── 啟動：自行找檔 ──────────────────────
     def on_start(self):
         super().on_start()
+        # ★ 先把 vBus 建起來（不要等第一次真要注入才建）。
+        #   為什麼：Router（BusDecodeTask，layer 1）在 on_start 時做第一次
+        #   `sync_ifaces()`，那一刻看到的通道就決定了路由表。vBus 若等到
+        #   第一次觸發才惰性建立，就趕不上那個時間點 → Router 看不到它。
+        #   在 on_start 建立則保證它跟其他通道同時在場（分層的用意）。
+        self._get_vbus()
         self._schedule = []
         self._done = False
         self._idx = 0
@@ -228,42 +235,33 @@ class ScheduleTask(Task):
         hub.commit()
         return True
 
-    # ── bus 解析：vBus（自我注入）／circuit:N、net:N（列表選取，不需知實體）──
-    def _circuit_list(self):
-        """circuit bus 列表：CircuitTask 註冊的 circuit_bus_list（decode 使用同一份）。"""
-        lst = bus.get_service("circuit_bus_list")
-        if lst is None:
-            lst = bus.get_service("circuit_bus_all_list") or []
-        return lst
-
-    def _net_list(self):
-        """net bus 列表：依服務註冊順序收集（net_bus_ctrl / net_bus_discovery…）。"""
-        out = []
-        for svc in ("net_bus_ctrl", "net_bus_discovery"):
-            c = bus.get_service(svc)
-            if c is not None:
-                out.append(c)
-        return out
-
+    # ── bus 解析：只有 vBus（注入自己的解碼鏈）────────────────
+    #   為什麼移除 circuit:N / net:N 直通出口：
+    #     1. 那條路是 `cb.write(frame)` —— 直接寫出去，**不經過 Router.gate()**。
+    #        於是「排程送出的東西」不受路由政策管，`{in:"self", out:[]}` 也擋不住。
+    #        現在所有出口都收斂到 Router：注入後的來源是 `self`，
+    #        由 `{ "in": "self", "out": [...] }` 決定去哪（含轉發到任何介面）。
+    #     2. 附帶查到：那條路**從來沒有真的生效過** —— `_load()` 建立 items 時
+    #        只放 {ms, addr, cmds, no}，**沒有放 "bus"**，所以
+    #        `it.get("bus", "vBus")` 永遠回預設值。文件寫了、程式碼寫了，
+    #        但排程檔裡的 "bus" 欄位根本不會被讀到。
+    #        → 所以這次移除是純清理，沒有行為變更。
     def _resolve_target(self, key):
-        """bus 值 → (物件, 寫法)。"rx" = 注入 rx_hub（自我解碼），"tx" = 物件.write() 發出去。"""
+        """bus 值 → (物件, 寫法)。只有 vBus → ("rx", 注入 rx_hub 走解碼鏈)。
+
+        舊介面回傳 (cb, "tx")，呼叫端才用 cb.write()；現在不再產生 "tx"，
+        但仍保留「第二個回傳值是寫法」的形狀，讓呼叫端不必大改。
+        """
         k = str(key).strip().lower()
         if k in ("vbus", "v", "sim", "virtual", ""):
             return self._get_vbus(), "rx"
-        for prefix, lst in (("circuit", self._circuit_list()),
-                            ("net", self._net_list())):
-            if k.startswith(prefix):
-                idx = _to_int(k[len(prefix):].lstrip(":_- "), -1)
-                if 0 <= idx < len(lst):
-                    return lst[idx], "tx"
-                get_log().warn("[Schedule] bus {!r} index 超出 {} 列表（{} 項）→ 跳過".format(
-                    key, prefix, len(lst)))
-                return None, None
-        get_log().warn("[Schedule] 未知 bus {!r}（支援 vBus / circuit:0.. / net:0..）→ 跳過".format(key))
+        get_log().warn(
+            "[Schedule] 未知 bus {!r} → 跳過（只支援 vBus；"
+            "要送去別的地方請經 Router：{in:self, out:[...]}）".format(key))
         return None, None
 
     def _fire(self, it):
-        """bus 預設 vBus（自我注入）；circuit:N / net:N = 由列表選取後用物件.write() 發出。"""
+        """bus 一律 vBus（注入自己的解碼鏈），出口由 Router 的 self route 決定。"""
         cb, mode = self._resolve_target(it.get("bus", "vBus"))
         if cb is None:
             return
@@ -283,14 +281,8 @@ class ScheduleTask(Task):
                     desc = "raw {}B".format(len(frame))
                 if not frame:
                     continue
-                if mode == "rx":
-                    ok = self._inject(cb, frame)
-                else:
-                    if not hasattr(cb, "write"):
-                        print("[Schedule] item#{} bus {} 沒有 write() → 跳過".format(
-                            it["no"], it.get("bus")))
-                        continue
-                    ok = cb.write(frame)
+                # 只可能 "rx"：出口全交給 Router（見 _resolve_target 的說明）
+                ok = self._inject(cb, frame)
                 if ok:
                     print("[Schedule] item#{} +{}ms {} {} -> {} ({})".format(
                         it["no"], it["ms"], mode, it.get("bus", "vBus"), desc, cb.label))

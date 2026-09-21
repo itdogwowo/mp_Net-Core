@@ -4,11 +4,14 @@
 > 要「本地執行」還是「轉送出去」還是「兩者都做」。路由由 `config.json` 宣告，不寫死。
 > **位置**：`slave/lib/sys/signal_router.py`（核心）＋ `slave/tasks/bus_decode.py`（掛鉤）
 > ＋ `slave/action/router_actions.py` + `slave/schema/router.json`（0x16xx 執行期指令）
-> **狀態**：P1–P5 ＋ 自動註冊（P7）已落地
->           - 離線自測 440 項全過：`python3 -B test/protocol/router_selftest.py`（PC，不需硬體）
->           - **真機 114 項全過**：`test/protocol/router_board_test.py`（ESP32-S3 @160MHz）
->           - **待做**：完整固件的整機回歸、真通道 0x16xx、P6 端到端（清單見 `todo/03_signal_router.md`）
-> **最後更新**：2026-09（P2–P5 + P7；真機驗證完成）
+> **狀態**：P1–P5 ＋ 自動註冊（P7）已落地；**2026-09 再改三件事**：
+>           ① 介面名 `uartN` 的 N 改成 `UART.list` 索引（0-based）
+>           ② `self` 成為一等**來源**（本機迴路＝vBus 的幀一律以 `self` 進來）
+>           ③ autofill 改成「開機一次 + 主動要求」、**不寫回 config.json**，且 `self` 預設 `[]`
+>           - 離線自測：`test/protocol/router_self_selftest.py` **43 項全過**（PC，不需硬體）
+>           - ⚠️ `test/protocol/router_selftest.py`（舊稱 440 項）與 `router_board_test.py`
+>             **這兩份檔案目前不存在於 repo**，但 §11/§12/§15 等處仍引用它們 —— 見 `todo/03_signal_router.md`
+> **最後更新**：2026-09（self 來源統一 ＋ autofill 改為開機一次 ＋ 介面名索引化）
 
 ---
 
@@ -104,22 +107,24 @@ disp.dispatch(cmd, payload, ctx)
 
 | 介面名 | 實際 bus 物件 | 誰註冊 |
 |---|---|---|
-| `uart1` / `uart2` … | `circuit_bus_uartN` | `CircuitTask` |
+| `uart0` / `uart1` … | `circuit_bus_uartN` | `CircuitTask` |
 | `now` | `NowBus` | `NetworkTask` / `NowTask` |
 | `net` | `net_bus_ctrl`（WS）| `NetworkTask` |
 | `udp` | `net_bus_discovery` | `NetworkTask` |
-| `vbus` | `CircuitBus(io=None)` | `ScheduleTask`（惰性）|
+| `self`（來源）| `CircuitBus(io=None)`＝vBus | `ScheduleTask`（**在 `on_start` 建立**）|
 
 `bus_sources.add()` 本身以 `id()` 去重，**多個任務重複註冊同一條線是安全的**。
 
-**註冊時機（P3）**：`BusDecodeTask` 每 100ms 呼叫一次 `router.sync_ifaces(bus)`，把當下已上線的通道
-補進 Router（重複呼叫是 no-op）。來源三處，依權威性排序：
+**註冊時機**：`BusDecodeTask.on_start` 建立 Router 時做**第一次** `sync_ifaces(bus)`，
+把當下已上線的通道補進 Router。之後新上線的通道由
+**`SysBus.register_service()` 即時通知**（見 §4.4 的三段機制）。
+（原本是 `BusDecodeTask.loop()` **每 100ms** 重試 —— 已移除，見 §4.4。）
 
 | 順序 | 來源 | 涵蓋 |
 |---|---|---|
 | 1 | 具名服務 `NowBus` / `net_bus_ctrl` / `net_bus_discovery` | `now` / `net` / `udp` |
 | 2 | `circuit_bus_all_list` | `uartN` —— **含沒進 `CircuitDecode` 的線**（它們仍可當出口，§3.2）|
-| 3 | `bus_sources.list()` | `vbus` 等沒有具名服務的線 |
+| 3 | `bus_sources.list()` | 其餘沒有具名服務的線；**本機迴路（vBus）也在這裡，但它登記成來源 `self`** |
 
 > 為什麼要週期補註冊而不是在 `on_start` 註冊一次：ESP-NOW 可能在 WiFi 就緒後才 `init` 成功、
 > `vBus` 是 `ScheduleTask` 惰性建立 —— 開機當下的介面集合不等於五分鐘後的介面集合。
@@ -141,8 +146,8 @@ disp.dispatch(cmd, payload, ctx)
 **移除它沒有任何好處，因為出口這一側本來就已經全開**：
 
 ```python
-# circuit.py:70-82 —— 現況（不用改）
-bus.register_service("circuit_bus_uart{}".format(uid), cb)   # 單條：全部
+# circuit.py —— 現況（N = list 索引，0-based；不是 config 的 `id`）
+bus.register_service("circuit_bus_uart{}".format(idx), cb)   # 單條：全部
 bus.register_service("circuit_bus_all_list", all_buses)      # 全部
 bus.register_service("circuit_bus_all_by_id", all_by_id)     # 全部
 bus.register_service("circuit_bus_list", buses)              # 只有選中的
@@ -169,7 +174,11 @@ def _wire(self, name):
 
 **結論：保留。** 它沒有壞處，移除卻要背一次回歸風險。
 
-#### ⚠️ 語意要寫明：`uart` 的值是**索引**（0-based）
+#### ⚠️ 語意要寫明：兩層的 N 都是**索引**（0-based）
+
+**`CircuitDecode.list[].GPIO.uart` 與 Router 的 `uartN` 用的是同一個 N —— `UART.list` 的索引。**
+`config` 的 `id` 欄位是 `machine.UART(id)` 的**硬體周邊號**（1 起），**只給 `init_uart` 用**，
+不出現在任何介面名裡 —— 所以換硬體 id（例如 SPI 從 id=3 換 id=4）時不必改 Router。
 
 ```json
 "CircuitDecode": { "enable": 1, "list": [ {"GPIO": {"uart": 0}} ] },
@@ -177,8 +186,9 @@ def _wire(self, name):
                          ↑ 索引 0             ↑ id=1  →  uart:0 選中這條
 ```
 
-`uart` 的值是 **`UART.list` 的索引**，**不是** `id`。
-（現在 `circuit.py` 的實作本來就是索引 —— 但沒有任何地方寫明，所以看起來像 bug。）
+`uart` 的值是 **`UART.list` 的索引**，**不是** `id`；**Router 的 `uartN` 用的是同一個 N**
+（2026-09 由 `id` 改為索引，見 §3.3）。兩層一致之後：
+「換硬體 id」只動 config，「調次序」才需要動 Router —— 兩件事不再互相牽扯。
 
 | 寫法 | 選到 |
 |---|---|
@@ -202,9 +212,36 @@ def _wire(self, name):
 | `now` | `NowBus` | `NOW-Bus` |
 | `net` | `net_bus_ctrl`（WS 控制通道）| `CTRL-WS` |
 | `udp` | `net_bus_discovery` | `UDP-DISCV` |
-| `uartN` | `circuit_bus_uartN` | `CIRCUIT-UARTN` |
-| `vbus` | `CircuitBus(io=None)` | `VBUS` |
-| `self` | —（保留字，非實體）| — |
+| `uartN` | `circuit_bus_uartN` | `CIRCUIT-UARTN`（**N = `UART.list` 索引，0-based**）|
+| `self` | `CircuitBus(io=None)` 等本機迴路 | `VBUS` |
+
+> **`self` 同時是來源也是目的地**（2026-09 統一）：
+> `in: "self"` ＝ 本機發起的幀（vBus 注入）；`out: ["self"]` ＝ 進本地解碼鏈。
+> vBus 的實質就是「把幀餵回自己的解碼鏈」，所以它**不是一條叫 `vbus` 的出口**，
+> 而是來源 `self`（判別：`is_local_bus()`，即 `io is None`）。
+>
+> 本機來源**不進 `ifaces`** —— `ifaces` 是出口表。要轉發自己請寫
+> `{ "in": "self", "out": ["now"] }`，出口那側才需要 ifaces。
+>
+> ⚠️ 要「不受路由政策影響、絕對執行」**不要繞 Router**（那會連 CRC 與 ADDR
+> 過濾都跳過）。程式內部直呼 handler 用 `app.disp.dispatch()`
+> （見 `tasks/web_ui.py` 的 `/api/cmd`）—— 語意是「我呼叫一個函式」，
+> 不是「我假裝收到一幀」。兩者場合不同。
+
+#### `vbus` 不是可路由的介面（2026-09）
+
+`vbus` **只負責發送**，它注入的幀一律以來源名 **`self`** 進 Router。
+所以在路由表裡**不會有** `in: "vbus"` 這種條目（那會是第二個名字指同一件事）：
+
+| 位置 | 行為 |
+|---|---|
+| `Router.routes` 的 `in: "vbus"` | 當成**不存在的通道** → 暫不註冊（留在 `_pending`）|
+| `out: ["vbus"]` | **無視**（不算出口、不警告、不計入丟幀）|
+| vBus 注入的幀 | `name_of()` 回 `SELF` → 查 `by_in["self"]` |
+| autofill | **不會**產生 `in: "vbus"` 條目（不在 `ALWAYS_PRESENT`）|
+
+> 這也讓「來源」只有一個名字：**本機發起的就是 `self`**，
+> 不論它是 vBus 注入、UI 寫狀態、還是別的本地機制。
 
 > **為什麼叫 `net` 而不是 `lan`**：這條線是 WS 控制通道，**它可能跑在 LAN 也可能跑在 WiFi 上**。
 > 叫 `lan` 會在 WiFi 部署時說謊。`net` 描述的是「網路控制通道」這個角色，與底層媒體無關。
@@ -221,12 +258,16 @@ def _wire(self, name):
 "Router": {
   "enable": 0,
   "routes": [
-    { "in": "now",   "out": ["uart1"] },
-    { "in": "uart1", "out": ["self"] },
-    { "in": "net",   "out": ["uart2"] }
+    { "in": "self",  "out": ["now"] },
+    { "in": "now",   "out": ["self"] },
+    { "in": "uart0", "out": ["self"] },
+    { "in": "net",   "out": ["uart1"] }
   ]
 }
 ```
+
+> `self` 那條是「本機發起（vBus 注入，例如 `schedule`）→ 從 ESP-NOW 送出去」的寫法。
+> 出廠 config 多半是 `routes: []`，靠 autofill 補預設（見 §4.4）。
 
 ### 4.1 欄位
 
@@ -234,7 +275,11 @@ def _wire(self, name):
 |---|---|---|
 | `in` | **字串（純量）** | 這一條 route 的觸發來源。**一個來源 = 一條 route**，結構上不可能衝突 |
 | `out` | **列表** | 目的地佇列，依序送出。**一個也要寫列表** |
-| `out` 內的 `"self"` | 保留字 | 進本地解碼鏈執行 |
+| `out` 內的 `"self"` | 保留字 | 進本地解碼鏈執行（**不是「送給自己」**，不會寫出任何 bus）|
+| `out` 內的 `"vbus"` | 保留字 | **被無視** —— vBus 只負責發送，不是出口（見 §3.3）|
+
+> **`self` 同時是來源也是目的地**：`in: "self"` ＝ 本機發起的幀；
+> `out: ["self"]` ＝ 本地執行。兩個 `self` 意思不同但對稱。
 
 ### 4.2 `in` 為什麼是純量而不是列表
 
@@ -247,8 +292,8 @@ def _wire(self, name):
 需要「多個來源」時**寫兩條**，比列表更好讀：
 
 ```json
-{ "in": "uart1", "out": ["self"] },
-{ "in": "uart2", "out": ["self"] }
+{ "in": "uart0", "out": ["self"] },
+{ "in": "uart1", "out": ["self"] }
 ```
 
 > 這一版**不支援** `"in": ["now","net"]`。寫了會**明確報錯並跳過該條**（不猜你的意思），
@@ -258,41 +303,61 @@ def _wire(self, name):
 
 | 拓撲 | 寫法 |
 |---|---|
-| 點對點 | `{ "in": "now",   "out": ["uart1"] }` |
-| 一對多 | `{ "in": "net",   "out": ["uart2","udp"] }` |
-| 多對一 | `{ "in": "uart1", "out": ["self"] }` ＋ `{ "in": "uart2", "out": ["self"] }` |
-| 本地執行 | `{ "in": "uart1", "out": ["self"] }` |
+| 點對點 | `{ "in": "now",   "out": ["uart0"] }` |
+| 一對多 | `{ "in": "net",   "out": ["uart1","udp"] }` |
+| 多對一 | `{ "in": "uart0", "out": ["self"] }` ＋ `{ "in": "uart1", "out": ["self"] }` |
+| 本地執行 | `{ "in": "uart0", "out": ["self"] }` |
 | 執行＋轉發 | `{ "in": "now",   "out": ["self","net"] }` |
 
-### 4.4 自動註冊 —— **每次啟動都跑**，不是開關
+### 4.4 自動註冊（autofill）—— **開機一次 + 使用者主動要求**（2026-09 改）
 
-Router 啟動時（以及之後每有新線路上線時）會**檢視自己現在真的有哪些線路**：
+> ⚠️ 這一節的舊版寫「每次啟動都跑、有新線路上線就跑、並寫回 config.json」——
+> **三個都改了**。舊行為會讓使用者的設定檔自己長出他沒寫過的東西，也讓
+> 「晚上線」的通道被立刻填成預設值（覆蓋他已經寫好、只是還沒輪到結算的 route）。
+
+**兩種預設**：
+
+| 來源 | 預設 `out` | 理由 |
+|---|---|---|
+| `self` | **`[]`**（空） | `self` **不指向自己** —— vBus 注入的幀「已經在本地」，`out` 再寫 `self` 等於多 dispatch 一次 |
+| 其他通道（`now` / `net` / `udp` / `uartN`） | `["self"]` | 這正是未導入 Router 前的行為（這條線自己收、自己執行）→ 打開 `enable:1` 不會讓任何一條線失效 |
+
+`self` 是**唯一不判斷存在與否**的來源（`ALWAYS_PRESENT`）—— 任何裝置都有「自己」。
+`vbus` **不在**路由表裡（見 §3.3：它只負責發送，不是可路由的來源）。
 
 ```
 實際存在的線路          config.routes                  結果
 ────────────────       ────────────────────────       ─────────────────────────────
-now, uart1, uart2  ＋  []                         →   自動補 3 條 {in: X, out: ["self"]}
-now, uart1, uart2  ＋  [{in: now, out:[uart1]}]   →   now 用你的；uart1/uart2 自動補
-now, uart1         ＋  [{in: uart2, out:[self]}]  →   uart2 不存在 → 無視它、跳過建立
+now, uart0, uart1  ＋  []                         →   self 補 []（不指向自己）
+                                                       now/uart0/uart1 各補 ["self"]
+now, uart0, uart1  ＋  [{in: now, out:[uart0]}]   →   now 用你的；self/uart0/uart1 補預設
+now, uart0         ＋  [{in: uart1, out:[self]}]  →   uart1 不存在 → **暫不註冊**（留在 pending）
 ```
 
 | 規則 | 行為 |
 |---|---|
-| 線路存在、`routes` 裡沒有 | **自動補** `{ "in": 線路, "out": ["self"] }`，並**寫回 `config.json`** |
-| 線路存在、`routes` 裡有了 | **尊重使用者的**，一個字都不動 |
-| `routes` 寫了、**實體不存在** | **無視它、跳過它的建立** —— 不生效、不出現在 `ROUTER_TABLE_GET`；route 留在 config 裡，**線路上線就自動生效**（不必重啟）|
-| 寫回 config 的時機 | 只在真的補了新線路時寫**一次** → 開機後不會反覆寫檔 |
-| `enable: 0` 時 | **照樣自動註冊**（方便你先把 config 看清楚再決定要不要開）|
+| 通道存在、`routes` 裡沒有 | 補預設（見上表）。**只在記憶體**，不寫回 config.json |
+| 通道存在、`routes` 裡有了 | **尊重使用者的**，一個字都不動（`auto: False`） |
+| `routes` 寫了、**通道還不存在** | **暫不註冊**，留在 `_pending`；該通道之後上線時，用**使用者寫的內容**註冊進表 |
+| 通道永遠沒上線 | 開機結算時出一條訊息（不進表、不生效、**不動 config.json**）|
+| 什麼時候補 | **開機結算一次**（`SignalRouter.finalize()`，由 `BusDecodeTask` 開機後第一圈呼叫）＋ 使用者主動要求 |
+| `enable: 0` 時 | **照樣建立路由表**（方便你先把 config 看清楚再決定要不要開）|
 
-**為什麼補的是 `self`**：`out: ["self"]` ＝ 這條線自己收、自己執行 ——
-正是**未導入 Router 前的行為**。所以自動註冊之後，**打開 `enable:1` 不會讓任何一條線失效**；
-你只需要改「想轉送」的那幾條，不必先把每條線都寫一遍。
+> **要讓一條線「不執行」**：明確寫 `{ "in": "uart0", "out": [] }`（＝`V_DROP`，見 §5）。
+> 直接把那條從 `routes` 刪掉不一定有用 —— 下次開機 autofill 會補 `["self"]` 回來
+> （**但不會寫回你的 config.json**，只是記憶體裡的表如此）。
 
-> **要讓一條線「不執行」**：明確寫 `{ "in": "uart1", "out": [] }`（＝`V_DROP`，見 §5）。
-> 直接把那條從 `routes` 刪掉沒用 —— 下次啟動會被自動補回來。
+> **為什麼不再寫回 config.json**：使用者刪掉的 route 會被補回來**並寫進檔案**、
+> 通道晚上線會被覆蓋**並寫進檔案** —— 設定檔會自己長出他沒寫過的東西。
+> 要落盤請明確用 `ROUTER_SAVE`（0x1605）。
 
-> ⚠️ 自動註冊只由 `sync_ifaces()` 驅動（`BusDecodeTask` 每 100ms 呼叫）。
-> 直接呼叫 `register_iface()` 的低階路徑不會觸發它。
+**通道什麼時候被 Router 看到（三段機制）**：
+
+| 機制 | 時機 | 用途 |
+|---|---|---|
+| **分層**（主要） | `bus_decode` 排在「產生通道」的任務之後（layer 1） | 保證 Router 出生時看得到 boot 期所有通道 |
+| `SysBus.register_service()` hook | 通道註冊的那一刻 | 給執行期才出現的通道（指令觸發、惰性建立）|
+| ~~每 100ms 輪詢~~ | **已移除** | 那是「順序錯了就等下一輪」的症狀解法 |
 
 ---
 
@@ -301,13 +366,15 @@ now, uart1         ＋  [{in: uart2, out:[self]}]  →   uart2 不存在 → 無
 | 情況 | 行為 |
 |---|---|
 | `enable: 0` | 全部不作用（與未導入 Router 前 100% 相同）|
-| `in` 沒對應 route，**但線路存在** | 自動註冊會補上 `out: ["self"]`（§4.4）→ 本地執行 |
-| `in` 沒對應 route，且自動註冊已被 `ROUTE_DEL` 跳過 | **不執行、不轉發** |
-| `out = ["uart1"]` | 只轉發，**本地不執行** |
+| `in` 沒對應 route，**但通道存在** | autofill 會補預設（§4.4）→ `self` 補 `[]`、其他通道補 `["self"]` |
+| `in` 沒對應 route，且該通道沒上線 | **不執行、不轉發**（route 留在 `_pending` 等它） |
+| `out = ["uart0"]` | 只轉發，**本地不執行** |
 | `out = ["self"]` | 只本地執行，不轉發 |
 | `out = ["self", "net"]` | **本地執行 ＋ 同時轉發** |
 | `out = []` | **明確不執行也不轉發**（＝把一條線關掉的正確寫法）|
-| `out` 含 `in` | **開機拒絕該 route**（自我反射，永遠是錯的）|
+| `out` 含 `"vbus"` | **無視**（vBus 只負責發送，不是出口；不警告、不算丟幀）|
+| `out` 含 `in`（`in` 不是 `self`） | **開機拒絕該 route**（自我反射，永遠是錯的）|
+| `out` 含 `in` 且 `in` 是 `self` | **允許** —— `self → self` 讀作「本機發起的幀，本地執行」，不是迴圈 |
 | `out` 含 `"udp"` | ⚠️ **允許但發出警告**（見 §7.2）|
 | `out` 寫成字串 | 接受，但警告（建議一律寫列表）|
 | 介面名解析不到 | 警告 + 丟棄該幀 + 計數 |
@@ -335,8 +402,12 @@ def gate(self, bus_obj, addr, cmd):
     return spec.verdict                     # EXECUTE / FORWARD / BOTH
 ```
 
-> `spec is None` 在**生產環境幾乎不會發生** —— 線路存在就一定被自動註冊補上（§4.4）。
-> 會落到 `DROP` 的只有兩種：使用者明確寫了 `out: []`，或該線路被 `ROUTE_DEL` 跳過。
+> `name_of()` 對**本機迴路**（`io is None` 的 `CircuitBus`，＝vBus）一律回 `SELF`
+> —— 所以 vBus 注入的幀查的是 `by_in["self"]`，而不是某個叫 `vbus` 的條目。
+
+> `spec is None` 在**生產環境幾乎不會發生** —— 通道存在就一定被 autofill 補上預設（§4.4）。
+> 會落到 `DROP` 的只有三種：使用者明確寫了 `out: []`（或 `["vbus"]`）、
+> `self` 用了預設的 `[]`、或該通道沒上線。
 
 ---
 
@@ -526,7 +597,7 @@ handler：`slave/action/router_actions.py`。
 | CMD | 名稱 | 方向 | Payload | 說明 |
 |---|---|---|---|---|
 | `0x1601` | `ROUTER_STATUS` | Master→Slave | (空) | 回 `0x1606`：介面清單 / 每條 route 的 hit·fwd·drop / load 期間的錯誤 |
-| `0x1602` | `ROUTER_ROUTE_ADD` | Master→Slave | `route_json(str)` | 新增或覆寫一條 route（單行 JSON，如 `{"in":"now","out":["uart1"]}`）|
+| `0x1602` | `ROUTER_ROUTE_ADD` | Master→Slave | `route_json(str)` | 新增或覆寫一條 route（單行 JSON，如 `{"in":"now","out":["uart0"]}`）|
 | `0x1603` | `ROUTER_ROUTE_DEL` | Master→Slave | `in_name(str)` | 依 `in` 刪除一條 route |
 | `0x1604` | `ROUTER_TABLE_GET` | Master→Slave | `page(u8)` | 回 `0x1606`，`data_json` = `{page,pages,page_size,total,routes}` |
 | `0x1605` | `ROUTER_SAVE` | Master→Slave | `enable(u8)` | 存回 `config.json`（`cfg_manager.save_from_bus(update_key="Router")`）|
@@ -563,7 +634,8 @@ handler：`slave/action/router_actions.py`。
 - `ROUTER_SAVE` 只負責持久化；沒存就重開機，改動會消失。
 - `enable` 在**所有出廠 config.json 都是 `0`**：要先用一次 `ROUTER_SAVE` 帶 `enable=1`
   （或直接改 config.json）開啟，之後就能全遠端管理路由。
-- **自動註冊（§4.4）在 `enable: 0` 時也會跑並寫回 config.json** —— 所以第一次開機後，
+- **autofill（§4.4）在 `enable: 0` 時也會建立路由表**（方便先看 config 再決定要不要開），
+  但**不再寫回 config.json** —— 設定檔不會自己長出你沒寫過的東西（2026-09 改）。
   config 裡就會自動長出「這台真實有哪些線路」的清單，你直接在上面改就好。
 
 ---
@@ -574,40 +646,41 @@ handler：`slave/action/router_actions.py`。
 // config.json —— 出廠（空的就好，第一次開機會自動長出真實線路，見 §4.4）
 "Router": { "enable": 0, "routes": [] }
 
-// 開機自動註冊之後（例：這台有 ESP-NOW + 2 條 UART + WS 控制通道）
-"Router": {
-  "enable": 0,
-  "routes": [
-    { "in": "net",   "out": ["self"] },      // ← 自動補的：維持原行為
-    { "in": "now",   "out": ["self"] },      // ← 自動補的
-    { "in": "uart1", "out": ["self"] },      // ← 自動補的
-    { "in": "uart2", "out": ["self"] }       // ← 自動補的
-  ]
-}
+// autofill 之後（**只在記憶體裡的表**，不會寫回你的 config.json）
+// 例：這台有 ESP-NOW + 2 條 UART + WS 控制通道
+routes（記憶體）: [
+  { "in": "self",  "out": [] },           // ← 預設：self 不指向自己
+  { "in": "net",   "out": ["self"] },     // ← 補的：這條線自己收自己執行
+  { "in": "now",   "out": ["self"] },     // ← 補的
+  { "in": "uart0", "out": ["self"] },     // ← 補的
+  { "in": "uart1", "out": ["self"] }      // ← 補的
+]
 
-// 你只要改想轉送的那幾條
+// 你的 config.json 要寫什麼，就寫你想改的那幾條（沒寫的走預設）
 "Router": {
   "enable": 1,
   "routes": [
-    { "in": "now",   "out": ["uart1"] },     // ESP-NOW 進來 → 轉給 UART1（本地不執行）
-    { "in": "uart1", "out": ["self"] },      // UART1 進來 → 本地執行
-    { "in": "uart2", "out": [] },            // UART2 完全不要（明確關掉）
+    { "in": "self",  "out": ["now"] },       // 本機發起（例如 schedule 注入）→ 從 ESP-NOW 送出去
+    { "in": "now",   "out": ["uart0"] },     // ESP-NOW 進來 → 轉給 UART0（本地不執行）
+    { "in": "uart0", "out": ["self"] },      // UART0 進來 → 本地執行
+    { "in": "uart1", "out": [] },            // UART1 完全不要（明確關掉）
     { "in": "net",   "out": ["self"] }
   ]
 }
 ```
 
-**心智模型三句話：**
+**心智模型四句話：**
 
-1. 每條線自動註冊，**沒配對就沒路走**。
+1. 每條通道存在就有預設 route（`self` 補 `[]`、其他補 `["self"]`），**沒配對就沒路走**。
 2. 一條 route = 一個來源 ＋ 一個出口清單。
-3. `self` 是出口清單裡的保留字，代表「進本地解碼」。
+3. `self` 是出口清單裡的保留字，代表「進本地解碼」（不是「送給自己」）。
+4. `out` 要放什麼是你的政策 —— autofill **只補你沒寫的，絕不動你寫過的**。
 
 ### 13.1 遠端開啟 Router（出廠 enable=0 → 全遠端管理）
 
 ```
-1) 0x1602 ROUTER_ROUTE_ADD  {"in":"now","out":["uart1"]}
-2) 0x1602 ROUTER_ROUTE_ADD  {"in":"uart1","out":["self"]}
+1) 0x1602 ROUTER_ROUTE_ADD  {"in":"now","out":["uart0"]}
+2) 0x1602 ROUTER_ROUTE_ADD  {"in":"uart0","out":["self"]}
 3) 0x1604 ROUTER_TABLE_GET  確認表對了
 4) 0x1605 ROUTER_SAVE       enable=1     ← 存檔成功的同時就生效
 5) 0x1601 ROUTER_STATUS     看 hit/fwd/drop 確認流量真的在走
@@ -616,18 +689,18 @@ handler：`slave/action/router_actions.py`。
 > 第 4 步之前 Router 是關的（`enable=0`），所以第 1~3 步的指令本身不受路由影響 ——
 > **先確認表對了再開**，是唯一「不會把自己鎖在門外」的順序（§10 限制 1）。
 >
-> 而且第 1~2 步通常**不用自己寫**：自動註冊（§4.4）已經把每條真實線路補成 `out: ["self"]`，
-> 你只要把要轉送的那幾條 `ROUTE_ADD` 覆寫掉就好。
+> 而且第 1~2 步通常**不用自己寫**：autofill（§4.4）已經把每條通道補上預設
+> （`self` 補 `[]`、其他補 `["self"]`），你只要把要轉送的那幾條 `ROUTE_ADD` 覆寫掉就好。
 
 ### 13.2 驗證
 
 ```bash
-# 離線（PC，不需硬體）
-python3 -B test/protocol/router_selftest.py     # 440 項
+# 離線（PC，不需硬體）—— 現行
+python3 -B test/protocol/router_self_selftest.py     # 43 項
+python3 -B test/protocol/router_show_defaults.py     # dump 實際預設（snapshot/table/status）
 
-# 真機（MicroPython；需先把 lib/sys/*、schema/*.json、action/router_actions.py 部署上去）
-mpremote connect <PORT> fs cp test/protocol/router_board_test.py :router_board_test.py
-mpremote connect <PORT> exec "exec(open('/router_board_test.py').read())"   # 114 項
+# ⚠️ 下面這份「真機 114 項」目前**不存在於 repo**（`test/protocol/router_board_test.py`），
+#    本檔與其他 5 個地方仍在引用它 —— 見 todo/03_signal_router.md 的 §近期變更。
 ```
 
 真機實測數字（ESP32-S3 @160MHz）:
