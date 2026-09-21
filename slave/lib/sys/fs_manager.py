@@ -312,7 +312,12 @@ class FileSystemManager:
             "sha_expect_hex": sha_expect_hex,
             "last_error": None,
             "last_pending": 0,
-            "ram_buf": None
+            "ram_buf": None,
+            # 可用空間快取：每 session 只查一次 statvfs，之後用寫入量推導
+            # （內部 flash 的 statvfs 要 ~831ms，每塊都查會讓上傳變 ~5 KB/s；
+            #   見 write_chunk 的說明）
+            "free_est": None,
+            "free_base_written": 0
         })
 
         if not path:
@@ -413,7 +418,30 @@ class FileSystemManager:
         # 中途容量安全網 (前置 QUERY.free 才是主力)
         # ⚠️ statvfs 在 FAT/flash 模式可能返回負數(overflow)，那時 free_bytes 不可靠，
         # 不能當作「沒空間」；只有拿到「明確的正數且不足」才擋。
-        _free = self.free_bytes(self.session["path"])
+        #
+        # ⚠️⚠️ 但 free_bytes() 內部是 os.statvfs()，而**內部 flash（`/`）的 statvfs
+        #   在 ESP32-P4 上要 ~831ms**（`/sd` 只要 0.06ms）。原本每塊都查一次，
+        #   等於上傳到 flash 每 4KB 塊要多付 0.83 秒 —— 實測 5.2 KB/s，
+        #   而同一支程式上傳到 `/sd` 是 159 KB/s（慢 30 倍）。
+        #   → 改成「每個 session 查一次，之後用已寫入量推導」：
+        #     這個檢查本來就只是 secondary 保險（註解自己說主力是前置 QUERY.free），
+        #     用單調遞減的估計值完全足夠，且不影響正確性（空間不足時仍會擋）。
+        _free = self.session.get("free_est")
+        if _free is None:
+            _free = self.free_bytes(self.session["path"])
+            self.session["free_est"] = _free
+            self.session["free_base_written"] = self.session.get("written", 0)
+        elif _free > 0:
+            # ★ 只在「寫入位置往後前進」時扣（記 high-water mark）：
+            #   - 重送同一塊（offset 不變）→ delta 0，不重複扣
+            #   - 亂序／倒退回較小的 offset → 不扣、也**不會把估計值加回去**
+            #   → 估計值保證**單調不增**，怎麼操作都不會高估可用空間。
+            _w = self.session.get("written", 0)
+            _b = self.session.get("free_base_written", 0)
+            if _w > _b:
+                _free -= (_w - _b)
+                self.session["free_base_written"] = _w
+            self.session["free_est"] = _free
         if _free > 0 and _free < len(data) + 4096:
             self.session["last_error"] = "NO_SPACE"
             return False
