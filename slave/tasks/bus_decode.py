@@ -61,7 +61,12 @@ class BusDecodeTask(Task):
             # 壞設定開機就講清楚（不猜、不靜默 —— doc §5）
             for e in r.errors():
                 print("❌ [Router] {}".format(e))
-            self._persist_autofill()
+            # ★ 時機 ①「開機那一次」：autofill ＋ 寫回 config。
+            #   此刻看到的是 **boot.py 建的通道**（uartN 等）；
+            #   Task 內部才註冊的（now / net / udp / vbus）還沒上線，
+            #   那些由時機 ②「任務開始那一次」補上（見 loop()）。
+            #   兩次都會寫檔 → 第一次寫的是部分集合，第二次才是完整集合。
+            self.finalize_router()
             if r.enable:
                 get_log().info("🔀 [Router] enable=1, {} route(s), ifaces={}".format(
                     n, sorted(r.ifaces.keys())))
@@ -70,32 +75,66 @@ class BusDecodeTask(Task):
             self._housekeep = None
             get_log().error("[BusDecode] router init failed: {}".format(e))
 
-    def _persist_autofill(self):
-        """把「自動註冊的結果寫回 config.json」**停用**（2026-09）。
+    def finalize_router(self):
+        """★ **Router 的主動函數** —— 補預設（autofill）＋ 把表寫回 config.json。
 
-        為什麼停用（原本是 Router P4 的「自動註冊」設計）：
-          自動註冊會在使用者沒寫的情況下補 route，並把補出來的結果寫進
-          config.json。結果是**使用者的設定檔會自己長出他沒寫過的東西**：
+        **autofill 預設就是開的，沒有開關**（使用者：『我應該是不會禁止的』）。
+        唯一的例外是 **`self → self`** —— `self` 的預設 `out` 是 `[]`（不指向自己），
+        因為 vBus 注入的幀「已經在本地」，`out` 再寫 `self` 等於多 dispatch 一次。
+        要覆蓋就自己寫 `{ "in": "self", "out": ["self"] }`。
 
-            - 使用者把某條 route 刪掉 → 下次開機被補回來並寫回檔案
-            - 使用者寫了但通道不存在（規格：不註冊、跳過）→ 通道上線後
-              被 autofill 用預設值取代，還寫回檔案
+        使用者的時機規格（2026-09）：
+          「這應該是一個**主動的函數**而不是自動的函數 …… **開機的時候執行一次**、
+            **任務開始的時候那一次**，之後就幾乎沒有主動要求他執行的時機了，
+            除非我日後用其他方法、其他時機想這樣做。」
 
-        現在的行為：
-          - autofill **只在記憶體裡建表**，不碰 config.json
-          - 使用者要落盤請明確動作：`ROUTER_SAVE`（0x1605）
-          - `take_autofill()` 仍然取走並清空（保持介面契約），只是不再寫檔
+        所以它**只被呼叫兩次**（都在開機過程中，見 `_router_setup()` 與 `loop()`），
+        不對任何事件自動反應。**要再跑一次就再呼叫它。**
 
-        ⚠️ 這裡刻意**不再呼叫** `cfg_manager.save_from_bus`。
-           要恢復舊行為就是把下面那三行接回去。
+        做的事：
+          ① `router.finalize()` —— 結算 pending（使用者寫了、通道現在存在的
+             route，用**他的內容**註冊）＋ autofill（只補缺口，不動使用者寫過的）
+          ② 把整張表寫回 config.json（＝「幫我註冊」）
+
+        ⚠️ `_router_ready` 只是「任務開始那次別重複跑」的守衛，不是自動機制；
+           外部呼叫這個方法不受它限制。
+        """
+        r = self.router
+        if r is None:
+            return []
+        added = r.finalize()
+        self._persist_router_table()
+        get_log().info(
+            "🔀 [Router] finalize：{} route(s), ifaces={}, 本次補預設={}".format(
+                len(r.by_in), sorted(r.ifaces.keys()), added))
+        return added
+
+    def _persist_router_table(self):
+        """把目前生效的路由表寫回 config.json（＝使用者要的「幫我註冊進 config」）。
+
+        使用者的規格：
+          「所有通訊通道都會被註冊到 config 當中，**如果沒有註冊的通道就會幫用戶
+            自行註冊目標是 self**」
+
+        ★ 只在 `finalize_router()` 裡被呼叫（時機 ①「開機」與 ②「任務開始」各一次）。
+          **不在通道上線時寫** —— 那會在使用者還沒輪到結算之前就覆蓋他寫的東西。
+
+        寫什麼：`router.snapshot()` ＝ **目前生效的整張表**（含使用者寫的）。
+          所以刻意刪掉的條目，下次開機結算會被補回來並寫進檔案 ——
+          這是「幫我註冊」的預期行為。**要關掉某條通道請寫 `out: []`，不要刪。**
         """
         r = self.router
         if r is None:
             return
-        added = r.take_autofill()        # 取走即清空（不寫檔，只留記錄）
-        if added:
-            get_log().info("🔀 [Router] 自動註冊 {} 條線路（僅記憶體，未寫回 config）: {}".format(
-                len(added), added))
+        added = r.take_autofill()        # 取走即清空（介面契約保留）
+        try:
+            from lib.sys.ConfigManager import cfg_manager
+            bus.shared["Router"] = r.snapshot()
+            cfg_manager.save_from_bus(update_key="Router")
+            get_log().info("🔀 [Router] 路由表寫回 config.json：{} 條（本次補 {}）".format(
+                len(r.by_in), added))
+        except Exception as e:
+            get_log().warn("[Router] 寫回 config 失敗（記憶體仍生效）: {}".format(e))
 
     def _refresh_sources(self):
         sources = bus.get_service("bus_sources")
@@ -123,27 +162,18 @@ class BusDecodeTask(Task):
             self._src_ts = now
             self._refresh_sources()
 
-        # ── Router：通道註冊已經不靠這裡輪詢 ───────────────────────
-        #   原本每 100ms 呼叫 router.sync_ifaces()，理由是「各 Task 上線
-        #   順序不定，錯過了要等下一輪」。那其實是症狀的解法：真正原因是
-        #   BusDecodeTask.on_start 跑在 NowTask / NetworkTask 之前，
-        #   第一輪 sync 時 NowBus 還不存在。
-        #   現在改成 **事件驅動**：sys_bus.register_service() 在通道註冊的
-        #   那一刻直接通知 Router（見 SysBus.register_service），
-        #   所以在這裡不必再輪詢。
+        # ── Router：通道註冊不靠這裡輪詢（事件驅動，見 SysBus.register_service）
         #
-        #   ⚠️ 唯一保留的一次性動作：開機後第一次 finalize()
-        #      （結算 pending 的使用者 route + 補預設值）。
-        #      為什麼不能更早：boot 期的通道是陸續註冊的，太早結算會
-        #      把「還沒上線」誤判成「不存在」。
+        #   ★ 時機 ②「任務開始那一次」 —— 主動呼叫 finalize_router()，**只做一次**。
+        #     （時機 ① 是 _router_setup() 的「開機」那一次。）
+        #     這次看到的是**完整集合**：Task 內部註冊的 now / net / udp / vbus
+        #     都已經上線了（它們排在 layer 0，會即時透過 register_service hook
+        #     補進 Router）。
+        #     之後**幾乎沒有主動要求它執行的時機** —— 除非日後用別的方法
+        #     在某個時機想再跑一次，那就直接呼叫 `self.finalize_router()`。
         if self.router is not None and not self._router_ready:
             self._router_ready = True
-            added = self.router.finalize()
-            self._persist_autofill()
-            get_log().info(
-                "🔀 [Router] 開機結算：{} route(s), ifaces={}, 補預設={}".format(
-                    len(self.router.by_in),
-                    sorted(self.router.ifaces.keys()), added))
+            self.finalize_router()
 
         if self._buses:
             self._drain()

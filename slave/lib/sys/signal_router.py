@@ -90,12 +90,17 @@ _KNOWN_IFACES = ("now", "net", "udp", "self",
 
 # 幾乎必然存在的來源 —— autofill **不判斷**它存不存在，一律進路由表。
 #   self : 本機發起的幀。任何裝置都有「自己」，不需要等 vBus 上線。
+#   vbus : 內部虛擬總線（schedule 的注入點）。它是按需建立的，開機當下可能還沒
+#          上線，但語意上一定存在 → 不判斷、直接進表。
 #
-# ⚠️ vBus **不在這裡**（2026-09 定案）：它「只負責發送」，不是一條可路由的來源。
-#    它的幀一律以來源名 `self` 進 Router（見 is_local_bus），
-#    所以在路由表裡不該出現 `in: "vbus"` 這種條目 —— 那會是第二個名字指同一件事。
-#    使用者在 in 寫 vbus 會被當成「不存在的通道」跳過；在 out 寫 vbus 會被無視。
-ALWAYS_PRESENT = (SELF,)
+# ⚠️ 別把「vBus 在 **out** 被無視」跟「vBus 能不能當來源」搞混（我踩過）：
+#     - `out: ["vbus"]`  → **無視**（它不是出口，write() 永遠 False）
+#     - `in:  "vbus"`    → **不成立**：vBus 注入的幀以來源名 `self` 進 Router
+#                           （is_local_bus），所以表裡的 vbus 條目是「萬一」用的，
+#                           不是那條路徑查的（它查 by_in["self"]）。
+#     - autofill 仍然替 vbus 建條目（預設 `["self"]`），跟其他通道一樣
+#       —— 使用者要求「self、vbus 是最開頭的兩個」就是因為它在表裡。
+ALWAYS_PRESENT = (SELF, "vbus")
 
 
 def is_local_bus(obj):
@@ -140,13 +145,29 @@ def iface_name_from_label(label):
 
 
 def _route_order(name):
-    """路由表的排序鍵：**`self` 排第一**，其餘照字母序。
+    """路由表的排序鍵（使用者定案 2026-09）：**本機 → 網路 → 實體線**。
 
-    為什麼 self 要排第一：它是本機來源，讀路由表的人第一眼就該看到
-    「我自己發的幀往哪走」，而不是在一堆線路名中間找它。
-    （用「self 優先」而不是字典序 —— 字典序會讓它夾在 now 與 uart0 之間。）
+        0  self   本機發起（本機迴路＝vBus 的幀也以 self 進來）
+        0  vbus   本機迴路本身
+        1  now    ESP-NOW
+        1  net    WS 控制通道
+        1  udp    發現通道
+        2  uartN  實體線（N = UART.list 索引，0-based）
+        3  其他   照字母序墊底（自訂 label 的第三方 bus）
+
+    為什麼是這個順序：讀路由表的人先看「我自己發的往哪走」，再看「無線/網路」，
+    最後才是「要接線的那些」。`self` 與 `vbus` 是**最開頭的兩個**（本機群）。
+    （不用字典序 —— 那會讓 self 夾在 now 與 uart0 之間、vbus 墊到最後。）
     """
-    return (0, "") if name == SELF else (1, name)
+    if name == SELF:
+        return (0, "")
+    if name == "vbus":
+        return (0, "vbus")
+    if name in ("now", "net", "udp"):
+        return (1, name)
+    if name.startswith("uart"):
+        return (2, name)
+    return (3, name)
 
 
 def _is_bad_key(k):
@@ -192,17 +213,13 @@ class SignalRouter:
 
         self._errors = []    # load() 期間的錯誤訊息（開機除錯用）
 
-        # ── 自動註冊（每次啟動都跑，不是開關）──────────────────────────
-        # 開機時檢視「實際存在的線路」，config 裡沒對應 route 的就自動補一條
-        # {in: 線路, out: ["self"]}（＝該線自己收自己執行，與未導入 Router 前相同），
-        # 並由呼叫端寫回 config.json —— 使用者打開 config 就看到全部真實線路，
-        # 只要改想轉送的那幾條。
-        #   ⚠️ 2026-09：**不再寫回 config.json**（`_persist_autofill()` 只記錄）。
-        #      原因：使用者刪掉的 route 會被補回來並寫進檔案、通道晚上線會被
-        #      預設值覆蓋並寫進檔案 —— 設定檔會自己長出他沒寫過的東西。
-        #      要落盤請明確用 ROUTER_SAVE（0x1605）。
-        #   本機來源（vBus，見 is_local_bus）也會被補成 {in: "self", out: ["self"]}，
-        #   所以「自己發的指令會被自己執行」是預設行為，不必手寫。
+        # ── 自動註冊（autofill）—— **主動函數**，不是每次啟動自動跑 ──────
+        # 檢視「實際存在的通道」，config 裡沒對應 route 的就補預設：
+        #   self 補 out: []（不指向自己）、其他通道補 out: ["self"]。
+        # 補出來的**會被寫回 config.json**（＝使用者要的「幫用戶自行註冊」），
+        # 但**只在開機結算那一次**做 —— 見 BusDecodeTask.finalize_router()。
+        #   本機迴路（vBus，見 is_local_bus）的幀以來源 `self` 進來，
+        #   所以 vbus 本身不會有 route；「自己發的指令自己執行」由 self 表達。
         #   _auto_done : 已經自動檢查過的線路（同一 session 不重複補；
         #                ROUTE_DEL 刪掉後不會被下一次 sync 又補回來）
         #   _autofilled: 這次補了哪幾條，等呼叫端 take_autofill() 取走去存檔
@@ -412,8 +429,10 @@ class SignalRouter:
           - 但**每次啟動都是全新的一輪**（`_auto_done` 清空）→ 一定會重新檢查建立
 
         ★ 本機迴路（vBus）不進 ifaces（見 is_local_bus），所以要另外走 `_locals`。
-        ★ 這裡只在**記憶體**裡建表，不寫回 config.json —— 避免使用者的設定檔
-          被自動塞進他沒寫過的 route（要落盤請用 ROUTER_SAVE / 0x1605）。
+        ★ **本函式本身不碰 config.json**（只建記憶體裡的表）。
+          寫回檔案是 `BusDecodeTask._persist_router_table()` 的事，
+          而且**只在開機結算那一次**做 —— 見 `BusDecodeTask.finalize_router()`
+          的時機說明（主動函數：開機 / 任務開始，之後不自動跑）。
 
         回傳這一輪補出來的來源名稱。
         """

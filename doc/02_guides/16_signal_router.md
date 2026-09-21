@@ -7,7 +7,8 @@
 > **狀態**：P1–P5 ＋ 自動註冊（P7）已落地；**2026-09 再改三件事**：
 >           ① 介面名 `uartN` 的 N 改成 `UART.list` 索引（0-based）
 >           ② `self` 成為一等**來源**（本機迴路＝vBus 的幀一律以 `self` 進來）
->           ③ autofill 改成「開機一次 + 主動要求」、**不寫回 config.json**，且 `self` 預設 `[]`
+>           ③ autofill 改成「**主動函數**：開機一次 + 任務開始一次」，之後不再自動跑；
+>              跑的時候會把整張表**註冊進 config.json**，且 `self` 預設 `[]`
 >           - 離線自測：`test/protocol/router_self_selftest.py` **43 項全過**（PC，不需硬體）
 >           - ⚠️ `test/protocol/router_selftest.py`（舊稱 440 項）與 `router_board_test.py`
 >             **這兩份檔案目前不存在於 repo**，但 §11/§12/§15 等處仍引用它們 —— 見 `todo/03_signal_router.md`
@@ -215,6 +216,10 @@ def _wire(self, name):
 | `uartN` | `circuit_bus_uartN` | `CIRCUIT-UARTN`（**N = `UART.list` 索引，0-based**）|
 | `self` | `CircuitBus(io=None)` 等本機迴路 | `VBUS` |
 
+**路由表的顯示順序**（`_route_order`，使用者定案）：
+`self` → `vbus` → `net` / `now` / `udp` → `uartN` → 其他（字母序）。
+即「**本機 → 網路 → 實體線**」；`self` 與 `vbus` 是最開頭的兩個。
+
 > **`self` 同時是來源也是目的地**（2026-09 統一）：
 > `in: "self"` ＝ 本機發起的幀（vBus 注入）；`out: ["self"]` ＝ 進本地解碼鏈。
 > vBus 的實質就是「把幀餵回自己的解碼鏈」，所以它**不是一條叫 `vbus` 的出口**，
@@ -228,20 +233,22 @@ def _wire(self, name):
 > （見 `tasks/web_ui.py` 的 `/api/cmd`）—— 語意是「我呼叫一個函式」，
 > 不是「我假裝收到一幀」。兩者場合不同。
 
-#### `vbus` 不是可路由的介面（2026-09）
+#### `vbus` 的身份：**在來源表，不在出口表**（2026-09）
 
-`vbus` **只負責發送**，它注入的幀一律以來源名 **`self`** 進 Router。
-所以在路由表裡**不會有** `in: "vbus"` 這種條目（那會是第二個名字指同一件事）：
+`vbus` 的幀一律以來源名 **`self`** 進 Router（`is_local_bus()` 判別，不靠 label），
+所以路由決策查的是 `by_in["self"]`。但它**仍然是表裡的一條來源**：
 
 | 位置 | 行為 |
 |---|---|
-| `Router.routes` 的 `in: "vbus"` | 當成**不存在的通道** → 暫不註冊（留在 `_pending`）|
-| `out: ["vbus"]` | **無視**（不算出口、不警告、不計入丟幀）|
-| vBus 注入的幀 | `name_of()` 回 `SELF` → 查 `by_in["self"]` |
-| autofill | **不會**產生 `in: "vbus"` 條目（不在 `ALWAYS_PRESENT`）|
+| `Router.routes` 的 `in: "vbus"` | ✅ **有效** —— vbus 在 `ALWAYS_PRESENT`，永遠進表 |
+| `out: ["vbus"]` | ❌ **無視**（不是出口、不警告、不計入丟幀）|
+| vBus 注入的幀 | `name_of()` 回 `SELF` → 查 `by_in["self"]`（**不是** `by_in["vbus"]`）|
+| autofill | ✅ 替 `vbus` 補 `["self"]`（跟其他通道一樣）|
 
-> 這也讓「來源」只有一個名字：**本機發起的就是 `self`**，
-> 不論它是 vBus 注入、UI 寫狀態、還是別的本地機制。
+> ⚠️ 這兩個「vbus 不存在」的講法要分清楚（實作時我把第二個過度套用到第一個，改壞過）：
+> 「**vBus 不是出口**」（`out` 無視）≠「**vBus 不是來源**」（它在表裡）。
+>
+> 使用者定案：`self`、`vbus` 是**最開頭的兩個**（本機群），排在網路與實體線之前。
 
 > **為什麼叫 `net` 而不是 `lan`**：這條線是 WS 控制通道，**它可能跑在 LAN 也可能跑在 WiFi 上**。
 > 叫 `lan` 會在 WiFi 部署時說謊。`net` 描述的是「網路控制通道」這個角色，與底層媒體無關。
@@ -320,10 +327,15 @@ def _wire(self, name):
 | 來源 | 預設 `out` | 理由 |
 |---|---|---|
 | `self` | **`[]`**（空） | `self` **不指向自己** —— vBus 注入的幀「已經在本地」，`out` 再寫 `self` 等於多 dispatch 一次 |
-| 其他通道（`now` / `net` / `udp` / `uartN`） | `["self"]` | 這正是未導入 Router 前的行為（這條線自己收、自己執行）→ 打開 `enable:1` 不會讓任何一條線失效 |
+| 其他通道（`vbus` / `now` / `net` / `udp` / `uartN`） | `["self"]` | 這正是未導入 Router 前的行為（這條線自己收、自己執行）→ 打開 `enable:1` 不會讓任何一條線失效 |
 
-`self` 是**唯一不判斷存在與否**的來源（`ALWAYS_PRESENT`）—— 任何裝置都有「自己」。
-`vbus` **不在**路由表裡（見 §3.3：它只負責發送，不是可路由的來源）。
+`self` 與 `vbus` **不判斷存在與否**（`ALWAYS_PRESENT`）—— 兩者語意上必然存在
+（`self` ＝任何裝置都有「自己」；`vbus` ＝按需建立，但開機當下可能還沒上線）。
+所以它們**永遠在表裡**。
+
+> ⚠️ 別把「vBus 在 **`out`** 被無視」跟「vBus 能不能當來源」搞混（實作時踩過）：
+> `out: ["vbus"]` 被無視（它不是出口），但 `vbus` **仍然是表裡的一條來源**，
+> autofill 一樣替它補 `["self"]`。
 
 ```
 實際存在的線路          config.routes                  結果
@@ -336,20 +348,68 @@ now, uart0         ＋  [{in: uart1, out:[self]}]  →   uart1 不存在 → **�
 
 | 規則 | 行為 |
 |---|---|
-| 通道存在、`routes` 裡沒有 | 補預設（見上表）。**只在記憶體**，不寫回 config.json |
-| 通道存在、`routes` 裡有了 | **尊重使用者的**，一個字都不動（`auto: False`） |
+| 通道存在、`routes` 裡**沒有** | **幫你 autofill**：補預設（見上表），並在開機結算時註冊進 config.json |
+| 通道存在、`routes` 裡**有了** | **一個字都不動**（`auto: False`）—— 不塞 `self`、不塞 `[]`、不改順序 |
 | `routes` 寫了、**通道還不存在** | **暫不註冊**，留在 `_pending`；該通道之後上線時，用**使用者寫的內容**註冊進表 |
-| 通道永遠沒上線 | 開機結算時出一條訊息（不進表、不生效、**不動 config.json**）|
-| 什麼時候補 | **開機結算一次**（`SignalRouter.finalize()`，由 `BusDecodeTask` 開機後第一圈呼叫）＋ 使用者主動要求 |
+| 通道永遠沒上線 | 開機結算時出一條訊息（不進表、不生效）|
+| 什麼時候補 | **只有兩個時機**（主動函數，不對事件自動反應）：<br>① **開機** —— `BusDecodeTask._router_setup()`（此時看得到 boot.py 建的 `uartN`）<br>② **任務開始** —— `loop()` 首次呼叫 `finalize_router()`（此時 Task 內部註冊的 `now`/`net`/`udp` 也上線了）<br>之後不再自動跑；要再跑就再呼叫 `finalize_router()` |
 | `enable: 0` 時 | **照樣建立路由表**（方便你先把 config 看清楚再決定要不要開）|
 
-> **要讓一條線「不執行」**：明確寫 `{ "in": "uart0", "out": [] }`（＝`V_DROP`，見 §5）。
-> 直接把那條從 `routes` 刪掉不一定有用 —— 下次開機 autofill 會補 `["self"]` 回來
-> （**但不會寫回你的 config.json**，只是記憶體裡的表如此）。
+### ⚠️ autofill 只補「沒註冊的通道」，絕不修飾你寫的 route
 
-> **為什麼不再寫回 config.json**：使用者刪掉的 route 會被補回來**並寫進檔案**、
-> 通道晚上線會被覆蓋**並寫進檔案** —— 設定檔會自己長出他沒寫過的東西。
-> 要落盤請明確用 `ROUTER_SAVE`（0x1605）。
+使用者原話：「**你是不會主動向裏面填寫 `self`，填寫 `[]` 也不會主動；
+主要是如果我有這條通道但沒有註冊進去，你就幫我 autofill**」。
+
+```
+你寫：  { "in": "now", "out": ["uart0"] }
+
+結果：  'self'  out=[]          auto=True    ← autofill（原本沒這條）
+        'net'   out=['self']    auto=True    ← autofill（原本沒這條）
+        'now'   out=['uart0']   auto=False   ← 你寫的，原封不動
+        'uart0' out=['self']    auto=True    ← autofill（原本沒這條）
+```
+
+**界線就是 `auto` 欄位**：`False` = 你寫的（永不修改）、`True` = autofill 補的。
+
+> 所以 `out` 要放什麼完全是你的政策。`{ "in": "now", "out": ["uart0"] }` 讀作
+> 「now 進來的幀**只轉發**給 uart0，本地不執行」（`V_FORWARD`）——
+> 要「本地也執行 ＋ 轉發」就自己寫 `["self", "uart0"]`；**autofill 不會幫你補 `self`**。
+
+**autofill 沒有開關** —— 預設就是開的。唯一的例外是 **`self → self`**：
+`self` 的預設 `out` 是 `[]`（不指向自己），因為 vBus 注入的幀「已經在本地」，
+`out` 再寫 `self` 等於多 dispatch 一次。要覆蓋就自己寫 `{ "in": "self", "out": ["self"] }`。
+
+**實測（`routes: []` 開機兩次結算）**：
+
+```
+① 開機     ifaces=['uart0']         by_in=['self','uart0']        補 ['self','uart0']
+② 任務開始 ifaces=['now','uart0']   by_in=['now','self','uart0']  補 ['now']
+   → 最終寫進 config：self→[]、now→["self"]、uart0→["self"]
+```
+
+> **要讓一條線「不執行」**：明確寫 `{ "in": "uart0", "out": [] }`（＝`V_DROP`，見 §5）。
+> **直接把那條從 `routes` 刪掉沒用** —— 下次開機結算會補回來並寫進 config.json。
+
+### 4.5 寫回 config.json（「幫用戶自行註冊」）
+
+`finalize()` 跑完後，`BusDecodeTask._persist_router_table()` 會把**整張生效的表**
+（`router.snapshot()`，含使用者寫的）寫回 `config.json` 的 `Router` 區塊。
+
+```
+第一次開機：config.routes 是 []          → 寫回 self + now + uartN… 各一條
+使用者刪掉某條 → 下次開機 → 又被補回來並寫進檔案   ← 這是預期行為（「幫我註冊」）
+要關掉某條通道：寫 out: []（不要刪）
+```
+
+> **`finalize_router()` 是主動函數，不是自動機制**。使用者的規格：
+> 「開機的時候執行一次、任務開始的時候那一次，之後就幾乎沒有主動要求他執行的
+> 時機了，除非我日後用其他方法、其他時機想這樣做」。
+> 所以它**不對任何事件反應**（通道上線不會觸發）；要再跑一次就再呼叫
+> `bus.get_service("task_manager")` → 取 `bus_decode` 任務 → `finalize_router()`。
+>
+> **autofill 本身沒有開關**（使用者：「我應該是不會禁止的，除了 self to self」）。
+>
+> （保留的舊路徑：`ROUTER_SAVE` 0x1605 也會寫檔，那是執行期指令。）
 
 **通道什麼時候被 Router 看到（三段機制）**：
 
@@ -635,7 +695,7 @@ handler：`slave/action/router_actions.py`。
 - `enable` 在**所有出廠 config.json 都是 `0`**：要先用一次 `ROUTER_SAVE` 帶 `enable=1`
   （或直接改 config.json）開啟，之後就能全遠端管理路由。
 - **autofill（§4.4）在 `enable: 0` 時也會建立路由表**（方便先看 config 再決定要不要開），
-  但**不再寫回 config.json** —— 設定檔不會自己長出你沒寫過的東西（2026-09 改）。
+  並在開機結算時**寫回 config.json** —— 設定檔會長出你沒寫過的通道（那是「幫我註冊」的意思）。
   config 裡就會自動長出「這台真實有哪些線路」的清單，你直接在上面改就好。
 
 ---
@@ -646,7 +706,7 @@ handler：`slave/action/router_actions.py`。
 // config.json —— 出廠（空的就好，第一次開機會自動長出真實線路，見 §4.4）
 "Router": { "enable": 0, "routes": [] }
 
-// autofill 之後（**只在記憶體裡的表**，不會寫回你的 config.json）
+// 開機結算（finalize）之後 —— 這張表會**被寫回你的 config.json**
 // 例：這台有 ESP-NOW + 2 條 UART + WS 控制通道
 routes（記憶體）: [
   { "in": "self",  "out": [] },           // ← 預設：self 不指向自己

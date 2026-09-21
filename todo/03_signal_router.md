@@ -25,14 +25,24 @@
       動到 `circuit.py`（label/svc 產生）+ `signal_router.py`（`_LABEL_EXACT` / `_KNOWN_IFACES`）+ 兩份 schedule.py。
 - [x] **`self` 成為一等來源**：本機迴路（`CircuitBus(io=None)`，即 vBus）的幀一律以
       來源名 `self` 進 Router（`is_local_bus()` 判別，**不靠 label 字串**）。
-      `In in: "vbus"` 這個名字**移除** —— vBus 只負責發送，不是可路由的來源。
+      （更正：vbus **仍在來源表**（`ALWAYS_PRESENT`），只是路由決策查 `by_in["self"]`。
+      見下方那條「vbus 不是出口 ≠ vbus 不是來源」。）
 - [x] **`out` 的保留字**：`self`（本地執行開關）、`vbus`（**無視**，不是出口）。
       `out` 含 `in` 的自我反射檢查**對 `self` 例外**（`self → self` 是合法語意，不是迴圈）。
+- [x] **vbus 不是出口 ≠ vbus 不是來源**（實作時把前者過度套用到後者，改壞過）：
+      `out: ["vbus"]` 無視；但 `vbus` 在 `ALWAYS_PRESENT`，autofill 照樣替它補 `["self"]`，
+      它**永遠在表裡**。使用者定案：`self`、`vbus` 是**最開頭的兩個**。
+- [x] **路由表排序**（`_route_order`）：本機（`self` → `vbus`）→ 網路（`net`/`now`/`udp`）
+      → 實體（`uartN`）→ 其他（字母序）。使用者：「先網絡後實體，然後就是 self、vbus，
+      是最開頭的兩個」。
 - [x] **autofill 改版**：
       - `self` 預設 **`[]`**（不指向自己）；其他通道預設 `["self"]`。
       - 只補缺口，**永不覆蓋使用者的**（護欄：`if name in self.by_in: continue`）。
-      - **不再寫回 config.json**（`_persist_autofill()` 只記錄；落盤改用 `ROUTER_SAVE` 0x1605）。
-      - 時機改為**開機一次**（`SignalRouter.finalize()`）＋ 使用者主動要求。
+      - **開機結算時把整張表寫回 config.json**（＝使用者要的「幫用戶自行註冊
+        目標是 self」；`BusDecodeTask._persist_router_table()`）。
+        **只在開機那一次寫**，不在通道上線時寫 —— 時機是規格的一部分。
+      - 時機改為**主動函數**：`BusDecodeTask.finalize_router()`，
+        只在「開機 / 任務開始」被呼叫，之後不自動跑。
 - [x] **通道可見性三段機制**：分層（主要）＋ `SysBus.register_service()` hook ＋
       ~~每 100ms 輪詢~~（**已移除** —— 那是「順序錯了就等下一輪」的症狀解法）。
 - [x] **分層修正**：`bus_decode` 移到 **layer 1**，排在「產生通道」的任務（network / circuit / now）之後
@@ -78,8 +88,9 @@
 - [x] **P7 自動註冊 config**（使用者新要求，每次啟動都跑、**不是開關**）
   - [x] `_autofill()`：檢視實際存在的線路，`routes` 沒有的自動補 `{"in": 線路, "out": ["self"]}`
   - [x] ~~補出來的**寫回 config.json**（`BusDecodeTask._persist_autofill()`，只在有新線路時寫一次）~~
-        → **2026-09 反轉**：不再寫回（設定檔會自己長出使用者沒寫過的東西）。
-        落盤改用 `ROUTER_SAVE`（0x1605）。**看 §近期變更的 autofill 改版那一條為準。**
+        → **2026-09 改**：寫回 **整張表**（`router.snapshot()`），且只在
+        **開機結算那一次**寫（`BusDecodeTask.finalize_router()`）。
+        **看 §近期變更的 autofill 改版那一條為準。**
   - [x] 使用者寫過的不覆蓋；`enable: 0` 時照樣註冊（方便先看 config 再決定要不要開）
   - [x] ~~寫了但**實體不存在**的來源 → 無視、跳過建立~~
         → **2026-09 改**：暫不註冊但**留在 `_pending`**；該通道之後上線時
