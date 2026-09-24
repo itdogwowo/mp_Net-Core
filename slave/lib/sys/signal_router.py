@@ -41,9 +41,11 @@
 #   { "in": "self", "out": ["now"] } —— out 那側才是出口。
 #
 # ⚠️ 要「不受路由政策影響、絕對執行」時，不要繞 Router —— 那會連 CRC 與
-#    ADDR 過濾都跳過。程式內部直呼 handler 請用 app.disp.dispatch()
-#    （見 tasks/web_ui.py 的 /api/cmd），語意是「我呼叫一個函式」，
-#    而不是「我假裝收到一幀」。兩者場合不同，不要混用。
+#    ADDR 過濾都跳過。程式內部直呼 handler 請用 app.disp.exec_cmd(cmd, args, ctx)
+#    （args 已經是 dict，不經編解碼；檢查/log/try 與線上路徑共用），
+#    語意是「我呼叫一個函式」，而不是「我假裝收到一幀」。兩者場合不同，不要混用。
+#    （dispatch(cmd, payload_bytes, ctx) 是**線上路徑**：收 bytes、要解碼。
+#      兩者共用同一段派發核心，差別只在有沒有經過 bytes。）
 #
 # 生命週期契約:
 #   pack() 風格 — 本模組的 _forward() **同步**寫出，不持有 memoryview 跨呼叫。

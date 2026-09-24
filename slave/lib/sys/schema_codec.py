@@ -225,14 +225,22 @@ class SchemaCodec:
             try:
                 if t == "u8":
                     buf.append(int(val or 0) & 0xFF)
+                # ── 定寬整數:超出型別域 → 夾住（不是丟例外）──────────────
+                #   為什麼要夾:struct.pack 超界會 raise,而下面的 except 只印一行
+                #   就繼續 → **該欄位整欄消失,payload 從此錯位**(後面所有欄位前移),
+                #   呼叫端拿到的是「長度不對但看起來正常」的幀。
+                #   例:u16 start_delay_ms=70000 原本產出 3B(應 5B),收端解成
+                #   「延遲 0、亮度 255」,兩邊都不報錯。
+                #   u8 不在此列 —— 它用 & 0xFF(取模)且長度永遠正確,維持現狀。
+                #   合法值完全不受影響(夾的作用只在超界時發生)。
                 elif t == "u16":
-                    buf.extend(struct.pack("<H", int(val or 0)))
+                    buf.extend(struct.pack("<H", max(0, min(0xFFFF, int(val or 0)))))
                 elif t == "u32":
-                    buf.extend(struct.pack("<I", int(val or 0)))
+                    buf.extend(struct.pack("<I", max(0, min(0xFFFFFFFF, int(val or 0)))))
                 elif t == "i16":
-                    buf.extend(struct.pack("<h", int(val or 0)))
+                    buf.extend(struct.pack("<h", max(-0x8000, min(0x7FFF, int(val or 0)))))
                 elif t == "i32":
-                    buf.extend(struct.pack("<i", int(val or 0)))
+                    buf.extend(struct.pack("<i", max(-0x80000000, min(0x7FFFFFFF, int(val or 0)))))
                 elif t == "str_u16len":
                     s = str(val or "").encode("utf-8")
                     buf.extend(struct.pack("<H", len(s)))
