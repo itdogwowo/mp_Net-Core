@@ -574,6 +574,104 @@ class ConfigManager:
             for i, item in enumerate(node):
                 self._update_btree_only(item, prefix=f"{prefix}{i}.")
 
+    # ══════════════════════════════════════════════════════════════════
+    # 半永久 KV（btree 門面）
+    #
+    #   用途：放「不屬於 config、但斷電要留著」的東西 —— 節點表、身份/角色/
+    #         目標、配對關係……這些「一堆列表的半永久資料」。
+    #
+    #   命名空間：`@` 開頭 = 系統保留。
+    #     既有兩個使用者都不會撞：
+    #       config 路徑樣式 → 大寫開頭（"Network.wifi.ssid_pw"）
+    #       network_manager → "wifi_credentials"
+    #     所以 `@node.role` / `@peer.<SID>` 一眼看出不是 config 來的。
+    #
+    #   格式：key → JSON bytes（與既有兩個使用者一致）
+    #
+    #   ★ 為什麼不另開檔案：btree 的價值在**逐 key 更新**（改一個節點不用
+    #     重寫整個檔）＋ 內容損壞有 rollback 保護。`/peers.json` 那種
+    #     「整個檔重寫」的做法在節點變多時會痛；而它唯一的優點（人可讀）
+    #     可以用 kv_keys() + snapshot 印出來補。
+    #
+    #   ⚠️ 寫入後**不會自動落盤** —— 呼叫端自行 kv_flush()，或等 housekeep。
+    # ══════════════════════════════════════════════════════════════════
+
+    _KV_NS = "@"        # 系統保留前綴（不屬於 config 的 key）
+
+    def _kv_key(self, key):
+        """key → 實際 btree key（bytes，自動補命名空間）。"""
+        k = key if isinstance(key, bytes) else str(key).encode()
+        return k if k.startswith(self._KV_NS.encode()) else self._KV_NS.encode() + k
+
+    def kv_set(self, key, obj):
+        """寫一筆半永久資料（obj 會被 JSON 編碼）。回 True/False（不 raise）。"""
+        if self._db is None:
+            return False
+        try:
+            self._db[self._kv_key(key)] = json.dumps(obj).encode()
+            return True
+        except Exception as e:
+            dprint(f"[Config] kv_set({key}) 失敗: {e}")
+            return False
+
+    def kv_get(self, key, default=None):
+        """讀一筆並 JSON 解碼。不存在或壞掉 → 回 default（不 raise）。"""
+        if self._db is None:
+            return default
+        try:
+            raw = self._db.get(self._kv_key(key))
+            if raw is None:
+                return default
+            return json.loads(raw.decode())
+        except Exception as e:
+            dprint(f"[Config] kv_get({key}) 失敗: {e}")
+            return default
+
+    def kv_del(self, key):
+        """刪一筆。回 True=真的刪了，False=本來就沒有或失敗。"""
+        if self._db is None:
+            return False
+        try:
+            k = self._kv_key(key)
+            if self._db.get(k) is None:
+                return False
+            del self._db[k]
+            return True
+        except Exception as e:
+            dprint(f"[Config] kv_del({key}) 失敗: {e}")
+            return False
+
+    def kv_keys(self, prefix=""):
+        """列出命名空間下（可再篩前綴）的所有 key，回傳**不含 '@'** 的字串清單。
+
+        例：kv_keys("peer.") → ['peer.A0B1C2D3E4F5', ...]
+        btree 的 key 是排序的，所以同前綴的鍵是連續的；DB 很小，直接走訪即可。
+        """
+        out = []
+        if self._db is None:
+            return out
+        try:
+            want = self._kv_key(prefix)
+            ks = self._db.keys() if hasattr(self._db, "keys") else list(self._db)
+            ns = self._KV_NS
+            for k in ks:
+                if k.startswith(want):
+                    out.append(k[len(ns):].decode())
+        except Exception as e:
+            dprint(f"[Config] kv_keys({prefix}) 失敗: {e}")
+        return sorted(out)
+
+    def kv_flush(self):
+        """把累積的 KV 變更落盤。回 True/False。"""
+        if self._db is None:
+            return False
+        try:
+            self._db.flush()
+            return True
+        except Exception as e:
+            dprint(f"[Config] kv_flush 失敗: {e}")
+            return False
+
     def close(self):
         if self._db: self._db.close()
         if self._f: self._f.close()
