@@ -240,6 +240,14 @@ class WebUITask(Task):
                     self._send_json(cl, 400, {"status": "error", "error": "Unknown cmd"})
                     return
 
+                # ⚠️ 這裡刻意保留 encode→dispatch 的來回，**不要**改成 exec_cmd：
+                #   1) 本路徑是**不可信輸入**（網頁手填 JSON／任何連上來的 client），
+                #      這一趟 encode 順帶把型別正規化做掉（u8 夾 0-255、u16 夾
+                #      0-65535、缺欄位補 0）—— 這是唯一替外部輸入做校驗的地方。
+                #   2) web_ui 是**人操作的低頻路徑**（點一下才一筆），多一趟編解碼
+                #      的成本無感；「省一趟」的理由只對內部高頻路徑成立。
+                #   改走 exec_cmd 的實測代價：brightness=300 會原樣傳成 300、
+                #      {"mode":3} 不再補 brightness=0（見 lib/sys/dispatch.py 說明）。
                 try:
                     payload_bytes = SchemaCodec.encode(cmd_def, payload_obj)
                 except Exception as e:
