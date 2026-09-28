@@ -177,7 +177,7 @@ class BusDecodeTask(Task):
 
         if self._buses:
             self._drain()
-        # 素描紀錄（peers）：節流把累積的變更寫回 /peers.json
+        # 素描紀錄（peers）：節流把累積的變更寫回 btree @peer.*
         #   （學習本身在 handle_stream 的來源標記與 net_actions 的 0x100E handler）
         reg = bus.get_service("peers")
         if reg is not None:
@@ -185,6 +185,13 @@ class BusDecodeTask(Task):
                 reg.housekeep()
             except Exception:
                 pass
+        # 模式表：節流把記憶體累積的變更整包落盤
+        #   （逐一取細節時只改記憶體，靠這裡補上最後一次寫入 —— 同 peers 的模式）
+        try:
+            from lib.sys.ConfigManager import cfg_manager
+            cfg_manager.flush_modes()
+        except Exception:
+            pass
         # 家事掛尾端（doc §8）: 目前是 no-op 的介面契約，之後的非同步重送／佇列
         # 會掛在這裡，呼叫端不用改。快取 bound method，熱路徑上只是一個函式呼叫。
         hk = self._housekeep

@@ -221,6 +221,13 @@ class PixelTask(Task):
         self._modes = modes
         bus.shared["pixel_maps"] = modes
         get_log().info("[Pixel] modes: {} 個".format(len(modes)))
+        # 模式表同步（遙控器用）：本機是執行端 → 覆蓋模式表並標 source=local。
+        # 失敗不影響播放（模式池本身已在 bus.shared["pixel_maps"]）。
+        try:
+            from lib.sys.ConfigManager import cfg_manager
+            cfg_manager.set_local_modes(modes)
+        except Exception as e:
+            get_log().warn("[Pixel] 模式表同步失敗: {}".format(e))
 
     def _parse_mode(self, d, modes):
         mid = int(d["id"])

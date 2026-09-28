@@ -1,8 +1,21 @@
 import btree
 import json
 import os
+import time
 from lib.sys.dispatch import dprint
 from lib.sys.sys_bus import bus
+
+
+def _cfg_now():
+    """單調毫秒（MicroPython ticks_ms；CPython 離線測試退化為 monotonic）。"""
+    try:
+        return time.ticks_ms()
+    except Exception:
+        try:
+            return int(time.monotonic() * 1000) & 0x3FFFFFFF
+        except Exception:
+            return 0
+
 
 class ConfigManager:
     """
@@ -18,6 +31,11 @@ class ConfigManager:
         self._db = None
         self._f = None
         self._layout = {}  # 用於記錄原始鍵順序
+        # 模式表快取（整存一份清單；btree 只做寫穿 + 節流落盤）
+        self._mode_list = []          # [{"id": int, "name": str}, ...] 有序
+        self._mode_dirty = False      # 記憶體有未落盤的變更
+        self._mode_last_save = 0
+        self._mode_save_min_ms = 2000  # 落盤節流（同 PeerRegistry 的 2 秒）
         self._open_db()
 
     def _open_db(self):
@@ -248,6 +266,11 @@ class ConfigManager:
         """讀取配置，並過濾敏感字眼"""
         if self.path not in os.listdir():
             self.save_from_bus()
+            # ⚠️ 這條提早 return 也要建立身份/節點狀態，否則首次開機
+            #    bus.cid 停在 0xFFFF、bus.shared["node"] 整個不存在。
+            self.ensure_cID()
+            self.load_node()
+            self.load_modes()
             return
 
         try:
@@ -301,6 +324,12 @@ class ConfigManager:
         # T0: 建立 + 推動 cID (ConfigManager 單一擁有; 解碼層直接讀 bus.cid 不重算)
         self.ensure_cID()
 
+        # T0: 載入節點狀態（角色 / 目標）—— 與 cID 同一個「身份」職責
+        self.load_node()
+
+        # T0: 載入模式表（儲存模式 / 遠端清單）—— 遙控器顯示用
+        self.load_modes()
+
 
     def ensure_cID(self):
         """cID 的唯一建立者 + 推動者 (T0 由 load_setup 呼叫)。
@@ -331,6 +360,307 @@ class ConfigManager:
         except ValueError:
             self.bus.cid = 0xFFFF
 
+    # ══════════════════════════════════════════════════════════════════
+    # 節點狀態（遙控器用）—— 身份 / 角色 / 目標
+    #
+    #   身份  cid + mac + hostname：cid 由 ensure_cID 建立、mac 由 boot.py 設
+    #         （load_node 執行時 slave_id 可能還沒設 → mac 是**快照時才讀**）
+    #   角色  role    : "master" | "slave" | None
+    #   目標  master_cid（當前那一個）+ targets（清單，多目標切換用）
+    #
+    #   持久化：@node.role / @node.master_cid / @node.targets（btree，逐 key）
+    #   執行期真相：bus.role / bus.master_cid / bus.targets
+    #   發布：bus.shared["node"]（跨核；UI 直接讀這一份）
+    #
+    #   ⚠️ 目標的 MAC **不在此存** —— 由 peers 表 by_cid() 查（避免兩份真相）
+    # ══════════════════════════════════════════════════════════════════
+
+    _NODE_KEYS = ("node.role", "node.master_cid", "node.targets")
+
+    def node_state(self):
+        """目前節點狀態快照（給 UI 讀 / 給持久化寫）。不 raise。"""
+        try:
+            mac = getattr(self.bus, "slave_id", "") or ""
+        except Exception:
+            mac = ""
+        sys_cfg = self.bus.shared.get("System") or {}
+        try:
+            cid = int(getattr(self.bus, "cid", 0xFFFF)) & 0xFFFF
+        except Exception:
+            cid = 0xFFFF
+        try:
+            mcid = int(getattr(self.bus, "master_cid", 0xFFFF)) & 0xFFFF
+        except Exception:
+            mcid = 0xFFFF
+        return {
+            "cid": cid,
+            "mac": mac,
+            "hostname": sys_cfg.get("hostname", ""),
+            "role": getattr(self.bus, "role", None),
+            "master_cid": mcid,
+            "bound": mcid != 0xFFFF,
+            "targets": list(getattr(self.bus, "targets", None) or []),
+        }
+
+    def publish_node(self):
+        """把節點狀態推上 bus.shared["node"]（UI / 其他 task 讀同一份）。"""
+        try:
+            self.bus.shared["node"] = self.node_state()
+        except Exception:
+            pass
+
+    def load_node(self):
+        """從 btree 載入節點狀態 → 推到 bus。開機呼叫一次（load_setup 尾端）。
+
+        沒有紀錄 = 正常（第一次跑）：維持預設（role=None、master_cid=0xFFFF）。
+        """
+        self.bus.role = self.kv_get("node.role", None) or None
+        mcid = self.kv_get("node.master_cid", None)
+        if mcid is not None:
+            try:
+                self.bus.master_cid = int(mcid) & 0xFFFF
+            except Exception:
+                pass
+        self.bus.targets = list(self.kv_get("node.targets", None) or [])
+        self.publish_node()
+        if self.bus.role or self.bus.targets or self.bus.master_cid != 0xFFFF:
+            dprint("[Config] ✓ node state loaded: role={} master=0x{:04X} targets={}".format(
+                self.bus.role, self.bus.master_cid, len(self.bus.targets)))
+
+    def save_node(self):
+        """把節點狀態寫回 btree 並落盤。回 True/False（不 raise）。
+
+        呼叫時機：**明確的方向確認動作**（收到 0x1016 SET_MASTER，或 UI 按了綁定）。
+        不要掛在熱路徑 —— 每次呼叫都會寫 flash。
+        """
+        ok = False
+        try:
+            ok = self.kv_set("node.role", getattr(self.bus, "role", None))
+            ok = self.kv_set("node.master_cid",
+                             int(getattr(self.bus, "master_cid", 0xFFFF)) & 0xFFFF) and ok
+            ok = self.kv_set("node.targets",
+                             list(getattr(self.bus, "targets", None) or [])) and ok
+        except Exception as e:
+            dprint(f"[Config] ⚠ save_node 失敗: {e}")
+            return False
+        if ok:
+            self.kv_flush()
+        self.publish_node()
+        return ok
+
+    def clear_node(self):
+        """清掉節點狀態（解除綁定）：回預設 + 刪 btree key + 落盤。"""
+        self.bus.role = None
+        self.bus.master_cid = 0xFFFF
+        self.bus.targets = []
+        for k in self._NODE_KEYS:
+            self.kv_del(k)
+        self.kv_flush()
+        self.publish_node()
+        return True
+
+    # ══════════════════════════════════════════════════════════════════
+    # 模式表（遙控器用）—— 儲存模式 / 整存清單
+    #
+    #   儲存模式（source）回答一個問題：**這份模式表是誰給的？**
+    #     "local"  —— 本機 PixelTask 載入 /pixel/modes/*.json 後覆蓋
+    #                  （＝本板是執行端，有自己的模式池）
+    #     "remote" —— 從對方查詢取得（0x3102 清單 + 0x3108 逐一細節）
+    #                  （＝本板是控制端，自己沒有模式池）
+    #     None     —— 還沒有任何來源（開機後、雙方都還沒動作）
+    #
+    #   為什麼需要它：面板沒有 PixelTask → `pixel_maps` 永遠不存在 →
+    #   gmode.mode_pool() 永遠是空的（doc/03_notes/18 §1.1）。面板的清單
+    #   必須「從對方取得並存起來」，而 UI 只要讀同一個地方。
+    #
+    #   流程（定案）：
+    #     ① 開機：PixelTask 有跑 → 覆蓋一次（source=local）
+    #              沒跑        → 沒人覆蓋（source 保持 remote / None）
+    #     ② 指令重新取得：0x3101 → 0x3102（清單）→ set_remote_list()
+    #     ③ 逐一取得細節：0x3107 → 0x3108（name）→ set_remote_detail()
+    #
+    #   ★ 只存兩個 key（**整存，不拆**）：
+    #       @mode.source   "local" / "remote"
+    #       @mode.list     [{"id": 2, "name": "跑馬燈"}, ...]   ← 完整列表
+    #
+    #   為什麼整存而不是「一筆一 key」：
+    #     - **寫入次數**：逐一取細節時只改記憶體，落盤時整包寫一次（1 次），
+    #       拆成一筆一 key 會變成 N+1 次 flash 寫入 —— 整存反而快。
+    #     - **原子性**：不會出現「清單更新了、細節只到一半」的半成品。
+    #     - **可讀**：一份 JSON 看完，不必拼 key。
+    #     清單規模小（數十筆），整包的絕對成本可忽略。
+    #
+    #   ★ 只有 remote 需要持久化：local 的明細來自 /pixel/modes/*.json，
+    #     每次開機必被 PixelTask 重載覆蓋 → 存了也是白存（還會與檔案不同步）。
+    #     所以 set_local_modes() 只標 source，並**刪掉** @mode.list。
+    #
+    #   落盤時機：節流（_mode_save_min_ms，沿用 PeerRegistry 的做法）——
+    #     逐一取細節期間最多每 2 秒寫一次；最後一筆由 flush_modes() 補寫
+    #     （掛在 BusDecodeTask.housekeep，與 peers 同一個模式）。
+    #   執行期發布：bus.shared["mode_table"]（UI 讀這一份）
+    # ══════════════════════════════════════════════════════════════════
+
+    def mode_source(self):
+        """儲存模式：'local' / 'remote' / None。"""
+        return self.kv_get("mode.source", None)
+
+    def mode_list(self):
+        """完整模式列表（副本）：[{"id":.., "name":..}, ...]（有序）。"""
+        return [dict(e) for e in self._mode_list]
+
+    def mode_ids(self):
+        """模式 id 清單（有序）。"""
+        return [e["id"] for e in self._mode_list]
+
+    def mode_detail(self, mid):
+        """單一模式的細節（沒有回 {}）。"""
+        mid = int(mid)
+        for e in self._mode_list:
+            if e["id"] == mid:
+                return dict(e)
+        return {}
+
+    def mode_table(self):
+        """給 UI 的合併表：source + 每一筆 {id, hex, name}。"""
+        out = [{"id": e["id"], "hex": "0x{:04X}".format(e["id"]),
+                "name": e.get("name", "")} for e in self._mode_list]
+        return {"source": self.kv_get("mode.source", None),
+                "count": len(out), "entries": out}
+
+    def publish_modes(self):
+        """把模式表推上 bus.shared["mode_table"]（UI / 其他 task 讀同一份）。"""
+        try:
+            self.bus.shared["mode_table"] = self.mode_table()
+        except Exception:
+            pass
+
+    def set_mode_source(self, src, flush=True):
+        """設定儲存模式。回 True/False。"""
+        self._mode_dirty = True
+        ok = self.kv_set("mode.source", src)
+        if ok and flush:
+            self.flush_modes(force=True)
+        self.publish_modes()
+        return ok
+
+    def flush_modes(self, force=False):
+        """把整份模式列表落盤（節流；只寫有變更的）。
+
+        `force=True` 繞過節流。`_mode_dirty` 為 False 時直接跳過
+        （沒東西可寫就不寫 —— 與 PeerRegistry.save 同一語意）。
+        """
+        if not self._mode_dirty:
+            return False
+        now = _cfg_now()
+        if not force and self._mode_last_save and \
+                (now - self._mode_last_save) < self._mode_save_min_ms:
+            return False
+        kv = self.kv_set("mode.list", self._mode_list)
+        if kv:
+            self._mode_dirty = False
+            self._mode_last_save = now
+            self.kv_flush()
+        self.publish_modes()
+        return bool(kv)
+
+    # ── 寫入來源①：本機 PixelTask（開機覆蓋一次）──────────────
+    def set_local_modes(self, modes):
+        """本機 PixelTask 載入模式後呼叫：source=local，覆蓋記憶體清單。
+
+        `modes` = {id: mode_dict}（PixelTask._init_modes 的產物）。
+        ★ 不把清單寫進 btree —— 事實來源是 /pixel/modes/*.json，每次開機都會
+          重載；寫進去只會多一份會不同步的副本。
+        ★ 會刪掉舊的 @mode.list（來源切換 → 舊清單失效）。
+        """
+        try:
+            ids = sorted(int(k) for k in (modes or {}).keys())
+        except Exception:
+            ids = []
+        lst = []
+        for mid in ids:
+            m = (modes or {}).get(mid) or (modes or {}).get(str(mid)) or {}
+            lst.append({"id": mid, "name": m.get("name", "")})
+        self._mode_list = lst
+        self._mode_dirty = False          # local 不持久化清單
+        self.kv_del("mode.list")          # 舊的 remote 清單失效
+        self.kv_set("mode.source", "local")
+        self.kv_flush()
+        self.publish_modes()
+        dprint("[Config] ✓ modes(local): {} 個".format(len(lst)))
+
+    # ── 寫入來源②：遠端查詢（0x3102 清單）──────────────────
+    def set_remote_list(self, ids):
+        """收到 0x3102 模式清單後呼叫：**整份替換**，source=remote，立即落盤。
+
+        細節（name）先留空，等 set_remote_detail() 逐一補上（只改記憶體）。
+        """
+        try:
+            new_ids = sorted(int(i) for i in (ids or []))
+        except Exception:
+            new_ids = []
+        self._mode_list = [{"id": i, "name": ""} for i in new_ids]
+        self._mode_dirty = True
+        self.kv_set("mode.source", "remote")
+        self.flush_modes(force=True)      # 清單是整份替換 → 直接落地
+        self.publish_modes()
+        dprint("[Config] ✓ modes(remote): {} 個".format(len(new_ids)))
+        return True
+
+    # ── 寫入來源②：遠端查詢（0x3108 逐一細節）──────────────
+    def set_remote_detail(self, mid, name):
+        """收到 0x3108 單一模式細節後呼叫：**只改記憶體**，落盤交給節流。
+
+        逐一取得 N 筆細節時，這裡不會產生 N 次 flash 寫入 ——
+        最後由 flush_modes()（housekeep）整包寫一次。
+        """
+        mid = int(mid)
+        found = False
+        for e in self._mode_list:
+            if e["id"] == mid:
+                e["name"] = name or ""
+                found = True
+                break
+        if not found:
+            # 不在清單裡也記下來（避免細節遺失），依 id 排序插入
+            self._mode_list.append({"id": mid, "name": name or ""})
+            self._mode_list.sort(key=lambda x: x["id"])
+        self._mode_dirty = True
+        self.flush_modes()                # 節流：2 秒內只寫一次
+        self.publish_modes()
+        return True
+
+    # ── 載入 / 清空 ───────────────────────────────────────
+    def load_modes(self):
+        """開機從 btree 載入模式表（load_setup 尾端呼叫）。
+
+        只有 remote 的清單在 btree；local 的那份會在 PixelTask 啟動時覆蓋。
+        所以開機後 UI 可能先看到「上次的 remote 清單」，等 PixelTask 起來才換掉。
+        """
+        raw = self.kv_get("mode.list", None) or []
+        lst = []
+        if isinstance(raw, list):
+            for e in raw:
+                if isinstance(e, dict) and "id" in e:
+                    try:
+                        lst.append({"id": int(e["id"]), "name": e.get("name", "")})
+                    except Exception:
+                        continue
+        self._mode_list = lst
+        self._mode_dirty = False
+        self.publish_modes()
+        src = self.kv_get("mode.source", None)
+        if src:
+            dprint("[Config] ✓ modes loaded: source={} count={}".format(src, len(lst)))
+
+    def clear_modes(self):
+        """清空模式表（含 btree）：連 source 一起清，回到「還沒有來源」。"""
+        self._mode_list = []
+        self._mode_dirty = False
+        self.kv_del("mode.list")
+        self.kv_del("mode.source")
+        self.kv_flush()
+        self.publish_modes()
+        return True
 
     def _update_value_preserve_format(self, key_path, new_value):
         """

@@ -49,6 +49,13 @@ class App:
         except Exception as e:
             print("[App] peer registry init failed:", e)
 
+        # 6. 指令接口（Dispatcher）：註冊成 bus 服務，讓 UI / 任何 task 取得
+        #    exec_cmd（本地執行）/ make_cmd（產生幀）。見 doc/03_notes/19_remote_control_plan.md §3。
+        bus.register_service("disp", self.disp)
+        # 7. App 本身也上 bus：呼叫端要組 handler 的 ctx（{"app":..., "send":...}）時
+        #    需要它 —— 例如 UI 用 exec_cmd 執行指令（ctx["app"] 不可為 None）。
+        bus.register_service("app", self)
+
     def create_parser(self):
         # 協議負載上限統一由 lib.proto.MAX_PAYLOAD 決定 (純 payload, 不含 header/CRC)。
         # StreamParser 內部會自動加 9B header + 4B CRC 建立緩衝, 這裡不需再乘 2。

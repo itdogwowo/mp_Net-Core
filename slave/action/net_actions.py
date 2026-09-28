@@ -174,9 +174,28 @@ def on_get_ip(ctx, args):
 
 
 def on_set_master(ctx, args):
-    """0x1016: 顯式設定回應定址 master_cid。"""
+    """0x1016: 顯式設定回應定址 master_cid（＝**方向確認**）。
+
+    payload 是**對方的 cid**，語意是「你的 master 是我」。
+    所以本板收到它 → 記住對方位址，且**本板是被控方**（role = "slave"）。
+    反之，本板主動發它 → 是告訴對方「你的 master 是我」。
+
+    ★ 這裡是**唯一會持久化方向的地方**：
+      - 本指令是明確動作（人按了綁定，或對方明確告知）→ 值得寫 flash
+      - `0x100D IDENTIFY_REQ` 的 `reply_addr` 是隱含版本（每次敲門都來）
+        → 只寫記憶體，不落盤（見 on_identify_req）
+    持久化失敗不影響本次設定（記憶體已生效），只印訊息。
+    """
     mc = args.get("master_cid", 0xFFFF) & 0xFFFF
     bus.master_cid = mc
+    # 有人明確告知方向 → 本板是被控方；MAC 之後由 peers 表 by_cid() 查
+    if mc != ADDR_BROADCAST and not getattr(bus, "role", None):
+        bus.role = "slave"
+    try:
+        from lib.sys.ConfigManager import cfg_manager
+        cfg_manager.save_node()
+    except Exception as e:
+        print("[Net] SET_MASTER 持久化失敗（記憶體仍生效）: {}".format(e))
 
 
 def on_webui_ctrl(ctx, args):

@@ -31,7 +31,10 @@
 #        主動  learn_from_identify_rsp()  ← 0x100E 回覆（淨）
 #        被動  learn_from_frame()         ← 任何幀（含對方主動送來的）
 #   3. 不持有任何硬體、不 import espnow/network —— CPython 可離線測。
-#   4. 持久化：/peers.json。寫入節流（見 _save_min_ms），不留檔也不影響運作。
+#   4. 持久化：**btree `@peer.<slave_id>`（一節點一 key）**，走 ConfigManager 的
+#      KV 門面。逐 key 更新 —— 學到一個新節點只寫那一筆，不重寫整包。
+#      寫入節流（見 _save_min_ms）；取不到 KV 門面時退化為「不持久化」，運作照常。
+#      舊的 /peers.json 會在第一次載入時**一次性遷移**進 btree（舊檔改名 .old）。
 #   5. 樂觀原則：**登記不代表在線**。`age_ms()` 給呼叫端自己判斷新鮮度，
 #      本模組不自行判定離線（沒有心跳就沒有離線的依據）。
 #
@@ -44,7 +47,8 @@ import time
 from lib.sys.sys_bus import bus
 from lib.sys.log_service import get_log
 
-PATH = "/peers.json"
+PATH = "/peers.json"      # ★ 舊格式，僅用於一次性遷移（新資料在 btree）
+KV_PREFIX = "peer."       # btree 命名空間前綴（實際 key = @peer.<slave_id>）
 
 # 「本次開機尚未見過」的哨兵。0 是安全的哨兵值：
 #   MicroPython ticks_ms 開機瞬間剛好為 0 的機率是 1/2^30，且後果只是
@@ -88,41 +92,102 @@ class PeerRegistry:
         self.path = path
         self._peers = {}
         self._loaded = False
+        # 髒追蹤：分「有變更」與「被刪除」兩組 —— 逐 key 寫入用（btree 的價值）
         self._dirty = False
+        self._dirty_sids = set()
+        self._removed_sids = set()
         self._last_save = 0
         self._save_min_ms = 2000      # 寫入節流：2 秒內多次更新只寫一次
-        self.stats = {"learned": 0, "updated": 0, "loaded": 0, "save_fail": 0}
+        self.stats = {"learned": 0, "updated": 0, "loaded": 0,
+                      "save_fail": 0, "saved": 0, "migrated": 0}
 
-    # ── 持久化 ────────────────────────────────────────────────
+    def _kv(self):
+        """取 btree KV 門面（ConfigManager）。取不到回 None。
+
+        刻意**延遲 import**：peer_registry 宣告「CPython 可離線測」，
+        而 ConfigManager 在 module 層就會開 btree 檔（import 有副作用）。
+        取不到時本模組退化為「不持久化」，學習與查詢照常運作。
+        """
+        try:
+            from lib.sys.ConfigManager import cfg_manager
+            return cfg_manager
+        except Exception:
+            return None
+
+    # ── 持久化（btree，一節點一 key）────────────────────────────
     def load(self):
-        """從 /peers.json 載入。檔案不存在 = 正常（第一次跑），回 0。"""
+        """從 btree `@peer.*` 載入。沒有紀錄 = 正常（第一次跑），回 0。
+
+        若 btree 裡完全沒有 peer 而舊的 /peers.json 還在 → 做一次性遷移。
+        """
         if self._loaded:
             return len(self._peers)
         self._loaded = True
         n = 0
-        try:
-            with open(self.path) as f:
-                raw = json.load(f)
-            peers = raw.get("peers", raw) if isinstance(raw, dict) else {}
-            for sid, rec in (peers or {}).items():
+        kv = self._kv()
+        if kv is not None:
+            for k in kv.kv_keys(KV_PREFIX):
+                rec = kv.kv_get(k, None)
                 if not isinstance(rec, dict):
                     continue
-                # last_seen 是「上次開機」的 ticks_ms，跨開機無意義 → 標成本次未見過
-                rec["last_seen"] = _NEVER
-                rec["hits"] = int(rec.get("hits", 0) or 0)
-                rec["ifaces"] = list(rec.get("ifaces", []) or [])
-                self._peers[str(sid).upper()] = rec
-                n += 1
+                n += self._adopt(k[len(KV_PREFIX):], rec)
             self.stats["loaded"] = n
-        except OSError:
-            pass
-        except Exception as e:
-            get_log().warn("[Peers] 載入失敗（忽略）: {}".format(e))
+            if n == 0:
+                n = self._migrate_legacy(kv)
+        else:
+            get_log().warn("[Peers] 無 KV 門面 → 本次不載入（運作照常，只是不持久化）")
+        self._dirty = False
+        self._dirty_sids.clear()
+        self._removed_sids.clear()
         self._publish()
         return n
 
+    def _adopt(self, sid, rec):
+        """把一筆（來自 btree 或舊檔）收進記憶體。回 1/0。
+
+        last_seen 是「上次開機」的 ticks_ms，跨開機無意義 → 標成本次未見過。
+        """
+        sid = str(sid).upper()
+        if not sid or not isinstance(rec, dict):
+            return 0
+        rec["last_seen"] = _NEVER
+        rec["hits"] = int(rec.get("hits", 0) or 0)
+        rec["ifaces"] = list(rec.get("ifaces", []) or [])
+        self._peers[sid] = rec
+        return 1
+
+    def _migrate_legacy(self, kv):
+        """一次性遷移舊 /peers.json → btree。搬完把舊檔改名 .old（可回復）。
+
+        只在「btree 裡一個 peer 都沒有」時嘗試 —— 避免覆蓋已經生效的新資料。
+        """
+        try:
+            with open(self.path) as f:
+                raw = json.load(f)
+        except OSError:
+            return 0                      # 沒有舊檔 = 正常
+        except Exception as e:
+            get_log().warn("[Peers] 舊檔解析失敗，放棄遷移: {}".format(e))
+            return 0
+        peers = raw.get("peers", raw) if isinstance(raw, dict) else {}
+        n = 0
+        for sid, rec in (peers or {}).items():
+            if self._adopt(sid, rec):
+                kv.kv_set(KV_PREFIX + str(sid).upper(), self._peers[str(sid).upper()])
+                n += 1
+        if n:
+            kv.kv_flush()
+            try:
+                os.rename(self.path, self.path + ".old")
+            except Exception:
+                pass
+            self.stats["loaded"] = n
+            self.stats["migrated"] = n
+            get_log().info("[Peers] 舊 /peers.json 遷移 {} 筆 → btree（舊檔改名 .old）".format(n))
+        return n
+
     def save(self, force=False):
-        """寫回 /peers.json。
+        """把**有變更的那幾筆**逐 key 寫回 btree（一節點一 key）。
 
         `force=True` 繞過的是**節流**（我要現在就落盤），**不是** dirty 檢查
         （沒東西可寫就不寫）。兩者語意不同，實作時容易寫反。
@@ -132,28 +197,27 @@ class PeerRegistry:
         now = _now()
         if not force and self._last_save and _diff(now, self._last_save) < self._save_min_ms:
             return False
-        tmp = self.path + ".tmp"
-        try:
-            with open(tmp, "w") as f:
-                json.dump({"version": 1, "peers": self._peers}, f)
-        except Exception as e:
+        kv = self._kv()
+        if kv is None:
             self.stats["save_fail"] += 1
-            get_log().warn("[Peers] 寫入 tmp 失敗: {}".format(e))
             return False
-        # 原子替換：MicroPython / CPython 的 os.rename 都會覆蓋既有檔
-        try:
-            os.rename(tmp, self.path)
-        except Exception:
-            try:
-                os.remove(self.path)
-                os.rename(tmp, self.path)
-            except Exception as e:
-                self.stats["save_fail"] += 1
-                get_log().warn("[Peers] 替換檔案失敗: {}".format(e))
-                return False
+        ok = True
+        for sid in list(self._dirty_sids):
+            rec = self._peers.get(sid)
+            if rec is not None:
+                ok = kv.kv_set(KV_PREFIX + sid, rec) and ok
+        for sid in list(self._removed_sids):
+            kv.kv_del(KV_PREFIX + sid)
+        if ok:
+            kv.kv_flush()
+            self.stats["saved"] = self.stats.get("saved", 0) + 1
+        else:
+            self.stats["save_fail"] += 1
         self._dirty = False
+        self._dirty_sids.clear()
+        self._removed_sids.clear()
         self._last_save = now
-        return True
+        return ok
 
     # ── 學習 ─────────────────────────────────────────────────
     def _record(self, slave_id, via, cid=None, mac=None, ip=None,
@@ -200,6 +264,8 @@ class PeerRegistry:
             rec["ifaces"].append(iface)
 
         self._dirty = True
+        self._dirty_sids.add(sid)      # 逐 key 寫入：只寫這一筆
+        self._removed_sids.discard(sid)
         self._publish()
         get_log().info("[Peers] {} {} cid={} mac={} via={} iface={}".format(
             "＋" if result == "new" else "↻", sid,
@@ -291,14 +357,18 @@ class PeerRegistry:
         if sid and sid in self._peers:
             del self._peers[sid]
             self._dirty = True
+            self._dirty_sids.discard(sid)
+            self._removed_sids.add(sid)     # 下一次 save 會把 btree 那一筆刪掉
             self._publish()
             return True
         return False
 
     def clear(self):
         n = len(self._peers)
+        self._removed_sids |= set(self._peers.keys())
         self._peers = {}
         self._dirty = True
+        self._dirty_sids.clear()
         self._publish()
         return n
 
@@ -308,7 +378,7 @@ class PeerRegistry:
         bus.shared["peers"] = self._peers
 
     def housekeep(self):
-        """掛在 BusDecodeTask 的尾端（每輪呼叫）：把累積的變更寫回檔案。
+        """掛在 BusDecodeTask 的尾端（每輪呼叫）：把累積的變更寫回 btree。
         節流在 save() 內，這裡呼叫成本 = 一次時間比較。"""
         if self._dirty:
             self.save()

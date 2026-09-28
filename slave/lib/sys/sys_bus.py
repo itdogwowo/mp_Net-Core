@@ -21,6 +21,13 @@ class SysBus:
         self.slave_id = "UNKNOWN"
         self.cid = 0xFFFF        # 協議定址短身份 (uint16); 由 ConfigManager 於 T0 推動
         self.master_cid = 0xFFFF # 回應定址目標 (uint16); 0xFFFF=廣播(未設定), 由 SET_MASTER/IDENTIFY 設定, 僅內存
+        # ── 節點狀態（遙控器用）──────────────────────────────────────
+        #   role    : "master"(我有目標) | "slave"(被指定) | None(未定)
+        #   targets : 目標清單（多目標切換用）；master_cid 是「當前」那一個
+        #   持久化由 ConfigManager（@node.* 走 btree）；執行期真相在這裡。
+        #   ⚠️ 目標的 MAC 不在此重複存 —— 由 peers 表 by_cid() 查（單一事實）。
+        self.role = None
+        self.targets = []
         self._gpio_claims = {}
 
     # 會影響 Router 介面表的服務名（= 真的是一條「通道」的那些）。

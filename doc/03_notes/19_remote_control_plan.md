@@ -2,7 +2,7 @@
 
 > **用途**：把「強化遙控器」這件事的**共識、現況盤點、分階段做法、踩過的地雷**集中一處。
 > **本檔自足**：不依賴任何對話上下文，單獨看就能接手。
-> **狀態**：PLANNED（P0 / P1 已完成並驗證）
+> **狀態**：PLANNED（**P0 ~ P5 已完成**；P6 射頻配對收尾 / P7 發送任務待做）
 > **最後更新**：2026-09-26
 > **相關文件**：
 > - `doc/03_notes/18_pixel_panel_control_path.md` — 面板 pixel 控制路徑（定向查詢的來源）
@@ -244,6 +244,75 @@ cfg_manager.kv_keys(prefix)         # 列 key（btree 有序，前綴掃描；�
 cfg_manager.kv_flush()              # 落盤（★ 寫入後不會自動落盤）
 ```
 
+### 節點狀態的 API（**P2 已完成**，`lib/sys/ConfigManager.py`）
+
+```python
+cfg_manager.node_state()    # 目前狀態快照 → dict（給 UI / 持久化寫）
+cfg_manager.publish_node()  # 推上 bus.shared["node"]
+cfg_manager.load_node()     # btree → bus（開機一次，load_setup 尾端呼叫）
+cfg_manager.save_node()     # bus → btree + flush（★ 只在明確動作時呼叫）
+cfg_manager.clear_node()    # 解除綁定：回預設 + 刪 key
+```
+
+`bus.shared["node"]` 的形狀：
+
+```python
+{"cid": 1, "mac": "A0B1C2D3E4F5", "hostname": "s3-cpanel",
+ "role": "master", "master_cid": 2, "bound": True,
+ "targets": [{"cid": 2, "name": "執行A"}, ...]}
+```
+
+**執行期真相**在 `bus` 上（`sys_bus.py` 新增）：`bus.role` / `bus.master_cid`（原有）/ `bus.targets`
+**持久化**：`@node.role` / `@node.master_cid` / `@node.targets`（逐 key）
+
+**誰會寫它**：
+- `on_set_master`（`0x1016`，**方向確認**）→ 設定 + `save_node()` —— **唯一會持久化方向的地方**
+- `on_identify_req` 的 `reply_addr`（隱含版本，每次敲門都來）→ **只寫記憶體，不落盤**
+- UI 綁定/解除 → `exec_cmd(0x1016, ...)` / `cfg_manager.clear_node()`
+
+⚠️ **目標的 MAC 不存** —— 由 peers 表 `by_cid(master_cid)` 查（避免兩份真相）。
+
+### 模式表的 API（**已完成**，`lib/sys/ConfigManager.py`）
+
+**儲存模式（source）回答一個問題：這份模式表是誰給的？**
+
+| 值 | 意思 | 明細存哪 |
+|---|---|---|
+| `"local"` | 本機 `PixelTask` 載入 `/pixel/modes/*.json` 後覆蓋（**本板是執行端**） | **不存 btree** —— 事實來源是那些 json 檔，每次開機必重載 |
+| `"remote"` | 從對方查詢取得（`0x3102` 清單 + `0x3108` 逐一細節）（**本板是控制端**） | ✅ 存 btree（沒有別的事實來源） |
+| `None` | 還沒有任何來源 | — |
+
+```python
+cfg_manager.mode_source()                 # → "local" / "remote" / None
+cfg_manager.mode_ids()                    # → [id, ...]
+cfg_manager.mode_detail(mid)              # → {"name": ...}
+cfg_manager.mode_table()                  # → {"source":…, "count":N, "entries":[{id,hex,name},…]}
+cfg_manager.publish_modes()               # 推上 bus.shared["mode_table"]
+cfg_manager.load_modes()                  # 開機（load_setup 尾端呼叫）
+cfg_manager.set_local_modes(modes)        # 來源①：PixelTask 載入後 → source=local（並清掉 remote 資料）
+cfg_manager.set_remote_list(ids)          # 來源②：收到 0x3102 → source=remote + 寫 @mode.list
+cfg_manager.set_remote_detail(mid, name)  # 來源②：收到 0x3108 → **只寫那一筆**
+cfg_manager.clear_modes()
+```
+
+**流程（定案）**：
+
+```
+① 開機：PixelTask 有跑 → 覆蓋一次（source=local）
+        沒跑        → 沒人覆蓋（source 保持 remote / None）
+② 指令重新取得：0x3101 → 0x3102（清單）→ set_remote_list()
+③ 逐一取得細節：0x3107 → 0x3108（name）→ set_remote_detail()  ← 逐 key 寫入
+```
+
+**接線（已完成）**：
+- `tasks/pixel_task.py::_init_modes()` 尾端 → `cfg_manager.set_local_modes(modes)`
+- `action/pixel_actions.py` 新增接收端 handler：`0x3102`（清單）、`0x3108`（細節）
+  ⚠️ 兩者都有 **`_is_local_provider()` 防護**：本板若已有 `pixel_maps`（＝執行端），
+  **忽略遠端清單** —— 否則執行端的 UI 會被遠端寫入蓋成錯的清單。
+
+**尚未做的（屬於 P5）**：**發起端** —— 誰去送 `0x3101` / `0x3107`。
+需要先定「發射走哪條路」（廣播 or 定向、哪條管子），見 §2.6 / §11 未決 #2。
+
 ### 命名空間：`@` = 系統保留
 
 ```
@@ -257,39 +326,114 @@ cfg_manager.kv_flush()              # 落盤（★ 寫入後不會自動落盤�
 
 | Key | 內容 | 現況 |
 |---|---|---|
-| `@node.role` | `master` / `slave` / `peer` | ❌ 缺 |
-| `@node.master_cid` / `@node.master_mac` | 目前的目標 | ❌ 缺（只在記憶體） |
-| `@node.targets` | **目標清單**（多目標切換用） | ❌ 缺 |
-| `@peer.<slave_id>` | 一節點一筆（含配對欄位 `paired` / `role` / `paired_at`） | ⚠️ 現在在 `/peers.json` |
+| `@node.role` | `master` / `slave` / `peer` | ✅ **P2 完成** |
+| `@node.master_cid` | 目前的目標 | ✅ **P2 完成**（原本只在記憶體） |
+| `@node.targets` | **目標清單**（多目標切換用） | ✅ **P2 完成**（結構待 P5 定案） |
+| `@peer.<slave_id>` | 一節點一筆（含配對欄位 `paired` / `role` / `paired_at`） | ✅ **P4 完成**（一節點一 key，逐筆寫入） |
 | `System.cID` | 自己的 NC4 位址 | ✅ 已在 config |
 | `Network.wifi.*` | 憑證 | ✅ 已在 secrets.db |
 
-### `peers.json` 搬家：**佈局選擇**
+### `peers.json` 搬家：**已完成（P4）**
 
-| 佈局 | key | 取捨 |
-|---|---|---|
-| 一個 blob | `@peers` → 整個 dict | 最簡單，但改一筆要重寫整包（**沒用到 btree 的價值**） |
-| **一節點一 key**（建議） | `@peer.<slave_id>` → 一筆 | ✅ 逐 key 更新；`kv_keys("peer.")` 直接列出清單 |
+佈局採 **一節點一 key**：`@peer.<slave_id>` → 一筆（`kv_keys("peer.")` 直接列出清單）。
 
-**搬家的範圍很小**：`PeerRegistry` 只有 `load()`（第 97-122 行）與 `save()`（第 124-156 行）
-兩處要改成走 KV 門面，其餘 200 行（學習、查詢、`_publish`）不動。
+| 動作 | 行為 |
+|---|---|
+| `load()` | 讀 btree `@peer.*`；若一筆都沒有而舊 `/peers.json` 還在 → **一次性遷移**（搬完舊檔改名 `.old`，可回復） |
+| `save(force)` | **只寫有變更的那幾筆**（`_dirty_sids`）＋ 刪除被移除的（`_removed_sids`）→ `kv_flush()` |
+| `forget(sid)` | 記憶體移除 + 標記待刪 → 下次 save 刪掉 btree 那一筆 |
+| `clear()` | 全部標記待刪 |
+| 取不到 KV 門面時 | **退化為「不持久化」**，學習與查詢照常（`_kv()` 回 None） |
+
+**為什麼延遲 import**：`peer_registry` 宣告「CPython 可離線測」，而 `ConfigManager`
+在 module 層就會開 btree 檔（import 有副作用）→ 所以 `_kv()` 才做 lazy import。
+
+**舊寫法（tmp + `os.rename` 原子替換）已移除** —— btree 本身就有 rollback 保護。
 
 > ⚠️ **不要移除 `PeerRegistry`** —— 它是「定向」的資料層（`cid` 給協議層、`mac` 給射頻層）。
-> 沒有它，定向查詢／定向發射都做不到。它現在沒人讀，是因為**定向那一半還沒建**。
+> 沒有它，定向查詢／定向發射都做不到。它現在沒人讀，是因為**定向那一半還沒建**（P5）。
 
 ---
 
-## 7. 分階段計劃
+## 7. 遙控器頁（P5，**已完成**：`ui/lvgl/page/remote.py`）
+
+```
+┌───────────────────────────────────────────────────┐
+│ 遙控器                                            │
+├──────────────────────┬────────────────────────────┤
+│ 節點 (2)             │ 身份                        │
+│ ┌──────────────────┐ │ cID 0x0001  ch6             │
+│ │  ----- 445566    │ │ MAC A0B1C2D3E4F5            │
+│ │* 0x0002 D3E4F5   │ │ 目標 0x0002 (2/2)           │
+│ └──────────────────┘ ├────────────────────────────┤
+│  (lv.list 可捲動)     │ 模式 remote (3)             │
+│                      │  0x0002 跑馬燈              │
+│                      │  0x0003 呼吸燈              │
+├──────────────────────┴────────────────────────────┤
+│ [掃描][綁定][解除][取清單][取細節]                  │
+│ Wi-Fi [ ]   ESP-NOW [ ]                            │
+└───────────────────────────────────────────────────┘
+  `*` = 最近見過（age<10s）；`-----` = 還沒有 cid（等 identify_rsp）
+```
+
+**「選中 = 操作對象」** —— 綁定／解除／查詢都作用在清單上選中的那個節點。
+
+| 動作 | 實作 |
+|---|---|
+| 掃描 | `make_cmd(0x100D, {"reply_addr": 我的cid})` → **廣播**（回覆自動被 PeerRegistry 登記） |
+| **綁定** | ① `add_peer(mac)`（配對＝建立通道）② **發射** `SET_MASTER(我的cid)` ③ 本地 `@node.targets` 加入 + active |
+| 解除 | 從 `targets` 移除選中的；選中的不是目標 → 退路解除 active；清空後 `role=None` |
+| 取清單 | `make_cmd(0x3101, {"mode_type":0})` → **定向**（unicast 給選中節點） |
+| 取細節 | 對模式表每個 id 送 `0x3107` → 定向 |
+| Wi-Fi / ESP-NOW | `exec_cmd(0x1008)` / `exec_cmd(0x1301)`；**開關狀態由 config／服務單向同步**（UI 只是顯示器） |
+
+### ★★ 實作時發現的語意修正：`SET_MASTER` 的方向
+
+`0x1016 SET_MASTER` 有**兩種用法**，方向相反：
+
+| 誰做 | payload | 效果 |
+|---|---|---|
+| **我發** | **我的 cid** | 告訴對方「你的 master 是我」→ 對方 `master_cid = 我` |
+| **我收** | 對方 cid | 我把對方當上級 → 我 `master_cid = 對方`、`role = "slave"` |
+
+**面板是遙控器 → 綁定時走「我發」的那一邊。**（原本誤用「我收」的語意，被離線冒煙測試抓出。）
+
+### ★ `master_cid` 與 `targets` 是兩件不同的事
+
+| 變數 | 語意 | 面板的情況 |
+|---|---|---|
+| `bus.master_cid` | **我的上級**（回覆定址） | 通常 `0xFFFF`（沒有上級） |
+| `bus.targets` | **我控制誰**（清單，恰一個 `active`） | 綁定動作寫這裡 |
+
+→ 綁定目標**不會**動 `master_cid`（已實測確認）。
+
+### 已驗證（離線冒煙測試，LVGL 自動 stub）
+
+| 測項 | 結果 |
+|---|---|
+| `build()` 建立整個畫面 | ✅ nav 註冊 8 項 |
+| `update()`／`on_enc`／`on_confirm`／`on_exit` | ✅ 無例外 |
+| 掃描 | ✅ 廣播、`addr=0xFFFF` |
+| 綁定（完整鏈 UI→exec_cmd→handler→btree） | ✅ `master_cid`／`role`／`targets` 都對、**斷電重開仍在** |
+| 多目標 + active 切換 | ✅ 綁兩個、active 指最新；解除後自動轉移 |
+| 定向查詢 | ✅ `0x3101` `addr=0x0002` 走 unicast |
+| 晶片開關 | ✅ Wi-Fi 走 `0x1008`；ESP-NOW 只能開（關待 P6） |
+| 服務缺席（無 disp／NowBus） | ✅ 不炸，只印訊息 |
+| 開關狀態同步 | ✅（原本漏了，冒煙測試抓出後已修） |
+
+---
+
+## 8. 分階段計劃
 
 | 階段 | 內容 | 驗收 | 狀態 |
 |---|---|---|---|
 | **P0** | `Dispatcher` 三出入口（`exec_cmd` / `make_cmd`）＋ `SchemaCodec.encode` u16/u32 超界保護 | 離線三關：`dispatch` 逐字不變、`exec_cmd` 與之觀測一致、`make_cmd`→解析→dispatch 端到端 | ✅ **完成** |
 | **P1** | `ConfigManager` KV 門面（btree） | 六項實測：set/get、命名空間、`kv_keys` 前綴、`kv_del`、flush 後重開、壞 JSON 容錯 | ✅ **完成** |
-| **P2** | 身份／角色／目標 → btree（`@node.*`）＋ `bus.shared["node"]` 執行期鏡像 | 寫入後斷電重開仍讀得到；UI 能讀到 `node` | ⏳ |
-| **P3** | `bus.register_service("disp", app.disp)` | 頁面能 `bus.get_service("disp").exec_cmd(...)` | ⏳ |
-| **P4** | `PeerRegistry` 搬家 → `@peer.<sid>`（只改 `load` / `save`） | 學習 → 落盤 → 重開 → 清單一致；`/peers.json` 不再產生 | ⏳ |
-| **P5** | **遙控器頁**（見 §8） | 掃描得到節點、能綁定方向、晶片開關可切 | ⏳ |
-| **P6** | 射頻配對（`add_peer`）＋ ESP-NOW 關閉指令 | 定向 unicast 真的送得出去 | ⏳ |
+| **P2** | 身份／角色／目標 → btree（`@node.*`）＋ `bus.shared["node"]` 執行期鏡像 | 寫入後斷電重開仍讀得到；UI 能讀到 `node` | ✅ **完成** |
+| **P3** | `bus.register_service("disp", app.disp)` | 頁面能 `bus.get_service("disp").exec_cmd(...)` | ✅ **完成** |
+| **P4** | `PeerRegistry` 搬家 → `@peer.<sid>`（只改 `load` / `save`） | 學習 → 落盤 → 重開 → 清單一致；`/peers.json` 不再產生 | ✅ **完成** |
+| **P5** | **遙控器頁**（`ui/lvgl/page/remote.py`） | 掃描 / 節點清單 / 多目標綁定 / 模式查詢 / 晶片開關 | ✅ **完成**（離線冒煙測試） |
+| **P6** | ESP-NOW **關閉**指令（`add_peer` 配對已在 P5 隨綁定做掉） | 能關掉 ESP-NOW | ⏳ 只剩關閉指令 |
 | **P7** | 抽「發送任務」（廣播/定向的判斷集中化） | 呼叫端不再自己選廣播/定向 | ⏳ |
 
 ### P5 遙控器頁（草案）
@@ -332,9 +476,9 @@ cfg_manager.kv_flush()              # 落盤（★ 寫入後不會自動落盤�
 
 ---
 
-## 8. 關鍵事實與踩坑（★ 給未來的自己）
+## 9. 關鍵事實與踩坑（★ 給未來的自己）
 
-### 8.1 Router：`self` 才是被查的來源，`vbus` 永遠不被查
+### 9.1 Router：`self` 才是被查的來源，`vbus` 永遠不被查
 
 ```python
 # signal_router.py:278-279（def name_of 在第 267 行）
@@ -351,7 +495,7 @@ def name_of(self, bus_obj):
 | `{"in":"vbus","out":["now"]}` | ❌ **什麼都不會發生**（vbus 不是被查的來源） |
 | `out: ["vbus"]` | ❌ **被無視**（它不是出口） |
 
-### 8.2 `config.json` 的 `Router` 區塊是 **Router 自己寫回去的**
+### 9.2 `config.json` 的 `Router` 區塊是 **Router 自己寫回去的**
 
 ```python
 # tasks/bus_decode.py:132-133
@@ -361,7 +505,7 @@ cfg_manager.save_from_bus(update_key="Router")
 → **config 是呈現，Router 的記憶體狀態才是真相。** 不要以為手改 config 就一定生效
 （`finalize_router()` 會在開機與任務開始各結算一次並寫回）。
 
-### 8.3 ★ `NowBus.write()` 是**回覆語意**，不能改成廣播
+### 9.3 ★ `NowBus.write()` 是**回覆語意**，不能改成廣播
 
 ```python
 # now_bus.py:129-132
@@ -378,7 +522,7 @@ def write(self, data):
 → 若要走 Router，需要讓管子自己宣告轉發方式（例：`NowBus.forward = broadcast`），
    或確認 `_last_peer` 一定存在。**動之前先讀 `doc/03_notes/18_...md` §5.1 末段。**
 
-### 8.4 `SchemaCodec.encode` 的超界行為（P0 已修）
+### 9.4 `SchemaCodec.encode` 的超界行為（P0 已修）
 
 | 型別 | 改前 | 改後 |
 |---|---|---|
@@ -389,7 +533,7 @@ def write(self, data):
 實測：改前 **216 組超界測試全部長度短少**；改後 0 組。合法值 472 筆逐 byte 不變。
 ★ schema 裡唯一「會被動態計算」的 u16 欄位是 **`MODE_SET.start_delay_ms`**。
 
-### 8.5 已知死碼（本計劃不動，但要知道）
+### 9.5 已知死碼（本計劃不動，但要知道）
 
 | 死碼 | 位置 |
 |---|---|
@@ -400,11 +544,23 @@ def write(self, data):
 | `PixelControlPanelTask._broadcast_mode_set()` | 孤兒（UI 直打 espnow 繞過） |
 | `ui/lvgl/page/pixel_controller.py:_espnow_send_mid()` | UI **直接打硬體**（唯一一處，應收掉 → 見 P5/P7） |
 
+### 9.6 ★ `load_setup()` 有一條「提早 return」會跳過身份建立
+
+```python
+# ConfigManager.load_setup() 開頭
+if self.path not in os.listdir():        # 沒有 config.json（全新裝置）
+    self.save_from_bus()
+    return                               # ← ★ 原本這裡直接返回
+    ...（後面才是 ensure_cID / load_node）
+```
+→ **首次開機時 `bus.cid` 會停在 0xFFFF、`bus.shared["node"]` 整個不存在。**
+（P2 已修：這條路徑也呼叫 `ensure_cID()` + `load_node()`。）
+
 ---
 
-## 9. 環境操作備忘（上板 / REPL）
+## 10. 環境操作備忘（上板 / REPL）
 
-### 9.1 V2 面板的設定紅線
+### 10.1 V2 面板的設定紅線
 
 | 設定 | 值 | 為什麼 |
 |---|---|---|
@@ -413,21 +569,21 @@ def write(self, data):
 | `System.cID` | `"0001"` | 未指派時 `bus.cid = 0xFFFF` = 廣播 → 每一站都會重複執行廣播幀 |
 | `Network.ESP_now.enable` | 1，`channel` 兩端一致 | 面板的生命線；少了它 UI 有畫面但送不出指令 |
 
-### 9.2 進 REPL / 中止程式
+### 10.2 進 REPL / 中止程式
 
 - `main.py` 是 `if __name__ == "__main__"` → 開機自動跑 → `tm.runner_loop(0)` 阻塞 core0
 - **Ctrl-C 要按兩次**：第一次觸發 `auto_disable_on_interrupt()`（存 `watchdog.enable=0` + **立即重啟一次**），第二次才真的停在 REPL
 - ⚠️ **WDT 開著時，停在 REPL 約 8 秒會被硬體 WDT 重置**（沒人餵狗）→ 先關 WDT 再進 REPL
 - 參考既有工具：`temp/usb_repl.py`、`temp/usb_disable_wdt.py`（改 `PORT` 即可）
 
-### 9.3 `mpremote` 的坑
+### 10.3 `mpremote` 的坑
 
 - 板上 app 一直印 log 時，**mpremote 進不了 raw REPL**（`could not enter raw repl`）
 - 它失敗後可能把板子**留在 raw REPL**（表面看起來像當掉、完全沒輸出）
   → 用 `Ctrl-B`（`\x02`）退出，`Ctrl-D` soft reboot
 - 上傳檔案前先在 REPL 停住 app
 
-### 9.4 `ConfigManager` 在 **module 層** 就有副作用
+### 10.4 `ConfigManager` 在 **module 層** 就有副作用
 
 ```python
 # ConfigManager.py 檔尾
@@ -438,13 +594,13 @@ cfg_manager.load_setup()      # ← import 就會建 secrets.db + 讀 config.jso
 
 ---
 
-## 10. 未決事項
+## 11. 未決事項
 
 | # | 問題 | 備註 |
 |---|---|---|
 | 1 | **`peers.json` 搬家時機** | 先做 P5（UI 讀舊檔）再搬？或先搬（P4）再讓 UI 讀新的？ |
 | 2 | **「發送任務」的歸屬** | 抽成新模組？或放進既有系列（`lib/sys/`）？與 `17_tx_render_center_plan.md` 的 TxCenter 是否同一個東西？ |
-| 3 | **`NowBus` 的轉發語意** | 要不要加 `forward()`（廣播）讓 Router 可用？（§8.3） |
+| 3 | **`NowBus` 的轉發語意** | 要不要加 `forward()`（廣播）讓 Router 可用？（§9.3） |
 | 4 | **多目標的極端場景** | 「管理一堆目標 + 不斷切換發射」→ `@node.targets` 的資料形狀？同時多目標（fan-out）要不要？ |
 | 5 | **`status.json` 是否還需要** | 若 `@node.*` + `@peer.*` 都在 btree，就不需要第三份檔案（除非要「一次讀完的快照」） |
 | 6 | **既有技術債** | 亮度三個寫入者 / `_espnow_send_mid` / 四處死碼 —— 何時收 |

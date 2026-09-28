@@ -11,6 +11,11 @@ from ui.lvgl import registry
 
 # 嘗試 import 每個頁面模組(觸發 @register);失敗就跳過,不中斷整個 package。
 try:
+    from ui.lvgl.page import remote
+except Exception as _e:
+    print("[page] remote import skip:", _e)
+    remote = None
+try:
     from ui.lvgl.page import control_panel
 except Exception as _e:
     print("[page] control_panel import skip:", _e)
@@ -34,6 +39,7 @@ except Exception as _e:
 # 把模組引用補進 registry(給 app 呼叫 on_enc/on_confirm/update 用)。
 # 用 if 守護:頁面 import 失敗時 PAGES 裡不會有它,跳過不報錯。
 _PAGES_MOD = [
+    ("remote", remote),
     ("control_panel", control_panel),
     ("pca9685", pca9685),
     ("settings", settings),

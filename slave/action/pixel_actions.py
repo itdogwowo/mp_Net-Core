@@ -133,9 +133,62 @@ def on_mode_detail_query(ctx, args):
     })
 
 
+def _is_local_provider():
+    """本板是不是「執行端」（有自己的本地模式池）？
+
+    判準：`bus.shared["pixel_maps"]` 存在 = PixelTask 跑過 = 有本地模式池。
+    ★ 執行端不該被遠端清單覆蓋 —— 它的模式池來自 /pixel/modes/*.json（事實來源），
+      若被遠端寫入蓋掉，UI 會顯示錯的清單，直到下次開機 PixelTask 再覆蓋。
+    """
+    return bus.shared.get("pixel_maps") is not None
+
+
+def on_mode_list_rsp(ctx, args):
+    """0x3102 MODE_LIST_RSP —— **收**方（控制端）：對方回報的模式清單。
+
+    entries = u16 串（每筆 2 bytes LE）= 內部 16-bit 模式識別碼。
+    寫入模式表 + source=remote（見 doc/03_notes/19_remote_control_plan.md §6）。
+    ⚠️ 不在這裡自動逐一發 0x3107 —— 「逐一取得細節」由呼叫端（UI / 同步流程）
+       決定，避免在收幀 handler 裡一次爆出 N 個發射。
+    """
+    if _is_local_provider():
+        print("[Pixel] 本板有本地模式池 → 忽略遠端清單")
+        return
+    raw = bytes(args.get("entries", b"") or b"")     # bytes_rest 解出來是 memoryview
+    ids = []
+    for i in range(0, len(raw) - 1, 2):
+        ids.append(raw[i] | (raw[i + 1] << 8))
+    try:
+        from lib.sys.ConfigManager import cfg_manager
+        cfg_manager.set_remote_list(ids)
+    except Exception as e:
+        print("[Pixel] 模式清單寫入失敗: {}".format(e))
+    print("[Pixel] MODE_LIST_RSP type={} count={} → 已寫入模式表(remote)".format(
+        args.get("mode_type", 0), len(ids)))
+
+
+def on_mode_detail_rsp(ctx, args):
+    """0x3108 MODE_DETAIL_RSP —— **收**方（控制端）：逐一取得的模式細節。
+
+    只寫那一筆（@mode.detail.<id>）—— btree 逐 key 的價值所在。
+    """
+    if _is_local_provider():
+        return
+    mid = _combine(args.get("mode_type", 0), args.get("mode_id", 0))
+    name = args.get("name", "") or ""
+    try:
+        from lib.sys.ConfigManager import cfg_manager
+        cfg_manager.set_remote_detail(mid, name)
+    except Exception as e:
+        print("[Pixel] 模式細節寫入失敗: {}".format(e))
+    print("[Pixel] MODE_DETAIL_RSP 0x{:04X} name={!r} → 已寫入模式表".format(mid, name))
+
+
 def register(app):
     app.disp.on(0x3101, on_mode_list_query)
+    app.disp.on(0x3102, on_mode_list_rsp)      # 控制端收清單
     app.disp.on(0x3105, on_mode_set)
     app.disp.on(0x3106, on_mode_stop)
     app.disp.on(0x3107, on_mode_detail_query)
+    app.disp.on(0x3108, on_mode_detail_rsp)    # 控制端收細節
     print("[Pixel] Local-mode actions registered")
