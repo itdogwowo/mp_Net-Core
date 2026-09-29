@@ -2,7 +2,7 @@
 
 > **用途**：把「強化遙控器」這件事的**共識、現況盤點、分階段做法、踩過的地雷**集中一處。
 > **本檔自足**：不依賴任何對話上下文，單獨看就能接手。
-> **狀態**：PLANNED（**P0 ~ P5 已完成**；P6 射頻配對收尾 / P7 發送任務待做）
+> **狀態**：PLANNED（**P0 ~ P6 已完成**；P7 發送任務待做）
 > **最後更新**：2026-09-26
 > **相關文件**：
 > - `doc/03_notes/18_pixel_panel_control_path.md` — 面板 pixel 控制路徑（定向查詢的來源）
@@ -10,6 +10,7 @@
 > - `doc/02_guides/15_schedule.md` — schedule（vBus 注入路徑）
 > - `doc/02_guides/16_signal_router.md` — Router（路由政策）
 > - `ports/S3/ESP32-S3-Control_Panel_V2/README.md` — 面板角色與設定備註
+> - `ports/S3/ESP32-S3-Test_Peer/README.md` — 零硬體測試對端（§12）
 > - `todo/03_signal_router.md` — Router 的測試追蹤
 
 ---
@@ -221,9 +222,43 @@ disp.dispatch(cmd, payload, ctx)
 | **1** | **`disp` 沒註冊成 bus 服務** | UI 拿不到指令接口 | `app.py` 的 `App.__init__` 加 `bus.register_service("disp", self.disp)`（**1 行**） |
 | **2** | **`master_cid` / 角色不持久化** | 每次開機要重綁 | 寫進 btree（`@node.*`）（§6） |
 | **3** | **掃描沒有發起端** | 裝置自己不能掃 | UI 按鈕 → `make_cmd(0x100D, {"reply_addr": bus.cid})` → 發射 |
-| **4** | **射頻配對從未建立** | unicast 送不出去 | 掃描完對 `peer.mac` 做 `add_peer()`（**兩端各自做 = 對稱**） |
-| **5** | **沒有 `ESP-NOW 關` 指令** | 只能開不能關 | `NowBus.deinit()` 存在，需要一個指令包裝 |
+| **4** | **射頻配對從未建立** | unicast 送不出去（`ESP_ERR_NOT_FOUND(-12393)`） | ✅ **P6 已完成**：`NowBus.poll()` 收幀即 `learn_peer(peer)`（**對稱**：兩端各自學），另加硬體 peer 表上限（§9.7） |
+| **5** | **沒有 `ESP-NOW 關` 指令** | 只能開不能關 | `NowBus.deinit()` 存在，需要一個指令包裝（**仍未做**） |
 | **6** | **沒有「發送任務」** | 廣播/定向的判斷散在呼叫端 | 抽一個統一發射出口（§2.6/§2.7）—— **可延後** |
+| **7** | ★★ **`0x1002 SLAVE_ANNOUNCE` 沒有發送端、也沒有接收端** | **ESP-NOW 上「被發現」的唯一途徑是空的** → 節點清單永遠空的 | ✅ **P6 已完成**：接收端 `net_actions.on_slave_announce`（+ `PeerRegistry.learn_from_announce`）；發送端在測試對端 `ports/S3/ESP32-S3-Test_Peer` 的 `AnnounceTask`（§12） |
+
+### ★★★ 第 7 項是整個計劃真正的破口（2026-09 補記）
+
+前面第 3、4 項看起來像「掃描沒人發起」「配對沒建立」，但修好它們**仍然發現不了任何東西**，
+原因是 ESP-NOW 的一個結構性事實：
+
+> **ESP-NOW 的位址是 MAC（6 bytes），而 MAC 不是一個可枚舉的數值空間。**
+
+`0x100D IDENTIFY_REQ` 的設計是「**逐 address 掃描**」（`test/protocol/night_run/scan.py`
+就是掃 cid `0x0000`–`0xFFFE`）—— 那在 **UART / TCP 上是可行的**（位址是連續整數）。
+在 ESP-NOW 上**無從發起**：你不知道要掃誰，而且沒有任何「列舉鄰居」的 API。
+
+所以被動發現（`PeerRegistry.learn_from_frame`）是**唯一**的路，而它需要一個前提：
+**對端得先開口講話**。原本的鏈條是：
+
+```
+對端開機 → ✗ 沒有任何任務會主動送東西 → 面板永遠學不到它的 MAC
+        → 面板送不出 unicast → 不可能定向查詢  ← 雞生蛋
+```
+
+`send_heartbeat`（0x1302）存在但**零呼叫者**；`0x1002 SLAVE_ANNOUNCE` schema 有、handler 沒有。
+→ 這才是「還欠缺什麼」的答案。修法就是第 7 項：**兩端各補一半**。
+
+**廣播 vs 定向的判準（本計劃定案）**
+| 用途 | 位址 | 理由 |
+|---|---|---|
+| **公告**（`0x1002`，單向、不回覆） | **廣播** | 我還不認識任何人，只能對所有人講；而且**不回覆** → 不會有 N 個對端同時回話的風暴 |
+| **發現探測**（`0x100D`，要回覆） | **廣播** | 同上「不認識任何人」；回覆走 `NowBus.write()`（＝射頻層回給**剛剛講話的那個人**），所以是**單播**回覆，不是廣播回覆 |
+| **其餘一切**（`0x3101/0x3107/0x1016`…） | **定向** | 已經認識對方了；廣播會讓每個對端都執行一次（例如全部一起改模式） |
+
+⚠️ 「廣播不回」是對的，但**不要**推論成「廣播一定沒回覆」——`0x100D` 是廣播出去、
+**單播**回來。回覆位址不由 NC4 header 的 `addr` 決定（ESP-NOW 上 `ctx["send"]` = `NowBus.write`
+= `_last_peer`），這件事很容易誤判，見 §9.3。
 
 ---
 
@@ -556,6 +591,26 @@ if self.path not in os.listdir():        # 沒有 config.json（全新裝置）
 → **首次開機時 `bus.cid` 會停在 0xFFFF、`bus.shared["node"]` 整個不存在。**
 （P2 已修：這條路徑也呼叫 `ensure_cID()` + `load_node()`。）
 
+### 9.7 ★★ 收幀時必須登記來源 MAC，而且要設上限
+
+**為什麼必須登記**（`NowBus.poll()`）：
+ESP-NOW 的 `esp_now_send()` **不接受沒註冊過的 peer**，會回 `ESP_ERR_NOT_FOUND(-12393)`
+（`test/protocol/espnow_send.py` 有紀錄）。而「知道對方位址」的唯一時機，
+就是它的幀到達射頻層的那一刻 —— MAC 無法從 cid 反推（面板的 `cID` 是手寫 `0001`，
+不是 MAC 推導的），也無法枚舉。
+→ 所以 `poll()` 每收到一個新來源就 `learn_peer(peer)`，之後 `write()`（單播回覆）才送得出去。
+這是**對稱**的：兩端各自在收幀時學，沒有「誰先配對」的順序問題。
+
+**為什麼要設上限**：ESP-NOW 的 peer 表是**硬體資源**（ESP-IDF 上限 20，加密時 6），
+而 `poll()` 的輸入是**任意射頻**——附近別人的裝置、雜訊都會消耗它。
+填滿之後真正要綁定的目標反而進不來，而且**沒有任何錯誤會浮上來**。
+| 方法 | 誰決定 | 上限 |
+|---|---|---|
+| `add_peer(mac)` | 使用者的意圖（UI 綁定 / 定向發射前補通道） | **不設限** |
+| `learn_peer(mac)` | 射頻上剛好有人講話（`poll()` 呼叫） | `Network.ESP_now.max_learn_peers`，預設 **16** |
+
+滿了只印一次警告，不影響既有 peer，也不阻擋明確綁定。
+
 ---
 
 ## 10. 環境操作備忘（上板 / REPL）
@@ -598,9 +653,58 @@ cfg_manager.load_setup()      # ← import 就會建 secrets.db + 讀 config.jso
 
 | # | 問題 | 備註 |
 |---|---|---|
-| 1 | **`peers.json` 搬家時機** | 先做 P5（UI 讀舊檔）再搬？或先搬（P4）再讓 UI 讀新的？ |
+| 1 | **`peers.json` 搬家時機** | ✅ **P4 已完成**（btree `@peer.<sid>`，舊檔改名 `.old`） |
 | 2 | **「發送任務」的歸屬** | 抽成新模組？或放進既有系列（`lib/sys/`）？與 `17_tx_render_center_plan.md` 的 TxCenter 是否同一個東西？ |
 | 3 | **`NowBus` 的轉發語意** | 要不要加 `forward()`（廣播）讓 Router 可用？（§9.3） |
 | 4 | **多目標的極端場景** | 「管理一堆目標 + 不斷切換發射」→ `@node.targets` 的資料形狀？同時多目標（fan-out）要不要？ |
 | 5 | **`status.json` 是否還需要** | 若 `@node.*` + `@peer.*` 都在 btree，就不需要第三份檔案（除非要「一次讀完的快照」） |
 | 6 | **既有技術債** | 亮度三個寫入者 / `_espnow_send_mid` / 四處死碼 —— 何時收 |
+| 7 | ★ **真實執行端要不要也公告？** | `ports/S3/ESP32-S3-1_18` 的 `Network.ESP_now.enable` 目前是 **0**（完全不收 ESP-NOW，連掃描都掃不到它）。改成 1 之後，要不要讓它也跑 `AnnounceTask`？**公告＝任何人都看得到你**（未加密的 ESP-NOW 廣播），這是產品決策不是技術決策 |
+| 8 | **`0x1002` 要不要帶 `cid`？** | 目前 payload 是 `slave_id + pixel_count + hw_version`（schema 已定）。不帶 cid → 收到公告只學到 MAC，還要再敲一次 `0x100D` 才知道 cid。加 `cid` 可以省一趟，但要動 schema（**已定義的指令改 payload 是破壞性變更**） |
+| 9 | **公告週期** | 測試對端用 10 秒。真實裝置要多長？（太短 = 無線電一直講話；太長 = 面板開機後等很久才看到它）。或改成「只在開機公告一次 + 被敲門才回」 |
+| 10 | **`Router.enable=0` 時仍然寫回 `config.json`** | `finalize_router()` 不看 `enable`。所以任何 port 第一次開機，`Router.routes` 都會被補成 5 條。是預期行為（§9.2），但值得在每個 port 的 README 註明 |
+
+---
+
+## 12. 測試對端：`ports/S3/ESP32-S3-Test_Peer`（P6 新增）
+
+### 為什麼需要
+遙控器頁的三件事（看得到節點 / 綁定 / 查詢）都**需要兩個節點**。
+用真板測的代價是：兩台板 + 兩條 USB + 對端得接 WS2812 與 SD（`/pixel/modes/*.json`）
+才有模式池，而且對端改壞了還要先修對端 —— 測試與被測互相糾纏。
+
+本 port 把對端變成**可拋棄的**：零硬體、模式池寫死在 `Core_Manager.py`、
+改壞直接重上傳，面板一行都不用動。
+
+### 它有什麼
+| 能力 | 來源 |
+|---|---|
+| ESP-NOW 射頻 | `Network.ESP_now = {enable:1, channel:6}`（**必須與面板同頻**） |
+| 身份 `cid=0x0002` | `System.cID`（與面板的 `0001` 配對；**留空會被自動填成 MAC 末 4 碼**） |
+| 假模式池 3 筆 | `FAKE_MODES` → `bus.shared["pixel_maps"]`（混 LED 組 `0x00xx` 與 SERVO 組 `0x02xx`，可測 `mode_type` 過濾） |
+| 開機 + 每 10 秒公告 | `AnnounceTask` → `disp.make_cmd(0x1002)` → `NowBus.broadcast()` |
+| 回應查詢 | 既有 handler 全量註冊（`App()` → `register_all`），沒有為測試改一行生產程式碼 |
+
+任務集只有 5 個：`network / now / log`(L0) + `announce`(L1) + `bus_decode`(L2)。
+`pixel / render / stream / dj / audio_player / lvgl / web_ui / cpanel / pixel_cpanel / schedule`
+**都不註冊**（沒硬體，或屬於面板角色）。
+
+### ★ `AnnounceTask` 為什麼寫在 port 裡而不是 `slave/tasks/`
+- 它是**測試對端的存在理由**，不是生產裝置的共性需求（真實執行端要不要公告是 §11 第 7 項的決策）
+- port 的 `Core_Manager.py` 是**唯一**放「這台裝置是什麼」的地方（見 `Control_Panel_V2` 的同一慣例）
+- 一旦決定生產裝置也要公告 → 整個 class 原封不動搬進 `slave/tasks/`，改成 `register_task` 一行
+
+### 離線驗證（不用板子，兩支都已通過）
+```bash
+python -B /tmp/nodetest/peer_smoke.py       # 開機 → 廣播合法 0x1002（欄位逐項比對）
+python -B /tmp/nodetest/peer_roundtrip.py   # 收 0x100D → learn_peer(面板 MAC) → 單播回 0x100E
+```
+`peer_roundtrip.py` 實測輸出（＝整條雙向閉環）：
+```
+注入 0x100D 探測幀 …
+add_peer 呼叫: ['ffffffffffff', 'aabbccddeeff']      ← 廣播位址 + 學會的面板 MAC
+送出: to=ffffffffffff cmd=0x1002 addr=0xFFFF          ← 公告（廣播）
+      to=aabbccddeeff cmd=0x100E addr=0x0001          ← 回覆（單播回面板）
+bus.master_cid = 0x0001                               ← 對端記住了方向
+```
+

@@ -301,6 +301,33 @@ class PeerRegistry:
         iface = getattr(src_bus, "label", None) or (ctx or {}).get("transport")
         return self._record(mac, via="frame", mac=mac, iface=iface, cmd=cmd)
 
+    def learn_from_announce(self, ctx, args):
+        """0x1002 SLAVE_ANNOUNCE handler —— **對端自己送上門**的公告。
+
+        為什麼需要它（ESP-NOW 的結構性事實）：
+          射頻位址是 MAC，MAC **不是可枚舉的數值空間** → 「逐 address 掃描」
+          （0x100D）在 ESP-NOW 上**無從發起**。所以「被發現」只能等對端送東西來，
+          而送來的那一刻，射頻層才會告訴我們來源 MAC（ctx["_peer_mac"]）。
+
+        與 `learn_from_frame` 的關係：互補，不是重複。
+          - `learn_from_frame`：任何幀都登記，但**只有 MAC、沒有身份**
+          - 這裡：公告**自帶 slave_id**（ESP32 上 slave_id == MAC hex，
+            所以 `_record` 的 key 相同 → 寫進同一筆）
+        被動學習先寫、這裡後補，結果一致；pixel_count / hw_version 只 print，
+        不進記錄（塞進 `name` 會語意錯亂）。
+        """
+        peer_mac = (ctx or {}).get("_peer_mac")
+        sid = args.get("slave_id") or ""
+        if not sid and not peer_mac:
+            return None
+        return self._record(
+            sid or peer_mac,
+            via="announce",
+            mac=peer_mac,
+            iface=(ctx or {}).get("transport"),
+            cmd=0x1002,
+        )
+
     # ── 查詢 ─────────────────────────────────────────────────
     def get(self, slave_id):
         return self._peers.get(_mac_hex(slave_id) or "")

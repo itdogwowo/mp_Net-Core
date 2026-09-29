@@ -14,11 +14,17 @@
 #   bus.get_service("disp")   ← P3 註冊的指令接口（exec_cmd / make_cmd）
 #
 # 動作 → 全部走指令（沒有直接改狀態、沒有直接碰硬體）：
-#   掃描        make_cmd(0x100D) → 廣播
+#   掃描        make_cmd(0x100D) → **廣播**（還不認識任何人，只能對所有人講話）
 #   綁定/解除   exec_cmd(0x1016) → 方向確認（handler 負責持久化）
 #   取得清單    make_cmd(0x3101) → 定向
 #   取得細節    make_cmd(0x3107) → 定向（逐一，節流由接收端處理）
 #   晶片開關    exec_cmd(0x1008/0x1301)
+#
+# ★ 廣播 vs 定向的判準（doc/03_notes/19 §5）：
+#     「不認識對方」→ 廣播（掃描）。「已經認識」→ 定向（其餘全部）。
+#   掃描是唯一「廣播出去、單播回來」的動作：回覆走 NowBus.write()，
+#   也就是射頻層回給**剛剛講話的那個人**，不是回給 NC4 header 裡的 addr。
+#   ⚠️ 所以「廣播不回」不等於「廣播沒回覆」—— 這兩件事容易混淆。
 #
 # ⚠️ 發射路徑（暫定）：本頁直接呼叫 NowBus.broadcast()/write_to()，與既有 task
 #    （ControlPanelTask/PixelControlPanelTask）一致。計劃書 §7 P5 的取捨：
@@ -110,7 +116,21 @@ def _exec(cmd, args):
 #  動作（全部走指令）
 # ══════════════════════════════════════════════════════════════════
 def _do_scan():
-    """0x100D IDENTIFY_REQ（廣播）—— 回覆會自動被 PeerRegistry 登記。"""
+    """0x100D IDENTIFY_REQ（廣播）—— 回覆會自動被 PeerRegistry 登記。
+
+    為什麼是**廣播**（而不是先想辦法定向）：掃描的定義就是「我還不認識任何人」。
+    ESP-NOW 的位址是 MAC，**無法枚舉** → 沒有「掃一遍位址空間」這種事，
+    只能廣播出去、讓願意回話的對端回話。
+
+    為什麼回得來：對端的回覆走 `NowBus.write()` = 「射頻層回給剛剛講話的人」，
+    所以是**單播**回本板（不是廣播）。前提是對端在收幀時學到了本板的 MAC
+    ——`NowBus.poll()` 的 `learn_peer()`，兩端對稱（doc/03_notes/19 §9.7）。
+
+    副作用（已知且刻意）：`on_identify_req` 會把 `reply_addr` 記成 `master_cid`，
+    所以一次廣播掃描 = 射程內**所有**對端都把本板認成 master。
+    對「一台遙控器 + 一群執行端」是想要的；若日後要「只認某一台」，
+    就不能用廣播掃描，得先靠公告（0x1002）被動認識，再定向敲門。
+    """
     b = _kv()
     ok = _tx(0x100D, {"reply_addr": int(getattr(b, "cid", 0xFFFF)) & 0xFFFF})
     print("[remote] 掃描 →", ok)

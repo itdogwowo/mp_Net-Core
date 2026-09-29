@@ -9,6 +9,9 @@
 #     0x1012 NET_START      — 依 iface_type 啟動網絡 (lan/wifi/ap/espnow)
 #     0x1014 GET_IP         — 取得多介面 IP 清單
 #     0x1016 SET_MASTER     — 顯式設定回應定址 master_cid
+#   公告 (對端→控制端, 單向, 不回覆):
+#     0x1002 SLAVE_ANNOUNCE — 對端開機/週期性自我介紹 (slave_id+pixel_count+hw)
+#                             ★ ESP-NOW 上「唯一」的主動發現途徑 (MAC 無法枚舉)
 #   回應 (Slave→Master, 只送出):
 #     0x100E IDENTIFY_RSP / 0x1011 WREPL_RSP / 0x1013 NET_START_RSP / 0x1015 IP_RSP
 #
@@ -22,6 +25,7 @@ from lib.sys.proto import Proto, ADDR_BROADCAST
 from lib.sys.schema_codec import SchemaCodec
 from lib.sys import webrepl_ctl
 
+CMD_SLAVE_ANNOUNCE = 0x1002
 CMD_IDENTIFY_REQ = 0x100D
 CMD_IDENTIFY_RSP = 0x100E
 CMD_REBOOT = 0x100F
@@ -90,6 +94,40 @@ def on_identify_req(ctx, args):
         "slave_id": bus.slave_id,
         "ip": _ips_json(),
     })
+
+
+def on_slave_announce(ctx, args):
+    """0x1002 SLAVE_ANNOUNCE —— **收**方（控制端）：對端開機／週期性公告。
+
+    ★ 這條指令補的是 ESP-NOW 上「無法掃描」的那個洞：
+      射頻位址是 MAC，MAC **不是可枚舉的數值空間**，所以 0x100D 那種
+      「逐 address 掃」在 ESP-NOW 上無從發起 —— 主動發現只能靠對端送上門。
+      對端廣播 0x1002 → 本板在**收到的那一刻**才知道它的 MAC（ctx["_peer_mac"]）
+      → PeerRegistry 登記 → 之後才能定向（unicast）查詢它。
+
+    與被動學習（bus_decode._drain 的 learn_from_frame）的差別：
+      - 被動學習：任何幀都會登記「來源 MAC」，但不帶身份
+      - 這裡：公告**自帶 slave_id / pixel_count / hw_version** → 一次補齊
+      兩者寫的是同一筆記錄（ESP32 上 slave_id == MAC hex → 同一個 key），
+      所以是互補而非重複。
+
+    不做的事（刻意）：
+      - 不自動「綁定」——綁定是使用者的明確動作（UI 的綁定鈕 → 0x1016）。
+        自動把每個聽到的節點都設成目標，等於誰都能接管這台面板。
+      - 不回應 —— 公告是**單向**的，回它會讓 N 個對端同時回話（風暴）。
+        要對方回話請用 0x100D（那才是「請求」）。
+    """
+    reg = bus.get_service("peers")
+    if reg is None:
+        return
+    try:
+        reg.learn_from_announce(ctx, args)
+    except Exception as e:
+        print("[Net] announce learn failed: {}".format(e))
+        return
+    print("[Net] 📣 SLAVE_ANNOUNCE {} pixel_count={} hw={}".format(
+        args.get("slave_id") or "-", args.get("pixel_count", 0),
+        args.get("hw_version", "") or "-"))
 
 
 def on_reboot(ctx, args):
@@ -216,6 +254,7 @@ def on_webui_ctrl(ctx, args):
 
 
 def register(app):
+    app.disp.on(CMD_SLAVE_ANNOUNCE, on_slave_announce)
     app.disp.on(CMD_IDENTIFY_REQ, on_identify_req)
     app.disp.on(CMD_IDENTIFY_RSP, on_identify_rsp)
     app.disp.on(CMD_REBOOT, on_reboot)
