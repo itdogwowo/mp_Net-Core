@@ -195,7 +195,7 @@ class StreamTask(Task):
                 return
             status_actions.on_status_get(
                 {"app": app, "send": ctrl.write},
-                {"query_type": 0},
+                {"keys": ""},          # 空 keys = 全部（主動推送就是要一整包）
             )
         except Exception as e:
             get_log().error("[Stream] status push failed: {}".format(e))

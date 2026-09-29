@@ -42,7 +42,7 @@ class BusDecodeTask(Task):
         """建立（或取回）Router 並載入 config.json 的 Router 區塊。
 
         建立後註冊為 bus 服務 `signal_router`，讓 action 層（0x16xx，P5）拿到
-        **同一個實例** —— 執行期 ROUTE_ADD 改的就是這裡的路由表。
+        **同一個實例** —— 程式化 API（route_add / route_del）改的就是這裡的路由表。
 
         enable=0（預設）時 gate() 立刻回 V_OK，解碼路徑一行都不進 ——
         這是「升級不破壞」的保證，也是 P3 回歸驗收的核心。

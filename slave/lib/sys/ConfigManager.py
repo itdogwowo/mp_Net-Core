@@ -5,6 +5,11 @@ import time
 from lib.sys.dispatch import dprint
 from lib.sys.sys_bus import bus
 
+# 「路徑不存在」與「值就是 None」的區別。get_by_path 的 default 用 None 時
+# 分不出這兩者，save_keys 需要分（分不出就會去存一個不存在的路徑，
+# 觸發 save_from_bus 的整檔重寫 fallback → 排版被重排）。
+_MISSING = object()
+
 
 def _cfg_now():
     """單調毫秒（MicroPython ticks_ms；CPython 離線測試退化為 monotonic）。"""
@@ -1001,6 +1006,188 @@ class ConfigManager:
         except Exception as e:
             dprint(f"[Config] kv_flush 失敗: {e}")
             return False
+
+    # ══════════════════════════════════════════════════════════════════
+    # config 路徑存取（執行期「讀 / 寫 / 逐 key 存」的統一入口）
+    #
+    #   為什麼要這一層：三段路本來只有兩段有統一入口 ——
+    #     讀   載入時整棵樹灌進 bus.shared              ✅ 有（load_setup）
+    #     寫   值 → bus.shared                          ❌ 沒有，散在 30+ 處各寫各的
+    #     存   bus.shared → config.json（逐 key 無損）  ✅ 有（save_from_bus）
+    #   這一層補的就是中間那段，並把三段收斂成同一組 key（點分路徑）。
+    #
+    #   ★ key 一律是**點分路徑**，與 save_from_bus(update_key=) 同一種寫法：
+    #       "Network.ESP_now.enable"        → 葉節點
+    #       "System.watchdog"               → 整個子樹
+    #
+    #   ⚠️ 這一層只碰 config（bus.shared），**不碰 btree KV** ——
+    #      KV 有自己的門面（kv_get/kv_set，`@` 命名空間），用途不同。
+    # ══════════════════════════════════════════════════════════════════
+
+    # 遠端改壞會很難查的紅線（改得到，但會回警告）。
+    #   判準：這幾條的值錯了，症狀會離「有人改了設定」很遠 ——
+    #     看門狗 → 裝置自己重啟；螢幕方向 → 畫面 double-rotate。
+    _REDLINE = {
+        "System.watchdog.auto_rearm_ms":
+            "非 0 會讓裝置在沉默 N ms 後自動開 WDT + 重啟",
+        "TFT.rotation":
+            "非 0 會 double-rotate（lvgl_init 自己送 MADCTL）",
+    }
+
+    def _path_parts(self, key):
+        """key → 路徑片段清單。空 key / 非字串 → 空清單。"""
+        if not key or not isinstance(key, str):
+            return []
+        return [p for p in key.split(".") if p != ""]
+
+    def get_by_path(self, key, default=None):
+        """用點分路徑讀 bus.shared（config 的執行期快取）。讀不到回 default。
+
+        與 save_from_bus(update_key=) 對稱：那邊是「讀快取 → 寫檔」，
+        這邊是「讀快取 → 給呼叫端」。
+        """
+        parts = self._path_parts(key)
+        if not parts:
+            return default
+        cur = self.bus.shared
+        for p in parts:
+            if isinstance(cur, dict) and p in cur:
+                cur = cur[p]
+            else:
+                return default
+        return cur
+
+    def set_by_path(self, key, value):
+        """用點分路徑寫 bus.shared。回 (ok, message)。
+
+        ★ 只寫**快取**（立即生效），不落盤 —— 落盤是 save_keys() 的事。
+          這是刻意的分工：「改值」與「存檔」分開，因為
+            ① 落盤是 flash 寫入，逐次存會把調參數變成大量抹寫
+            ② 先改快取測效果、確定了再存，是正常的使用流程
+          （改值 vs 落盤本來就是兩件事，不該綁在一起）
+
+        中間層不存在時自動建 dict。中途遇到非 dict（路徑撞到葉節點）→ 拒絕，
+        不覆蓋既有資料。
+        """
+        parts = self._path_parts(key)
+        if not parts:
+            return False, "空路徑"
+        cur = self.bus.shared
+        for p in parts[:-1]:
+            nxt = cur.get(p)
+            if nxt is None:
+                nxt = {}
+                cur[p] = nxt
+            elif not isinstance(nxt, dict):
+                return False, "路徑衝突：{} 已經是值，不是子樹".format(p)
+            cur = nxt
+        cur[parts[-1]] = value
+        return True, ""
+
+    # 落盤結果代碼（給 0x1104 STATUS_ACK.message 逐 key 回報用）
+    SAVE_OK = "ok"            # 無損更新（逐字元就地替換，排版保留）
+    SAVE_REWRITTEN = "rewrite"  # 無損更新失敗 → 退回整檔重寫（排版會重排）
+    SAVE_SKIPPED = "skip"     # 快取裡沒這個路徑 → 不存
+
+    def save_keys(self, keys):
+        """逐 key 落盤。回 [(key, 結果, 說明)]，**不 raise**。
+
+        ★ 逐 key 呼叫 save_from_bus(update_key=)，而不是整檔存一次：
+          `_update_value_preserve_format` 是「在原始檔文字裡只換掉那一段」，
+          所以 N 個 key = N 次獨立的小改動，**排版每次都保留**。
+          反之不帶 update_key 的整檔存會 `_pretty_dump` 重排全部。
+
+        ⚠️ 無損更新失敗時 save_from_bus 會**退回整檔重寫**（排版被重排）。
+          那個副作用無法從 save_from_bus 的回傳值看出來，所以這裡先自己
+          檢查一次路徑存不存在 —— 路徑不存在就跳過，不要讓它去觸發整檔重寫。
+          回報裡用 SAVE_REWRITTEN 標記「這次可能重排了」。
+        """
+        out = []
+        if not keys:
+            return out
+        for k in keys:
+            if not self._path_parts(k):
+                out.append((k, self.SAVE_SKIPPED, "空路徑"))
+                continue
+            if self.get_by_path(k, _MISSING) is _MISSING:
+                out.append((k, self.SAVE_SKIPPED, "快取裡沒有這個路徑"))
+                continue
+            before = None
+            try:
+                # 記下檔案內容，用「有沒有整檔級別的變動」判斷是否走了重寫路徑
+                with open(self.path, 'r') as f:
+                    before = f.read()
+            except Exception:
+                pass
+            try:
+                self.save_from_bus(update_key=k)
+            except Exception as e:
+                out.append((k, self.SAVE_SKIPPED, "例外: {}".format(e)))
+                continue
+            if before is not None:
+                try:
+                    with open(self.path, 'r') as f:
+                        after = f.read()
+                    # 無損更新只動一個值 → 行數不變；整檔重寫會重排縮排
+                    if after.count("\n") != before.count("\n"):
+                        out.append((k, self.SAVE_REWRITTEN,
+                                    "無損更新失敗，已整檔重寫（排版重排）"))
+                        continue
+                except Exception:
+                    pass
+            out.append((k, self.SAVE_OK, ""))
+        return out
+
+    def config_snapshot(self, root=None, max_depth=99):
+        """回一份可安全公開的 config 快照（給 0x1101 STATUS_GET 用）。
+
+        ★ 必須剝離兩種東西，否則等於把密碼送上網路：
+            `_` 開頭   —— 執行期全域（_vbtn / _hw_inputs / _core_buf…），不是 config
+            `_pw` 結尾 —— 密碼。存檔時 `_clean_passwords_preserve_format` 會把它
+                          從 config.json 移除、改存 btree；但**開機時 sync_node 又把它
+                          還原進 bus.shared**，所以記憶體裡是有值的。
+        這兩條與 save_from_bus() 的過濾規則一致（同一套判準，不重複定義）。
+
+        root 給了就只回那個子樹（找不到回 None）。
+        """
+        src = self.bus.shared if root is None else self.get_by_path(root, None)
+        if src is None and root is not None:
+            return None
+
+        def _clean(node, depth):
+            if isinstance(node, dict):
+                out = {}
+                for k, v in node.items():
+                    if not isinstance(k, str):
+                        continue
+                    if k.startswith("_") or k.endswith("_pw"):
+                        continue
+                    if depth >= max_depth:
+                        continue
+                    out[k] = _clean(v, depth + 1)
+                return out
+            if isinstance(node, list):
+                return [_clean(v, depth + 1) for v in node]
+            return node
+
+        return _clean(src, 0)
+
+    def config_keys(self, root=None):
+        """可公開的 config key 路徑清單（給 0x1101 的 `?` 目錄查詢用）。"""
+        snap = self.config_snapshot(root)
+        out = []
+
+        def _walk(node, prefix):
+            if not isinstance(node, dict):
+                return
+            for k in sorted(node.keys()):
+                path = k if not prefix else prefix + "." + k
+                out.append(path)
+                if isinstance(node[k], dict):
+                    _walk(node[k], path)
+
+        _walk(snap or {}, "")
+        return out
 
     def close(self):
         if self._db: self._db.close()

@@ -222,8 +222,7 @@ class SignalRouter:
         # 但**只在開機結算那一次**做 —— 見 BusDecodeTask.finalize_router()。
         #   本機迴路（vBus，見 is_local_bus）的幀以來源 `self` 進來，
         #   所以 vbus 本身不會有 route；「自己發的指令自己執行」由 self 表達。
-        #   _auto_done : 已經自動檢查過的線路（同一 session 不重複補；
-        #                ROUTE_DEL 刪掉後不會被下一次 sync 又補回來）
+        #   _auto_done : 已經自動檢查過的線路（同一 session 不重複補）
         #   _autofilled: 這次補了哪幾條，等呼叫端 take_autofill() 取走去存檔
         #   _locals    : 本機迴路（vBus 等）。它們不進 ifaces（那是出口表），
         #                所以 _autofill 要另外走這一份，否則會「隱形」不被補 route。
@@ -427,7 +426,7 @@ class SignalRouter:
           4. 使用者寫過的那條，一個字都不動（`auto: False`）。
 
         只對「這一輪新看到的通道」動手（`_auto_done`）:
-          - 同一條線不會被重複補，也不會在使用者 ROUTE_DEL 之後又被補回來
+          - 同一條線不會被重複補
           - 但**每次啟動都是全新的一輪**（`_auto_done` 清空）→ 一定會重新檢查建立
 
         ★ 本機迴路（vBus）不進 ifaces（見 is_local_bus），所以要另外走 `_locals`。
@@ -541,8 +540,8 @@ class SignalRouter:
     def _add_route(self, idx, r, overwrite_ok=False, where=None):
         """驗證並加入一條 route。回傳 True/False。
 
-        overwrite_ok: 執行期 ROUTE_ADD 的「覆寫」是**預期行為**，不再印重複警告。
-        where       : 訊息前綴（開機用 routes[i]，執行期用 ROUTE_ADD）。
+        overwrite_ok: 執行期 route_add() 的「覆寫」是**預期行為**，不再印重複警告。
+        where       : 訊息前綴（開機用 routes[i]，執行期用 route_add）。
         """
         tag = where or "routes[{}]".format(idx)
         if not isinstance(r, dict):
@@ -640,7 +639,7 @@ class SignalRouter:
         return V_DROP    # out 為空
 
     # ─────────────────────────────────────────────────────────────
-    # 執行期增刪（P5 的 ROUTE_ADD / ROUTE_DEL / TABLE_GET / SAVE 用）
+    # 執行期增刪（程式化 API —— 0x16xx 指令已於 2026-09 移除，見下方說明）
     # ─────────────────────────────────────────────────────────────
     def route_add(self, route):
         """新增或覆寫一條 route（驗證邏輯與開機 load() 完全相同，不另寫一套）。
@@ -655,7 +654,7 @@ class SignalRouter:
         before = len(self._errors)
         prev = self.by_in.get(src) if isinstance(src, str) else None
         ok = self._add_route(prev["id"] if prev else len(self.by_in), route,
-                             overwrite_ok=True, where="ROUTE_ADD")
+                             overwrite_ok=True, where="route_add")
         if ok:
             spec = self.by_in[src]
             return True, "route '{}' → {} 已{}".format(
@@ -679,7 +678,7 @@ class SignalRouter:
         return self.enable
 
     def table(self, page=0, page_size=32):
-        """回傳可 JSON 化的路由表分頁（ROUTER_TABLE_GET 用）。
+        """回傳可 JSON 化的路由表分頁。
 
         **只列「線路現在真的存在」的來源**（`in` 在 `ifaces` 裡）——
         config 寫了、實體不存在的 route 不生效也不列出來（無視它、跳過它的建立），
@@ -723,7 +722,7 @@ class SignalRouter:
         """目前生效的設定（可寫回 config.json 的 Router 區塊）。
 
         ⚠️ autofill **不會**自動呼叫這個來落盤（2026-09 起）。
-        只有明確的 `ROUTER_SAVE`（0x1605）與 `router_actions` 會用它。
+        呼叫者是 `BusDecodeTask._persist_router_table()`（開機結算那一次）。
         """
         return {
             "enable": 1 if self.enable else 0,
@@ -872,7 +871,7 @@ class SignalRouter:
     # 診斷
     # ─────────────────────────────────────────────────────────────
     def status(self):
-        """回傳可 JSON 化的狀態（P5 的 ROUTER_STATUS 用）。"""
+        """回傳可 JSON 化的狀態（診斷用；router_selftest §4 是唯一呼叫者）。"""
         routes = []
         for name in sorted(self.by_in.keys(), key=_route_order):
             s = self.by_in[name]

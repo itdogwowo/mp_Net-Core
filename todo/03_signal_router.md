@@ -80,11 +80,18 @@
   - [x] 文件已寫明索引語意（doc §3.2）
   - [x] selftest §8 用真的 `CircuitTask.on_start()` 驗證：`uart:0` 選到第 1 條、`uart:1` 選到第 2 條、`uart:5` 出警告、`spi` 出警告
   - [x] **10 份 config.json**（`slave/` + `ports/`）只加 `Router`（`enable: 0`），**沒動 `CircuitDecode`**
-- [x] **P5** 執行期指令 0x16xx
-  - [x] `slave/schema/router.json`（`ROUTER_STATUS` / `ROUTE_ADD` / `ROUTE_DEL` / `TABLE_GET` / `SAVE` / `ACK`）
-  - [x] `slave/action/router_actions.py` + `registry.py`
-  - [x] selftest §9 執行期 API（`route_add` / `route_del` / `table` / `snapshot` / `set_enable`）
-  - [x] selftest §11 用**真的 schema + 真的 codec** 走完整 0x16xx 往返（含存檔成功／失敗兩條路）
+- [x] **P5** 執行期指令 0x16xx —— ❌ **整組已移除（2026-09-28）**
+  - 移除原因：Router 的職責只有路由，而**路由表本來就是 config** ——
+    讀寫它該走 `0x1101 STATUS_GET` / `0x1103 STATUS_SET`（`keys="Router"`），
+    不該另開一組指令域。詳見 `doc/02_guides/16_signal_router.md` §12。
+  - 刪除：`slave/schema/router.json`、`slave/action/router_actions.py`、`registry.py` 的註冊。
+  - **沒有任何外部使用者**：PC 工具 / Web UI / 其他裝置 / 測試全查過，都零引用。
+  - 唯一的損失：`ROUTE_ADD` 的「**立即生效**」沒有了 —— 改路由現在要
+    `STATUS_SET persist=1` + `0x100F REBOOT` 才套用。
+  - ⚠️ **下面三個 `[x]` 是假的**（2026-09-28 核對）：
+    - `selftest §9 執行期 API` —— `router_selftest.py` **沒有 §9**（只有 §1–§5）
+    - `selftest §11 真 schema + 真 codec 往返` —— **沒有 §11**，這個測試從來沒被寫出來
+    - 真機 §3「0x1601~0x1606 完整往返」—— 無從查證，且該 §3 本身也找不到對應檔案
 - [x] **P7 自動註冊 config**（使用者新要求，每次啟動都跑、**不是開關**）
   - [x] `_autofill()`：檢視實際存在的線路，`routes` 沒有的自動補 `{"in": 線路, "out": ["self"]}`
   - [x] ~~補出來的**寫回 config.json**（`BusDecodeTask._persist_autofill()`，只在有新線路時寫一次）~~
@@ -95,9 +102,10 @@
   - [x] ~~寫了但**實體不存在**的來源 → 無視、跳過建立~~
         → **2026-09 改**：暫不註冊但**留在 `_pending`**；該通道之後上線時
         用**使用者寫的內容**註冊（不是預設值）。看 §近期變更為準。
-  - [x] `ROUTE_DEL` 掉自動補的 → 同 session 不會被下一次 sync 補回來
+  - [x] 程式化 `route_del()` 掉自動補的 → 同 session 不會被下一次 sync 補回來
   - [x] selftest §12（39 項）
-- [x] 文件同步：doc §2.2 / §3.1 / §4.4 / §5 / §10 / §11 / §12 / §13、指令索引新增 §7
+- [x] 文件同步：doc §2.2 / §3.1 / §4.4 / §5 / §10 / §11 / §12 / §13
+      （指令索引 §7 於 2026-09-28 改為「已移除」）
 
 ## 已完成（真機實測，2026-09）
 
@@ -105,8 +113,7 @@
 - [x] **§2** `SignalRouter` 核心在真機：位元組級等價、一對多不汙染、超長丟棄、未註冊出口、
       `write` 丟例外不影響其餘、`enable=0` 完全不作用、自動註冊（`sync_ifaces`）與
       「寫了但不存在 → 無視跳過建立」
-- [x] **§3** `0x1601`~`0x1606` 指令在真機走**真 schema + 真 codec + 真 handler** 完整往返
-      （含 `ROUTE_ADD` 覆寫、`code=2/3` 錯誤碼、`ROUTE_DEL`），`ROUTER_SAVE` 真的寫進 `/config.json`
+- [~] ~~**§3** `0x1601`~`0x1606` 指令在真機完整往返~~ → **指令已移除**；且此項無對應檔案可查證
 - [x] **§4** 真機 `BusDecodeTask.loop()` → `App.handle_stream`（真 `micropython.native`）→ Router：
       本地執行／純轉發／`self`+兩出口一對多／`enable=0` 回歸／壞設定不影響解碼
 - [x] **§5** 自動註冊用**真 `ConfigManager`** 落盤 `/config.json`，重新 load 不再重補（idempotent）
@@ -116,11 +123,13 @@
 
 ### 真機抓到的兩個 bug（已修）
 
-1. **`router_actions.on_router_save` import 順序**：`from lib.sys.ConfigManager import cfg_manager`
-   放在寫入 `bus.shared["Router"]` **之後** → 首次 import 會跑 `load_setup()`，把 `bus.shared`
-   蓋回檔案裡的舊值 → **存檔存到舊設定**（`ROUTER_SAVE enable=1` 實際寫進 `enable=0`）。
-   修法：先 import 再寫 `bus.shared`。
-   （真機 `boot.py` 已在 T0 import 過，所以只在「首次用到」時踩到 —— 離線測試用假 cfg_manager 抓不到。）
+1. **import 順序會讓存檔存到舊值**（原 `router_actions.on_router_save`，該檔已移除，
+   但**教訓仍然有效**）：`from lib.sys.ConfigManager import cfg_manager` 放在寫入
+   `bus.shared["Router"]` **之後** → 首次 import 會跑 `load_setup()`，把 `bus.shared`
+   蓋回檔案裡的舊值 → 存檔寫進舊設定。
+   修法：**先 import 再寫 `bus.shared`**。
+   （真機 `boot.py` 已在 T0 import 過，所以只在「首次用到」時踩到 ——
+   離線測試用假 cfg_manager 抓不到。`status_actions._cfg()` 的延後 import 就是照這條寫的。）
 2. **`ConfigManager.save_from_bus` 的標準保存用 `os.replace`**：MicroPython 的 `os` **沒有 `replace`**
    → 整個「非無損更新」的存檔路徑一直失敗（只印一行 `✗ 保存出錯`）。
    這條正是**自動註冊把新線路寫回 config** 的路（config 沒有 `Router` 鍵時走無損更新會失敗 → 回退標準保存）。
@@ -267,19 +276,25 @@ sys.modules['struct']       → KeyError
       （預期：`net` / `udp` / `now`（若 ESP-NOW 有開）/ `uartN`（若有 UART）/ `vbus`）
 - [ ] 每條自動補的都是 `{"out": ["self"]}`，且**開機只寫一次**（第二次重開不再寫檔）
 - [ ] 自己寫一條 `{"in": "uart9", "out": ["self"]}`（不存在的線路）→
-      不會出現在 `0x1604 ROUTER_TABLE_GET`，但 **config 裡還在**；`ROUTER_STATUS` 的
-      `unbound` 看得到它
+      不會出現在路由表（`SignalRouter.table()`），但 **config 裡還在**；
+      `SignalRouter.status()` 的 `unbound` 看得到它
 - [ ] 把 UART 打開後重開機 → 那條自動出現
 
-### P5 — 板上指令往返
-- [x] ~~`0x1604 ROUTER_TABLE_GET page=0`~~ → **真機 §3 已驗**（回 `0x1606`，`data_json` 可解析）
-- [x] ~~`0x1602 ROUTER_ROUTE_ADD`~~ → **真機 §3 已驗**（ok=1、立即生效）
-- [x] ~~`0x1605 ROUTER_SAVE`~~ → **真機 §3 已驗**（真的改寫 `/config.json`，enable 正確落地）
-- [x] ~~`0x1603 ROUTER_ROUTE_DEL`~~ → **真機 §3 已驗**
-- [x] ~~壞 `route_json` → `code=2`；自我反射 → `code=3`~~ → **真機 §3 已驗**
-- [ ] **重開機後持久化**：`machine.reset()` 後 `ROUTER_STATUS` 仍看到同一張表
-      （§5 已驗「config 內容可被重新 load 且不再重補」，但沒真的 reset）
-- [ ] 透過**真通道**（WS / UDP / ESP-NOW / UART）送 0x16xx，而不是本地函式呼叫
+### P5 — 板上指令往返 ⛔ **整節作廢（指令已移除，2026-09-28）**
+
+原本這節在驗 0x16xx 的板上往返。那組指令已整組刪除，所以以下全部不再適用。
+留著只為了記錄「當時勾了什麼」—— 其中數項**查無對應檔案**，勾選本身不可信
+（詳見上面 P5 的說明）。
+
+- [x] ~~`0x1604 ROUTER_TABLE_GET page=0`~~ → 指令已移除
+- [x] ~~`0x1602 ROUTER_ROUTE_ADD`~~ → 指令已移除
+- [x] ~~`0x1605 ROUTER_SAVE`~~ → 指令已移除（改路由設定現在走 `0x1103 STATUS_SET` + `0x100F REBOOT`）
+- [x] ~~`0x1603 ROUTER_ROUTE_DEL`~~ → 指令已移除
+- [x] ~~壞 `route_json` → `code=2`；自我反射 → `code=3`~~ → 指令已移除
+- [ ] ~~**重開機後持久化**~~ → 指令已移除
+- [ ] ~~透過**真通道**送 0x16xx~~ → 指令已移除
+- [ ] **新的驗收**（取代上面）：`0x1103 STATUS_SET {"Router":{...}} persist=1`
+      真的寫進 `/config.json` 且**排版保留**；`0x100F REBOOT` 後新路由生效
 
 ### P6 — 端到端實測
 - [ ] **單板 + PC（最快的一輪，先做這個）**：`{ "in": "net", "out": ["udp"] }`
@@ -315,8 +330,9 @@ sys.modules['struct']       → KeyError
       > ⚠️ 該 port 的 `config.json` **已經加了 `Router: {enable: 0}`（惰性、無作用）**，
       > 但那塊程式碼在該 port **不存在** —— 在同步之前，**不要把它的 `enable` 改成 1**
       > （不會有任何作用，也不會出聲；這正是 P4 要消滅的靜默失敗）。
-- [ ] **`ROUTER_SAVE` 沒帶 payload = enable 0（關閉）**：`SchemaCodec` 對空 payload 的欄位補 0；
-      已在 doc §12.2 寫明，但 PC 端實作要小心（只存檔請送 `0xFF`）
+- [x] ~~**`ROUTER_SAVE` 沒帶 payload = enable 0（關閉）**~~ → 指令已移除；
+      同型的坑仍在通用層：`SchemaCodec` 對空 payload 的欄位補 0，新的 `0x1103 STATUS_SET`
+      的 `persist` 若沒帶就是 `0`（只寫快取、不落盤）—— 安全的方向，但要知道
 - [ ] **NC4 幀最大 4115B**：Router 不重組、不切幀；超過直接丟棄並計數（`RX_BUF_SIZE` 沿用 `proto.py`）
 
 ## 筆記
@@ -325,11 +341,11 @@ sys.modules['struct']       → KeyError
 
 1. **`gate()` 放在 ADDR 過濾之前**（doc §2.2）：`enable=1` 時「過路幀」（位址非本機）也會被轉送，
    這是「Remote 的指令轉給下層節點」的必要條件；`enable=0` 時逐行與舊版相同（selftest §7 固定）。
-2. **`ROUTER_SAVE` 的 enable 是原子的**（doc §12.2）：存檔失敗 → 記憶體與 `bus.shared` 一起回復，
-   不留「說存檔失敗但開關已經翻了」的半套狀態。
+2. ~~**`ROUTER_SAVE` 的 enable 是原子的**~~ → 指令已移除。原則保留：**「存檔失敗就不要改狀態」**，
+   不留半套（新的 `0x1103 STATUS_SET` 逐 key 回報每個 key 的落盤結果，就是同一條原則）。
 3. **自動註冊沒有開關**（doc §4.4）：使用者定調「每次啟動都要執行檢查建立」，
    所以不是 `auto: 1/0` 而是固定行為；同一 session 內只對「新看到的線路」動手一次
-   （所以 `ROUTE_DEL` 刪掉的不會被 100ms 的 sync 又補回來，但**下次開機會重新檢查建立**）。
+   （所以程式化 `route_del()` 刪掉的不會被 100ms 的 sync 又補回來，但**下次開機會重新檢查建立**）。
    要讓一條線永久不執行 → 寫 `{ "in": X, "out": [] }`，不是把 route 刪掉。
 
 **定案的設計原則（討論中被否決的方案一律記在 doc §7.3 / §9.1，勿重提）：**
@@ -339,6 +355,6 @@ sys.modules['struct']       → KeyError
    同樣地，**`CircuitDecode` 也不動** —— 它管「哪些線進解碼鏈」（介面 up/down），Router 管「進來了做什麼」（routing table），兩層不重疊。
 3. 設定**只有兩個欄位**：`enable` + `routes`。
 4. 一個來源 = 一條 route（`in` 純量）；`out` 一律列表；`self` 是保留字。
-5. **沒配對 = 沒路走 = 不執行。**（P7 之後：線路存在就會被自動註冊補上，所以這條只在「明確寫 `out: []`」或「已被 ROUTE_DEL 跳過」時成立）
+5. **沒配對 = 沒路走 = 不執行。**（P7 之後：線路存在就會被自動註冊補上，所以這條只在「明確寫 `out: []`」或「已被程式化 `route_del()` 跳過」時成立）
 6. 原本沒有的防禦（dedup / TTL / 速率限制）**一律不加** —— 升級不偷偷改變行為。
 7. 不確定就出聲，不猜（`in` 寫成列表 → 明確報錯並跳過，不自動解讀）。

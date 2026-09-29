@@ -5,7 +5,7 @@
       "cmd": "0x1101",
       "name": "STATUS_GET",
       "payload": [
-        {"name": "query_type", "type": "u8"}
+        {"name": "keys", "type": "str_u16len"}
       ]
     },
     {
@@ -17,16 +17,17 @@
     },
     {
       "cmd": "0x1103",
-      "name": "STATUS_UPDATE",
+      "name": "STATUS_SET",
       "payload": [
-        {"name": "config_json", "type": "str_u16len"}
+        {"name": "data_json", "type": "str_u16len"},
+        {"name": "persist", "type": "u8"}
       ]
     },
     {
       "cmd": "0x1104",
-      "name": "STATUS_UPDATE_ACK",
+      "name": "STATUS_ACK",
       "payload": [
-        {"name": "success", "type": "u8"},
+        {"name": "ok", "type": "u8"},
         {"name": "message", "type": "str_u16len"}
       ]
     }

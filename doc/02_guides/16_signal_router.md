@@ -3,7 +3,7 @@
 > **用途**：讓 ESP-NOW / 網路 / 實體線之間可以**互相轉送訊號**，並決定每一條線收進來的幀
 > 要「本地執行」還是「轉送出去」還是「兩者都做」。路由由 `config.json` 宣告，不寫死。
 > **位置**：`slave/lib/sys/signal_router.py`（核心）＋ `slave/tasks/bus_decode.py`（掛鉤）
-> ＋ `slave/action/router_actions.py` + `slave/schema/router.json`（0x16xx 執行期指令）
+> （0x16xx 執行期指令已於 2026-09 移除，見 §12）
 > **狀態**：P1–P5 ＋ 自動註冊（P7）已落地；**2026-09 再改三件事**：
 >           ① 介面名 `uartN` 的 N 改成 `UART.list` 索引（0-based）
 >           ② `self` 成為一等**來源**（本機迴路＝vBus 的幀一律以 `self` 進來）
@@ -96,7 +96,7 @@ disp.dispatch(cmd, payload, ctx)
 | `lib/sys/proto.py` | `Proto.pack_into()` — 轉送組幀用的共用內核（與 `pack()` 位元組相同）|
 | `tasks/bus_decode.py` | 建立 router、註冊服務 `signal_router`、週期 `sync_ifaces()`、每幀呼叫 `gate`、尾端 `housekeep()` |
 | `app.py::handle_stream` | 依 verdict 決定要不要 `disp.dispatch()`（收 `router` / `src_bus` 兩個選填參數）|
-| `action/router_actions.py` + `schema/router.json` | 0x16xx 執行期指令（P5）|
+| ~~`action/router_actions.py` + `schema/router.json`~~ | 0x16xx 執行期指令 —— **已移除（§12）** |
 
 **沒有新的 Task 類別**（`Core_Manager.py` / `Core0.py` 不需修改）—— 見 §8。
 
@@ -409,7 +409,7 @@ now, uart0         ＋  [{in: uart1, out:[self]}]  →   uart1 不存在 → **�
 >
 > **autofill 本身沒有開關**（使用者：「我應該是不會禁止的，除了 self to self」）。
 >
-> （保留的舊路徑：`ROUTER_SAVE` 0x1605 也會寫檔，那是執行期指令。）
+> （`_persist_router_table()` 是唯一會寫檔的路徑；0x16xx 指令已移除。）
 
 **通道什麼時候被 Router 看到（三段機制）**：
 
@@ -527,7 +527,7 @@ PC ─────┤                  ├──── Router
 所以升級**不應該偷偷加上去**。
 
 **排查方式**：`Router` 在 `load()` 時對 `out` 含 `udp` 的 route 印**一次**警告；
-執行期靠 `ROUTER_STATUS`（P5）的計數器看誰在狂送。
+執行期靠 `SignalRouter.status()` 的計數器看誰在狂送（目前只有 router_selftest §4 會呼叫它）。
 
 ### 7.3 已否決的防環機制（連同理由，勿重提）
 
@@ -554,7 +554,7 @@ PC ─────┤                  ├──── Router
 `RouterTask` 原本只負責：session 逾期清理、統計窗口、設定熱重載 —— 全部是微秒級運算，
 放在 `BusDecodeTask.loop()` 尾端一行 `housekeep()` 就夠。
 
-**代價**：`SYS_TASK_QUERY` 看不到 router。**補救**：`ROUTER_STATUS`（P5）自己回報。
+**代價**：`SYS_TASK_QUERY` 看不到 router。原本的補救（`ROUTER_STATUS`）已隨 0x16xx 移除。
 
 **什麼時候才需要獨立 Task**：要做「非同步重送 / 佇列排程」時（目標通道忙線排隊、逾時重送、
 優先級排序）。**第一版不做** —— 先量到實際丟包率再決定。
@@ -580,7 +580,7 @@ PC ─────┤                  ├──── Router
 | `links` / `protect` | 防環 | §7.3 |
 | `dedup_ms` / `max_hops` / `max_fwd_per_sec` | 防環 | §7.3 |
 | `bypass_cmds` | 逃生門（0x16xx 等強制本地執行）| **可用 route 表達**（`{ "in": "net", "out": ["self"] }`），同一個問題一種設法。⚠️ 代價見 §10 |
-| `stat_window_ms` | 統計窗口 | 統計改成 `ROUTER_STATUS` 查詢時即時計算 |
+| `stat_window_ms` | 統計窗口 | 已移除：統計由 `SignalRouter.status()` 即時計算 |
 | `max_frame` | 轉送 buffer 上限 | 沿用 `proto.RX_BUF_SIZE`（4115 = 剛好一幀）|
 | `send_retry` | 送出重試 | 沿用 `Buffer.send_retry`（`net_bus.py:48` / `circuit_bus.py:31`）|
 
@@ -612,7 +612,7 @@ PC ─────┤                  ├──── Router
 | 6 | `CircuitDecode` 的 `uart` 值是**索引**且未寫明 | 寫 `uart: 2` 想選 `id=2` 卻選到第 3 條（或什麼都沒選到）| ✅ §3.2 已寫明語意；P4 已補「選不到就警告」（`circuit.py::_warn_unmatched`）|
 | 7 | 無速率限制 | 環發生時會吃滿 CPU | 看得見（雜訊），不會靜默 |
 | 8 | `CircuitDecode` 的 `spi` / `i2c` / `can` key 永遠對不到 | 寫了沒有作用 | 已知缺口，不修（`CircuitTask` 只建 UART bus）；P4 已讓它**出聲** |
-| 9 | 出廠 config 的 `Router.enable` 都是 `0` | 不先開就什麼都不作用（＝安全的預設）| 用 `0x1605 ROUTER_SAVE` 帶 `enable=1` 開啟（§12.2 / §13.1）|
+| 9 | 出廠 config 的 `Router.enable` 都是 `0` | 不先開就什麼都不作用（＝安全的預設）| 用 `0x1103 STATUS_SET` 寫 `Router.enable=1` + `0x100F REBOOT`（§13.1）|
 | 10 | 過路幀（位址非本機）在 `enable=1` 時也會被轉送 | 未指派 `cID` 時廣播幀會在多站重複搬運 | 這是「閘道器」要的行為（§2.2）；**多跳前先指派 `System.cID`**（同第 5 點）|
 | 11 | **`ports/P4/ESP32-P4-ETH_mp3/` 是 fork，沒有這份程式碼** | 該 port 的 `config.json` 雖有 `Router` 區塊（`enable: 0`），改它**不會有任何作用也不會出聲** | 同步該 port 之前**不要開**（詳見 `todo/03_signal_router.md`）|
 
@@ -626,7 +626,7 @@ PC ─────┤                  ├──── Router
 | **P2** | `Proto.pack_into()`：與 `pack()` 共用 `_write_frame` 內核 | 低（加法）| ✅ selftest §6（含逐位元組對比 `pack()`）|
 | **P3** | `app.py` hook + `bus_decode` 掛鉤 + `sync_ifaces()`。`enable:0` 時一行都不進 | 中 | ✅ 實作完成；selftest §7 逐項回歸；**板上實測待做** |
 | **P4** | `CircuitDecode` **不動**（§3.2）；只補「選不到線就警告」+ 文件寫明 `uart` 是索引 | **低**（只有警告，無行為變更）| ✅ 實作完成 + selftest §8；板上待驗 |
-| **P5** | 0x16xx 指令（`ROUTE_ADD` / `ROUTE_DEL` / `TABLE_GET` / `STATUS` / `SAVE` + `ACK`）| 低 | ✅ 實作完成 + selftest §9–§11；**板上往返待做** |
+| **P5** | ~~0x16xx 指令~~ | — | ❌ **已移除（2026-09）** —— 職責併入 0x11xx + config（§12）|
 | **P6** | ESP-NOW ↔ UART 實測 + 文件 | — | ⏳ 待做（需兩板）|
 | **P7** | **自動註冊**（§4.4）：每次啟動檢視實際線路，沒 route 就補 `out: ["self"]` 並寫回 config | 低（只新增 route，不動既有）| ✅ 實作完成 + selftest §12；**板上寫檔待驗** |
 
@@ -649,54 +649,32 @@ PC ─────┤                  ├──── Router
 
 ---
 
-## 12. 執行期指令（P5，已落地）
+## 12. 執行期指令 —— **已移除（2026-09）**
 
-指令域 **`0x16xx`**（原本完全未被佔用）。schema 唯一真相：`slave/schema/router.json`；
-handler：`slave/action/router_actions.py`。
+原本的 `0x16xx`（`ROUTER_STATUS` / `ROUTE_ADD` / `ROUTE_DEL` / `TABLE_GET` / `SAVE` / `ACK`）
+**整組刪除**：`slave/schema/router.json` 與 `slave/action/router_actions.py` 都不在了。
 
-| CMD | 名稱 | 方向 | Payload | 說明 |
-|---|---|---|---|---|
-| `0x1601` | `ROUTER_STATUS` | Master→Slave | (空) | 回 `0x1606`：介面清單 / 每條 route 的 hit·fwd·drop / load 期間的錯誤 |
-| `0x1602` | `ROUTER_ROUTE_ADD` | Master→Slave | `route_json(str)` | 新增或覆寫一條 route（單行 JSON，如 `{"in":"now","out":["uart0"]}`）|
-| `0x1603` | `ROUTER_ROUTE_DEL` | Master→Slave | `in_name(str)` | 依 `in` 刪除一條 route |
-| `0x1604` | `ROUTER_TABLE_GET` | Master→Slave | `page(u8)` | 回 `0x1606`，`data_json` = `{page,pages,page_size,total,routes}` |
-| `0x1605` | `ROUTER_SAVE` | Master→Slave | `enable(u8)` | 存回 `config.json`（`cfg_manager.save_from_bus(update_key="Router")`）|
-| `0x1606` | `ROUTER_ACK` | Slave→Master | `ok(u8)` `code(u16)` `message(str)` `data_json(str)` | 唯一回覆 |
+**為什麼移除**：Router 的職責只有路由，而**路由表本來就是 config** ——
+讀它寫它應該走 `0x1101 STATUS_GET` / `0x1103 STATUS_SET`（`keys="Router"`），
+不該為此另開一組指令域。這組指令從建立到刪除（2026-09-21 → 09-28）沒有任何外部
+使用者：沒有 PC 工具、沒有 Web UI、沒有其他裝置、也沒有測試。
 
-### 12.1 `ROUTER_ACK.code`
+**改路由設定現在怎麼做**（全用既有指令）：
 
-| code | 意義 |
-|---|---|
-| `0` | OK |
-| `1` | router 尚未啟動（`BusDecodeTask` 還沒建立 `signal_router`）|
-| `2` | `route_json` 不是合法 JSON |
-| `3` | route 本身驗證不通過（`in`/`out` 欄位問題；訊息與開機 `load()` 同一份，直接透傳）|
-| `4` | 寫 `config.json` 失敗（**此時設定未變更**，見下）|
+```
+1) 0x1103 STATUS_SET  {"Router": {"enable": 1, "routes": [...]}}   persist=1
+      → 寫快取（立即）+ 逐 key 落盤（config.json，排版保留）
+2) 0x100F REBOOT
+      → 套用。BusDecodeTask._router_setup() 開機時 r.load(bus.shared["Router"])
+```
 
-### 12.2 `ROUTER_SAVE` 的 `enable` 位元組（沿用本專案 0xFF 慣例）
+⚠️ **改完要重啟才生效** —— 執行期熱重載沒有了（`ROUTE_ADD` 的「立即生效」是這次
+移除唯一真正損失的能力）。要熱套用只能在 REPL 直接呼叫 `signal_router` 的方法。
 
-| 值 | 行為 |
-|---|---|
-| `0xFF` | 只存檔，**不改開關**（＝「我就只是要存檔」要送的值）|
-| `0` | 存檔 + 關閉 Router |
-| `1` | 存檔 + 開啟 Router |
-| 其他 | 不改開關（不猜）|
-
-> ⚠️ **送 `ROUTER_SAVE` 一定要帶這 1 byte**。沒帶 = payload 長度 0 → 解碼出 `0` → 等於「關閉」。
-> 這是本專案既有的「空 payload 欄位補 0」語意（`SchemaCodec`），不是 Router 特有的陷阱。
-
-**原子性**：`enable` 的切換**只在存檔成功後**才生效；存檔失敗會把 `bus.shared["Router"]`
-一併回復原狀並回 `code=4`。理由：「說存檔失敗但開關已經翻了」是最難排查的半套狀態。
-
-### 12.3 執行期 vs 開機
-
-- `ROUTE_ADD` / `ROUTE_DEL` **立即生效**（改的是 `BusDecodeTask` 建立的那個實例），不需要重啟。
-- `ROUTER_SAVE` 只負責持久化；沒存就重開機，改動會消失。
-- `enable` 在**所有出廠 config.json 都是 `0`**：要先用一次 `ROUTER_SAVE` 帶 `enable=1`
-  （或直接改 config.json）開啟，之後就能全遠端管理路由。
-- **autofill（§4.4）在 `enable: 0` 時也會建立路由表**（方便先看 config 再決定要不要開），
-  並在開機結算時**寫回 config.json** —— 設定檔會長出你沒寫過的通道（那是「幫我註冊」的意思）。
-  config 裡就會自動長出「這台真實有哪些線路」的清單，你直接在上面改就好。
+**引擎不受影響**：`lib/sys/signal_router.py` 照舊由 `config.json` 的 `Router` 區塊 +
+`BusDecodeTask` 驅動（`load` → `sync_ifaces` → `finalize` → `gate` → `housekeep`）。
+`signal_router` 上的程式化 API（`route_add` / `route_del` / `table` / `status` /
+`set_enable`）都還在，只是不再有指令介面。
 
 ---
 
@@ -739,24 +717,26 @@ routes（記憶體）: [
 ### 13.1 遠端開啟 Router（出廠 enable=0 → 全遠端管理）
 
 ```
-1) 0x1602 ROUTER_ROUTE_ADD  {"in":"now","out":["uart0"]}
-2) 0x1602 ROUTER_ROUTE_ADD  {"in":"uart0","out":["self"]}
-3) 0x1604 ROUTER_TABLE_GET  確認表對了
-4) 0x1605 ROUTER_SAVE       enable=1     ← 存檔成功的同時就生效
-5) 0x1601 ROUTER_STATUS     看 hit/fwd/drop 確認流量真的在走
+1) 0x1103 STATUS_SET  {"Router": {"enable": 1, "routes": [
+       {"in": "self",  "out": ["now"]},
+       {"in": "now",   "out": ["uart0"]},
+       {"in": "uart0", "out": ["self"]}
+   ]}}  persist=1                       ← 寫快取 + 落盤（排版保留）
+2) 0x1101 STATUS_GET  {"keys": "Router"}   ← 確認表對了
+3) 0x100F REBOOT                           ← 套用
 ```
 
-> 第 4 步之前 Router 是關的（`enable=0`），所以第 1~3 步的指令本身不受路由影響 ——
-> **先確認表對了再開**，是唯一「不會把自己鎖在門外」的順序（§10 限制 1）。
+> 先確認表對了再開，是唯一「不會把自己鎖在門外」的順序（§10 限制 1）。
 >
-> 而且第 1~2 步通常**不用自己寫**：autofill（§4.4）已經把每條通道補上預設
-> （`self` 補 `[]`、其他補 `["self"]`），你只要把要轉送的那幾條 `ROUTE_ADD` 覆寫掉就好。
+> 而且第 1 步通常**不用自己寫全部**：autofill（§4.4）已經把每條通道補上預設
+> （`self` 補 `[]`、其他補 `["self"]`）並寫回 config。你只要讀出來、把要轉送的
+> 那幾條改掉，再 `STATUS_SET` 回去。
 
 ### 13.2 驗證
 
 ```bash
 # 離線（PC，不需硬體）—— 現行
-python3 -B test/protocol/router_self_selftest.py     # 43 項
+python3 -B test/protocol/router_selftest.py          # 離線自測（注意：§1 目前是壞的，見 todo/03）
 python3 -B test/protocol/router_show_defaults.py     # dump 實際預設（snapshot/table/status）
 
 # ⚠️ 下面這份「真機 114 項」目前**不存在於 repo**（`test/protocol/router_board_test.py`），

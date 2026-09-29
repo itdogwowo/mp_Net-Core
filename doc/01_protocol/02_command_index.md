@@ -2,18 +2,18 @@
 
 > **用途**：單一查詢表，收錄本專案全部指令域的完整指令定義。對接/新增指令前先查這裡。
 > **分類**：協議層（01_protocol）
-> **最後更新**：2026-09（新增 0x16xx router）
+> **最後更新**：2026-09（移除 0x16xx router；0x11xx 改為狀態與設定）
 > **權威來源**：`slave/schema/*.json`；本文件是整理後的說明，衝突以 schema 為準。
 > **指令碼分配**：
 
 ```
 0x10xx — sys         系統發現/控制/任務管理/定址/遠端更新
-0x11xx — status      狀態查詢/配置更新
+0x11xx — status      狀態與設定（取 / 設 / 存）
 0x12xx — heartbeat   心跳
 0x13xx — now         ESP-NOW
 0x14xx — hw          硬體控制 + 臨時提速
 0x15xx — waiting_to_trash  待清理功能
-0x16xx — router     訊號 Router（頻道間轉送 / 路由表）
+0x16xx — （已移除）  原 Router 執行期指令，職責併入 0x11xx + config
 0x18xx — bench       性能測試（通用接收吞吐）
 0x20xx — file        檔案傳輸/查詢
 0x22xx — ota         韌體 OTA（合作方合同）
@@ -63,14 +63,39 @@
 
 ---
 
-## 2) status.json（0x11xx）— 狀態
+## 2) status.json（0x11xx）— 狀態與設定
+
+「具名的值」= provider（任務註冊的即時數值）＋ config（`bus.shared` 的設定樹）。
+兩者用**同一組 key** 取，所以同一個指令既能查狀態也能查設定。
 
 | CMD | 名稱 | 方向 | Payload | 說明 |
 |-----|------|------|---------|------|
-| 0x1101 | STATUS_GET | Server → MCU | `query_type(u8)` | 請求狀態（0=全部，1=精簡） |
-| 0x1102 | STATUS_RSP | MCU → Server | `status_json(str)` | 回傳 JSON 狀態 |
-| 0x1103 | STATUS_UPDATE | Server → MCU | `config_json(str)` | 更新配置 |
-| 0x1104 | STATUS_UPDATE_ACK | MCU → Server | `success(u8)` `message(str)` | 更新結果 |
+| 0x1101 | STATUS_GET | Server → MCU | `keys(str)` | 要什麼列什麼（逗號分隔）。**空 = 全部**（舊行為）／`?` = 可用名稱目錄 |
+| 0x1102 | STATUS_RSP | MCU → Server | `status_json(str)` | `{key: value, ...}`；找不到的集中在 `_unknown`、被拒的（密碼/執行期鍵）在 `_denied` |
+| 0x1103 | STATUS_SET | Server → MCU | `data_json(str)` `persist(u8)` | `data_json` = `{"路徑": 值, ...}`（可一次多個）；`persist` 見下 |
+| 0x1104 | STATUS_ACK | MCU → Server | `ok(u8)` `message(str)` | 更新結果（逐 key 回報，含存檔走哪條路） |
+
+**key 的解析順序**：內建（`slave_id` / `mem_free`）→ provider 名稱 → config 點分路徑
+（`System.cID`、`Network.ESP_now.enable`、`Router`）。
+
+**`persist`（沿用本專案 `0xFF = 不變` 的慣例）**
+
+| 值 | 行為 |
+|---|---|
+| `0` | 只寫快取（立即生效，**不碰 flash**）← 測試用 |
+| `1` | 寫快取 → **逐 key** 落盤 |
+| `0xFF` | 不改值，只把 `data_json` 的 key 當清單落盤（純存檔）。空 `data_json` → 拒絕（不做全量存檔） |
+
+★ 落盤一律**逐 key**（`save_from_bus(update_key=)` = 在原始檔文字裡只換那一段）
+→ **排版保留**。不做全量存檔，因為那條路會整檔重排縮排。
+
+⚠️ `0x1101` 的舊欄位 `query_type(u8)` 已被 `keys(str)` 取代。舊客戶端送
+`{query_type:0}`（payload 1 byte）→ 解碼時 `keys` 缺席 → 視為空 → **回全部**，
+與舊行為相同，不需改工具。但舊的「1=精簡」從來沒有實作過，現在也不會生效。
+
+⚠️ ESP-NOW 單幀上限 250 B（`NowBus.MAX_PAYLOAD`）。整包 metrics 或 config
+通常超過 → 走 ESP-NOW 送不出去（`send()` 回 False，不報錯）。要用 ESP-NOW 查
+請縮小 `keys`；WS / UART 沒有這個限制。
 
 ---
 
@@ -132,20 +157,23 @@
 
 ---
 
-## 7) router.json（0x16xx）— 訊號 Router
+## 7) ~~router.json（0x16xx）~~ — **已移除（2026-09）**
 
-> 讓 ESP-NOW / 網路 / 實體線之間互相轉送。設計唯一真相：`doc/02_guides/16_signal_router.md`。
-
-| CMD | 名稱 | 方向 | Payload | 說明 |
-|-----|------|------|---------|------|
-| 0x1601 | ROUTER_STATUS | Master→Slave | (空) | 回 0x1606：介面清單 / 每條 route 的 hit·fwd·drop / load 錯誤 |
-| 0x1602 | ROUTER_ROUTE_ADD | Master→Slave | `route_json(str)` | 新增或覆寫一條 route（單行 JSON `{"in":"now","out":["uart0"]}`），**立即生效** |
-| 0x1603 | ROUTER_ROUTE_DEL | Master→Slave | `in_name(str)` | 依 `in` 刪除一條 route |
-| 0x1604 | ROUTER_TABLE_GET | Master→Slave | `page(u8)` | 回 0x1606，`data_json` = `{page,pages,page_size,total,routes}` |
-| 0x1605 | ROUTER_SAVE | Master→Slave | `enable(u8)` | 存回 `config.json`；`0xFF`=只存檔、`0`=關、`1`=開（存檔成功才切換）|
-| 0x1606 | ROUTER_ACK | Slave→Master | `ok(u8)` `code(u16)` `message(str)` `data_json(str)` | 唯一回覆 |
-
-> `ROUTER_ACK.code`：0=OK、1=router 未啟動、2=route_json 不是合法 JSON、3=route 驗證失敗、4=存檔失敗（設定未變更）。
+> **0x1601~0x1606 整組刪除**（`slave/schema/router.json` + `slave/action/router_actions.py`）。
+> 原因：Router 的職責只有路由，而路由表**本來就是 config** —— 讀寫它應該走
+> `0x1101 STATUS_GET` / `0x1103 STATUS_SET`（`keys="Router"`），不該另開一組指令。
+>
+> 那 6 條從建立到刪除（2026-09-21 → 2026-09-28）**沒有任何外部使用者**：
+> 沒有 PC 工具、沒有 Web UI、沒有其他裝置、也**沒有測試**（當時文件聲稱的
+> selftest §11 從未存在）。唯一的呼叫者是它自己。
+>
+> **改路由設定現在怎麼做**（全用既有指令）：
+> 1. `0x1103 STATUS_SET {"Router": {...}}` `persist=1` → 寫快取 + 逐 key 落盤
+> 2. `0x100F REBOOT` → 套用（`BusDecodeTask._router_setup()` 在開機時 `load()` 新設定）
+>
+> Router **引擎**本身不受影響：`lib/sys/signal_router.py` 照舊由 `config.json` 的
+> `Router` 區塊 + `BusDecodeTask` 驅動（`load` → `sync_ifaces` → `finalize` → `gate`）。
+> 設計唯一真相仍是 `doc/02_guides/16_signal_router.md`（§12 指令表已標為歷史）。
 
 ---
 

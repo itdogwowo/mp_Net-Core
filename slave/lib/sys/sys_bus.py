@@ -83,6 +83,28 @@ class SysBus:
         res["slave_id"] = self.slave_id
         return res
 
+    def provider_names(self):
+        """已註冊的 provider 名稱（給 0x1101 的目錄查詢用）。排序後回傳。"""
+        return sorted(self._providers.keys())
+
+    def get_metric(self, key, default=None):
+        """取**單一** provider 的值（不存在或丟例外 → default）。
+
+        ★ 為什麼要有它：`get_metrics()` 會把**每一個** provider 都算一次。
+          查一項卻跑全部，在 provider 便宜時看不出差別，但只要有**一個**貴的
+          （例如某天有人掛上「從 flash 重算 SHA256」那種要 1~2 秒的），
+          查一項就會變成查全部。
+          這個教訓在 OTA 已經付過一次（見 doc 的 OTA 選擇性讀取），所以這裡
+          一開始就讓「單項查詢只算那一項」。
+        """
+        f = self._providers.get(key)
+        if f is None:
+            return default
+        try:
+            return f()
+        except Exception:
+            return default
+
     def gpio_claim(self, gpio, driver, label=""):
         label = label or "{}:{}".format(driver, gpio)
         if gpio not in self._gpio_claims:
