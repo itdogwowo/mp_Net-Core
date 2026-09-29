@@ -223,7 +223,7 @@ disp.dispatch(cmd, payload, ctx)
 | **2** | **`master_cid` / 角色不持久化** | 每次開機要重綁 | 寫進 btree（`@node.*`）（§6） |
 | **3** | **掃描沒有發起端** | 裝置自己不能掃 | UI 按鈕 → `make_cmd(0x100D, {"reply_addr": bus.cid})` → 發射 |
 | **4** | **射頻配對從未建立** | unicast 送不出去（`ESP_ERR_NOT_FOUND(-12393)`） | ✅ **P6 已完成**：`NowBus.poll()` 收幀即 `learn_peer(peer)`（**對稱**：兩端各自學），另加硬體 peer 表上限（§9.7） |
-| **5** | **沒有 `ESP-NOW 關` 指令** | 只能開不能關 | `NowBus.deinit()` 存在，需要一個指令包裝（**仍未做**） |
+| **5** | **沒有 `ESP-NOW 關` 指令** | 只能開不能關（UI 開關是單向的） | ✅ **P6 已完成**：新增 `0x1304 NOW_CTRL{action}`（0=查詢／1=開／2=關），與 `0x1010 WREPL_CTRL`、`0x1017 WEBUI_CTRL` 同型。**順帶修掉一個舊洞**：`0x1301 NOW_INIT` 對「服務在、但已斷線」只印 `already initialized` 就返回 → 關掉之後再也開不回來（§9.8） |
 | **6** | **沒有「發送任務」** | 廣播/定向的判斷散在呼叫端 | 抽一個統一發射出口（§2.6/§2.7）—— **可延後** |
 | **7** | ★★ **`0x1002 SLAVE_ANNOUNCE` 沒有發送端、也沒有接收端** | **ESP-NOW 上「被發現」的唯一途徑是空的** → 節點清單永遠空的 | ✅ **P6 已完成**：接收端 `net_actions.on_slave_announce`（+ `PeerRegistry.learn_from_announce`）；發送端在測試對端 `ports/S3/ESP32-S3-Test_Peer` 的 `AnnounceTask`（§12） |
 
@@ -611,6 +611,41 @@ ESP-NOW 的 `esp_now_send()` **不接受沒註冊過的 peer**，會回 `ESP_ERR
 
 滿了只印一次警告，不影響既有 peer，也不阻擋明確綁定。
 
+### 9.8 ★ `0x1301 NOW_INIT` 無法「重新開機」已斷線的 ESP-NOW
+
+`on_now_init` 的邏輯是「服務不存在才建」：
+
+```python
+now = bus.get_service("NowBus")
+if now is None:
+    ... 建立 + init ...
+else:
+    print("[NOW] already initialized")     # ← 服務在就什麼都不做
+```
+
+但 ESP-NOW 有**兩種**「不在跑」的狀態，這個判斷把他們混成同一種：
+
+| 狀態 | 服務 | `connected` | 舊碼的反應 |
+|---|---|---|---|
+| 從來沒建過 | 不存在 | — | 建立 ✔ |
+| **關掉之後** | **存在** | **False** | **什麼都不做** ✘ |
+
+→ 所以「關掉 → 想再開」在舊碼上是**靜默失敗**（只印一行 already initialized）。
+`0x1304 NOW_CTRL` 的 `_now_on()` 分開處理這兩種狀態（存在但斷線 → **就地重開**）。
+
+**關掉的狀態刻意設計成「服務還在、`connected=False`」**，不是把服務拔掉：
+- `NowTask.loop()` 靠 `connected` 停 poll
+- `NowBus.send()` 靠 `connected` 直接回 `False`
+- UI `_tx()` 拿到 `False` → 顯示送不出去，而不是靜默
+
+所有既有呼叫端本來就是容錯寫法，拔掉服務反而會讓 `get_service("NowBus") is None`
+的分支到處跑。**UI 判斷開關狀態必須用 `connected`，不能用「服務存在」**
+（`remote.py:_sync_now_switch()` 就是踩到這個才修）。
+
+**關的順序不能顛倒**：① 先 `bus_sources.remove(now)` → ② 才 `now.deinit()`。
+反過來的話，`bus_decode._drain()` 的下一輪會拿到已 dead 的 bus
+（`rx_hub` 還在、`_esp` 已是 `None`）而在射頻層炸開。
+
 ---
 
 ## 10. 環境操作備忘（上板 / REPL）
@@ -663,6 +698,8 @@ cfg_manager.load_setup()      # ← import 就會建 secrets.db + 讀 config.jso
 | 8 | **`0x1002` 要不要帶 `cid`？** | 目前 payload 是 `slave_id + pixel_count + hw_version`（schema 已定）。不帶 cid → 收到公告只學到 MAC，還要再敲一次 `0x100D` 才知道 cid。加 `cid` 可以省一趟，但要動 schema（**已定義的指令改 payload 是破壞性變更**） |
 | 9 | **公告週期** | 測試對端用 10 秒。真實裝置要多長？（太短 = 無線電一直講話；太長 = 面板開機後等很久才看到它）。或改成「只在開機公告一次 + 被敲門才回」 |
 | 10 | **`Router.enable=0` 時仍然寫回 `config.json`** | `finalize_router()` 不看 `enable`。所以任何 port 第一次開機，`Router.routes` 都會被補成 5 條。是預期行為（§9.2），但值得在每個 port 的 README 註明 |
+| 11 | **`ESP_now.enable` 的角色是「授權」還是「狀態」？** | 目前定為**授權**（config 說「這台允許用 ESP-NOW」），執行期開關是 `0x1304`。所以關掉不改 config，重開機回到 config 的狀態。若希望「關掉就記住」，就要改成寫回 config |
+| 12 | **`test/protocol/router_selftest.py` 目前是壞的（既有問題）** | §1 就掛：`build()` 沒註冊介面，route 進 `_pending` 而非 `by_in` → `len(r.by_in)==0`。測試檔沒跟上 pending/autofill 機制。與本計劃無關，但會讓「跑一下 selftest」失去意義 |
 
 ---
 

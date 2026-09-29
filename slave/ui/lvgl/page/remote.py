@@ -252,14 +252,21 @@ def _toggle_wifi():
 
 
 def _toggle_now():
-    """ESP-NOW 開關：目前只有「開」（0x1301 NOW_INIT）。沒有關的指令（計劃 P6 補）。"""
-    on = not u.sw_get(_now_sw)
-    u.sw_set(_now_sw, on)
-    if on:
-        _exec(0x1301, {})
-    else:
-        print("[remote] ⚠ ESP-NOW 關閉尚無指令（P6 待補）")
-    print("[remote] ESP-NOW →", "ON" if on else "OFF(未實作)")
+    """ESP-NOW 開關 → `0x1304 NOW_CTRL{action}`（0=查詢 1=開 2=關）。
+
+    與 Wi-Fi 開關（0x1008）刻意長得不一樣，因為底層是兩件事：
+      Wi-Fi  : enable 只是一個**授權旗標**，實際連線由 NetworkManager 非同步做
+      ESP-NOW: 開/關是**立即的射頻動作**（NowBus.init / deinit），成敗當下就知道
+
+    開不起來最常見的原因不是指令失敗，而是 `Network.ESP_now.enable = 0`
+    —— 那是授權，`on_now_ctrl` 會拒絕在未授權時偷偷開（見 now_actions）。
+    所以這裡要把開關撥回去，不要讓 UI 顯示一個騙人的 ON。
+    """
+    want = not u.sw_get(_now_sw)
+    u.sw_set(_now_sw, want)
+    _exec(0x1304, {"action": 1 if want else 2})
+    print("[remote] ESP-NOW →", "ON" if want else "OFF")
+    _sync_now_switch()          # 以實際狀態回寫開關（可能與剛才撥的不同）
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -482,11 +489,29 @@ def _refresh_info():
             u.sw_set(_wifi_sw, w)
     except Exception:
         pass
+    _sync_now_switch()
+
+
+def _sync_now_switch():
+    """把 ESP-NOW 開關拉回**實際**狀態（單向：服務 → UI）。
+
+    ★ 判準是 `connected`，不是「服務存不存在」。
+      `0x1304 NOW_CTRL{action:2}` 關掉之後，`NowBus` 服務**仍然在 bus 上**
+      （刻意的，見 now_actions.on_now_ctrl）—— 只把 `connected` 變 False。
+      所以用 `now is not None` 判斷的話，關掉之後開關會彈回 ON。
+    """
+    b = _kv()
+    now = b.get_service("NowBus")
     try:
-        if u.sw_get(_now_sw) != (now is not None):
-            u.sw_set(_now_sw, now is not None)
+        on = bool(now is not None and now.connected)
+    except Exception:
+        on = False
+    try:
+        if u.sw_get(_now_sw) != on:
+            u.sw_set(_now_sw, on)
     except Exception:
         pass
+    return on
 
 
 # ══════════════════════════════════════════════════════════════════

@@ -18,6 +18,13 @@
       "cmd": "0x1303",
       "name": "NOW_STATS",
       "payload": []
+    },
+    {
+      "cmd": "0x1304",
+      "name": "NOW_CTRL",
+      "payload": [
+        {"name": "action", "type": "u8"}
+      ]
     }
   ]
 }
