@@ -50,12 +50,35 @@ layer 2  bus_decode
 2. **ESP-NOW 頻道必須與面板一致（本 port 與面板 V2 都是 6）。**
    不同頻道 = 完全收不到，而且兩邊都不會報錯。
 
-## 上傳
+## 上傳（兩段式：基底 + port 覆蓋）
+
+裝置的根目錄 = `slave/` 的**內容**（沒有 `slave/` 這一層），port 目錄只是它的 delta。
+
 ```
-1) slave/ 全量                     ← 基礎（與其他 port 相同）
-2) 本 port 的 config.json + Core_Manager.py   ← delta 覆蓋
-3) RESET
+① 基底：slave/ 全量
+     python -B tools/PC/local_delta_upload.py <port>
+   （delta 上傳：抓設備 /manifest.json 比 sha256，只傳有差異的檔。
+     走 USB normal REPL + base64，設備 crash/重啟循環時也能救援。）
+
+② 覆蓋：本目錄的 config.json + Core_Manager.py → 裝置根目錄
+     config.json        → /config.json
+
+     Core_Manager.py    → /Core_Manager.py
+   ★ README.md **不要**上傳（repo 專用；裝置上本來就沒有 README）
+   ★ 不能只做 ②：Core_Manager.py 依賴 slave/ 的新檔
+     （`now_bus.learn_peer` / `net_actions.on_slave_announce` / `0x1304`），
+     舊基底 + 新 Core_Manager 會在 import 期就找不到符號。
+
+③ RESET（軟重啟 ctrl-D 或斷電重上）
 ```
+
+`local_delta_upload.py` 一次只吃一個 `--slave=<dir>`，所以第二段用 `mpremote cp`
+或既有的 `test/protocol/night_run/repl_upload.py <port> <local> <remote>` 單檔傳即可。
+
+> ⚠️ 上傳前先在 REPL 停住 app（**Ctrl-C 要按兩次**：第一次是
+> `auto_disable_on_interrupt()` → 存 `watchdog.enable=0` + 立即重啟一次）。
+> WDT 開著時停在 REPL 約 8 秒會被硬體重置 —— 本 port 的 config 已經是
+> `enable:0`，所以第一次上傳後就沒有這個問題。
 
 > ⚠️ `Router.enable=0`，但**開機時 Router 仍會把自動補齊的路由表寫回
 > `config.json`**（`bus_decode.finalize_router` → autofill + 寫檔）。
@@ -84,14 +107,19 @@ layer 2  bus_decode
 ```bash
 python -B /tmp/nodetest/peer_smoke.py       # 開機 → 廣播合法的 0x1002（欄位逐項比對）
 python -B /tmp/nodetest/peer_roundtrip.py   # 收到 0x100D → 學會面板 MAC → 單播回 0x100E
+python -B /tmp/nodetest/now_ctrl.py         # 0x1304 開/關/再開/查詢/未授權拒開
+python -B /tmp/nodetest/ui_smoke.py         # 遙控器頁（含開關狀態同步）
 ```
-兩支都是 CPython + shim；實作於 `slave/`，不佔用板上資源。
+全部是 CPython + shim（`/tmp/nodetest/shim.py` 提供 micropython / machine / btree /
+espnow / network / _thread / ptr8 …）；不需要板子，也不佔用板上資源。
 
 ## 已知缺口（不是本 port 的問題）
 - **真實執行端 `ports/S3/ESP32-S3-1_18` 的 `Network.ESP_now.enable = 0`**
   → 那台板子現在**完全不收 ESP-NOW**。要它回應遙控器，先把這個改 1。
-- **`0x1002 SLAVE_ANNOUNCE` 原本沒有任何發送端** → ESP-NOW 上「被發現」的
-  唯一途徑（MAC 無法列舉）是空的。本 port 的 `AnnounceTask` 是第一個發送端；
-  真實執行端要不要也公告，是**產品決策**（公告＝任何人都看得到你）。
-- **ESP-NOW 沒有「關」指令**（只有 `0x1301 NOW_INIT`）→ 面板的 ESP-NOW 開關
-  目前只能開不能關。見 `doc/03_notes/19_remote_control_plan.md` §11。
+- **真實執行端不會公告** → 要它出現在面板清單，只能靠面板主動「掃描」
+  （`0x100D` 廣播）。要不要讓生產裝置也跑 `AnnounceTask` 是**產品決策**
+  （公告＝射程內任何人都看得到你，ESP-NOW 廣播未加密）。
+- **`0x1002` 不帶 `cid`** → 收到公告只學到 MAC，還要再敲一次 `0x100D` 才知道 cid。
+  加 `cid` 可省一趟，但動已定義指令的 payload 是破壞性變更（計劃書 §11-8）。
+- **公告週期 10 秒是測試值** → 生產值未定（太短＝無線電一直講話；
+  太長＝面板開機後等很久才看到它）。計劃書 §11-9。
