@@ -66,7 +66,7 @@ layer 2  bus_decode
      Core_Manager.py    → /Core_Manager.py
    ★ README.md **不要**上傳（repo 專用；裝置上本來就沒有 README）
    ★ 不能只做 ②：Core_Manager.py 依賴 slave/ 的新檔
-     （`now_bus.learn_peer` / `net_actions.on_slave_announce` / `0x1304`），
+     （`now_bus.learn_peer` / `net_actions.on_slave_announce` / `0x1301{action}`），
      舊基底 + 新 Core_Manager 會在 import 期就找不到符號。
 
 ③ RESET（軟重啟 ctrl-D 或斷電重上）
@@ -107,9 +107,16 @@ layer 2  bus_decode
 ```bash
 python -B /tmp/nodetest/peer_smoke.py       # 開機 → 廣播合法的 0x1002（欄位逐項比對）
 python -B /tmp/nodetest/peer_roundtrip.py   # 收到 0x100D → 學會面板 MAC → 單播回 0x100E
-python -B /tmp/nodetest/now_ctrl.py         # 0x1304 開/關/再開/查詢/未授權拒開
 python -B /tmp/nodetest/ui_smoke.py         # 遙控器頁（含開關狀態同步）
 ```
+
+ESP-NOW 開關（`0x1301{action}`）的相容性測試**已進 repo**，不需要 `/tmp`：
+
+```bash
+python -B -m unittest discover -s test/protocol -p "test_now_1301*.py"
+```
+涵蓋：不給參數=查詢、`0`=查詢、`1`=開、`2`=關、未知 action（含 `0xFF`）、
+以及「本地 `encode` 缺席欄位補 0」這個不對稱陷阱。
 全部是 CPython + shim（`/tmp/nodetest/shim.py` 提供 micropython / machine / btree /
 espnow / network / _thread / ptr8 …）；不需要板子，也不佔用板上資源。
 
