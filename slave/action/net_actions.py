@@ -183,17 +183,22 @@ def on_net_start(ctx, args):
             except Exception as e:
                 print("❌ [Net] AP start failed: {}".format(e))
     elif iface_type == 3:  # ESP-NOW
+        # ★ 走 0x1301 的**同一個實作**（`now_actions._now_on`），不另寫一套 init。
+        #   原本這裡自己建 NowBus + init(channel=ch)，缺了兩件事：
+        #     ① 沒有「服務存在但已斷線」的處理 → 對已 deinit 的實例再 init
+        #     ② 沒有 network.py 的 ESP_ERR_ESPNOW_EXIST 防護
+        #   同一件事三套實作（0x1301 / 0x1012 / 0x1304），其中兩套是壞的
+        #   —— 2026-09 整併成一套。
+        #   延後 import：避免 network/action 模組層的循環依賴。
         try:
-            from lib.sys.now_bus import NowBus
-            esp_cfg = bus.shared.get('Network', {}).get('ESP_now', {})
-            ch = esp_cfg.get('channel', 1)
-            now = bus.get_service("NowBus")
-            if now is None:
-                now = NowBus(label="NOW-Bus")
-            if now.init(channel=ch):
-                bus.register_service("NowBus", now)
+            from action.now_actions import _now_on
+            esp_cfg = bus.shared.get('Network', {}).get('ESP_now', {}) or {}
+            now, what = _now_on(esp_cfg)
+            if now is not None:
                 ok = 1
                 iface = "espnow"
+            else:
+                print("❌ [Net] ESP-NOW init {}".format(what))
         except Exception as e:
             print("❌ [Net] ESP-NOW start failed: {}".format(e))
 

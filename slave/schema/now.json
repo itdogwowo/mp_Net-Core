@@ -4,7 +4,9 @@
     {
       "cmd": "0x1301",
       "name": "NOW_INIT",
-      "payload": []
+      "payload": [
+        {"name": "action", "type": "u8"}
+      ]
     },
     {
       "cmd": "0x1302",
@@ -18,13 +20,6 @@
       "cmd": "0x1303",
       "name": "NOW_STATS",
       "payload": []
-    },
-    {
-      "cmd": "0x1304",
-      "name": "NOW_CTRL",
-      "payload": [
-        {"name": "action", "type": "u8"}
-      ]
     }
   ]
 }
