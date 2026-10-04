@@ -23,6 +23,8 @@
 
 - **`bus.cid`(uint16)**：裝置自身的協議短身份，由 `ConfigManager.ensure_cID()` 於 **T0（boot.py import 時）** 建立——`System.cID` 為空時以 `machine.unique_id()` 末 4 碼填入並持久化；取不到則 `"FFFF"`。cID 是**單一擁有**、由 ConfigManager 推動，消費者（解碼層）只讀不重算。
 - **`bus.master_cid`(uint16, 內存)**：回應定址目標，預設 `0xFFFF`（廣播=未設定）。Master 透過 `SET_MASTER` 或 `IDENTIFY_REQ` 的 `reply_addr` 告知 slave；slave 記住後，所有回應的 `addr` 欄位都填 `bus.master_cid`。**只存內存，重開機丟失**（下次開機 master 再告訴）。
+  > ⚠️ **欄位名已於 2026-10 更名為 `reply_cid`**（wire 不變，只有原始碼／文件的名字變）。
+> ⚠️ **語意已被 §30（2026-10）取代**：`IDENTIFY_REQ.reply_addr` 不再改 `master_cid`（只決定那一封 `0x100E` 的位址），且 `master_cid` 已落盤（`@node.master_cid`，P2）。本行保留為當時的歷史記錄。
 - **ADDR 過濾(`app.py` `handle_stream`)**：只收 `addr == ADDR_BROADCAST(0xFFFF)` 或 `addr == bus.cid` 的幀，其餘 `continue` 丟棄。這讓「逐 address 掃描」的 RX 端現成可用。
 
 ### IDENTIFY 流程（逐 address 掃描，模仿 I2C）
@@ -42,7 +44,7 @@ master 對 addr=X 發 IDENTIFY_REQ(0x100D, payload 帶 reply_addr)
 
 | CMD | 名稱 | 方向(發起→接收) | Payload | 行為 |
 |---|---|---|---|---|
-| 0x100D | IDENTIFY_REQ | Master→Slave | `reply_addr(u16)` | 逐 address 素描；帶 reply_addr 告知 master_cid |
+| 0x100D | IDENTIFY_REQ | Master→Slave | `reply_addr(u16)` | 逐 address 素描；帶 reply_addr 告知 master_cid ⟶ **已被 §30 取代**（只點名，不改方向）|
 | 0x100E | IDENTIFY_RSP | Slave→Master | `cid(u16)` `slave_id(str)` `ip(str)` | 回應；`ip`=多介面 JSON |
 | 0x100F | REBOOT | Master→Slave | `delay_ms(u32)` | 延遲後 `machine.reset()` |
 | 0x1010 | WREPL_CTRL | Master→Slave | `action(u8)` 0=查 1=開 2=關 | 回 0x1011 |
@@ -881,3 +883,542 @@ _viper_compact(self._buf, self._start, self._end, keep)
 
 `circuit_bus.py` `poll()` 的 `pv[:n] = raw_bytes`、`_commit()` 的 `cview[:take] = view[:take]`、
 `net_bus.py` 同類路徑 —— 目標視圖都是 4115B 級，預期各 ~320us/次。要用同一套方法量過再改。
+
+---
+
+## 30) `0x100D` 只點名、不改方向：`master_cid` 收成單一寫入者（2026-10）
+
+### 30.1 問題：一個狀態兩個寫入者
+
+`bus.master_cid`（「我以後聽誰的」）原本有**兩個**指令層寫入者：
+
+| 指令 | 職責 | 寫什麼 |
+|---|---|---|
+| `0x1016 SET_MASTER` | **設定方向** | `master_cid` + `role="slave"` + `save_node()`（落盤）|
+| `0x100D IDENTIFY_REQ` | **點名** | `master_cid = reply_cid`（記憶體，不落盤）|
+
+根因不是誰亂寫，是**`_reply()` 少了一個參數**：它只能從全域 `bus.master_cid`
+拿目的位址，所以 `on_identify_req` 要回 `0x100E` 給掃描者，就只能先
+**把 `reply_cid` 塞進 `master_cid`**。
+
+副作用（實測）：
+
+| # | 後果 |
+|---|---|
+| 1 | **掃描 = 無聲搶奪**：面板 B 按一下「掃描」→ 射程內**每台**節點都改認 B，面板 A 完全不知道 |
+| 2 | **狀態自相矛盾**：掃描後 `master_cid=0x0001` 但 `role=None`，`node_state()["bound"]` 卻回 `True` |
+| 3 | **查不到真值**：掃描不 `publish_node()` → `0x1101{keys:"node.master_cid"}` 讀到**過期**快照 |
+| 4 | **重開機不一致**：掃描不落盤 → 重開機還原成 btree 的值，但這輪開機期間一直回給掃描者 |
+
+### 30.2 修法：把位址還原成「這一封」的參數
+
+```python
+# net_actions.py —— _reply 補上目的位址參數
+def _reply(ctx, rsp_cmd, fields, addr=None):
+    ...
+    ctx["send"](Proto.pack(rsp_cmd, payload,
+                           addr=bus.master_cid if addr is None else addr))
+
+# net_actions.py —— on_identify_req：刪掉那個寫入
+-   if reply_cid != ADDR_BROADCAST:
+-       bus.master_cid = reply_cid
+-   _reply(ctx, CMD_IDENTIFY_RSP, {...})
++   _reply(ctx, CMD_IDENTIFY_RSP, {...}, addr=reply_cid)
+```
+
+**語意**：`reply_cid` = 回信地址（單次）；`master_cid` = 通訊地址（持續）。
+`0x100D` 回答「你是誰」，`0x1016` 回答「我以後聽誰的」—— 前者是**問題**，後者是**狀態**。
+
+改完後指令層只剩 **1 個** `master_cid` 寫入者（`on_set_master`）。
+
+### 30.3 影響 / 驗證
+
+- 功能**沒有少**：掃描照樣問到誰是誰，`0x100E` 的 addr 仍等於 `reply_cid`
+  （`app.py` 的 ADDR 過濾靠它讓其他節點丟掉這封回信）。
+- 掃描過的節點不再知道回給誰 → `master_cid` 維持 `0xFFFF`；綁定時 `_do_bind`
+  本來就會送 `0x1016`，正常流程不受影響。
+- 回歸測試：`test/protocol/test_master_writer.py`（19 項；把舊寫入加回去會 FAIL 7 項，
+  含 AST 靜態檢查「只有一個寫入者」）。
+- 文件同步：`01_nc4_protocol.md` §定址模型、`02_command_index.md`（0x100D/0x1016）、
+  `17_esp_stream_controller.md` §2.3、`18_pixel_panel_control_path.md` §5.1、
+  `19_remote_control_plan.md`（零件清單 / 誰會寫它）、`sys_bus.py` 註解、
+  `ui/lvgl/page/remote.py` `_do_scan` docstring、Test_Peer `Core_Manager.py` 註解。
+
+
+---
+
+## 31) 節點發現與配對：抖動 ＋ 傳輸層無關的位址解析（2026-10）
+
+> 完整設計與決策見 **`todo/05_node_pairing.md`**；本節只記「改了什麼、為什麼」。
+
+### 31.1 `0x100D.timeout_ms` —— 抖動（避免同時回話撞車）
+
+廣播點名會讓射程內**所有** Slave 在同一瞬間回話 → 在 ESP-NOW 空中／RS485 匯流排上是
+**硬碰撞**，會整批掉。新增 `timeout_ms`：各台各自隨機延遲 `[0, timeout_ms]` 才回，
+把「同時」攤成「序列」。`0`／缺席 = 不抖動（＝舊行為）→ **追加欄位，向後相容**
+（`SchemaCodec.decode` 的 `pos >= plen → break` 讓缺席欄位「不存在於 dict」而非補 0）。
+
+**只有 `0x100D` 抖動** —— 全專案「廣播出去、N 台回話」只有它（其餘廣播
+`0x1401/0x1501/0x1502/0x3105/0x3106` 都單向）。範圍由「寫在 `on_identify_req` 裡」保證，
+不需要執行期判斷。
+
+### 31.2 ★ 延後發射掛在**解碼鏈**，不是任何一條 bus
+
+```
+tasks/bus_decode.py  _TxOut / _pending / _fire_due()
+```
+
+- `ctx["send"]` 就是 `_TxOut`（每條 bus 建一次，不是每幀）→ handler 只知道
+  「延遲幾毫秒」，**不知道 MAC、也不知道哪條管子**
+- **每條管子深度 1**（新掃描覆蓋舊的未發項）
+- **延後發射必須在「收幀當下」把來源定下來**：到期時「剛剛講話的人」早就換了
+  → 存進 pending 的是 `(fire_at, bus, frame, src)`，到期用 `bus.write_to(src, frame)`
+- **為什麼不放各 bus**：抖動是**所有共享媒介**的需求（RS485 更需要），而三條 bus
+  沒有共同基底類別；放解碼鏈＝三條都天生具備，未來加管子不用再改
+- 測試用 AST 釘住：三條 bus 裡**不得**出現 `_pending` / `defer` / `fire_due`
+
+### 31.3 ★ `NowBus.write()` 依幀頭 `addr` 解析目的地
+
+`signal_router._forward()` 只會呼叫 `dst.write(frame)`，**沒有目的地位址參數**——
+所以「UI → vBus → Router → 射頻管」要成立，管子必須自己解析：
+
+| 幀頭 `addr` | 讀哪份既有記錄 |
+|---|---|
+| `0xFFFF` | 廣播 |
+| `== bus.master_cid` | `bus.master_mac`（**Slave 端**）|
+| 其他 | `PeerRegistry.by_cid()`（**Master 端**）|
+| 查不到 | 「剛剛講話的人」（保留既有回覆語意）|
+
+→ **`by_cid()` 從「零呼叫者的死碼」變成必要零件**（文件 `sys_bus.py:31` 早就這樣寫，
+是程式碼漂走了）。`@node.targets` 也回到「**只存 cid**」—— MAC 由 peers 表查。
+
+### 31.4 Slave 記 `master_mac`；`_claimed` 實現「重啟才能換 master」
+
+- `@node.master_mac`（新增）：Master 的**射頻層**位址，取自 `0x1016` 收幀當下的來源
+  —— 與 `0x100E` 帶回 cid 的方式完全對稱（**配對是雙邊對稱的記錄**）
+- `bus.pair_claimed`（純記憶體 1 bit，開機歸零）：`master_cid` 是半永久的，
+  光靠它會「永遠不能被換」；有了這 1 bit 就得到「**重啟一下，再讓新的 Master 執行**」
+- **`0x1016{0xFFFF}` = 解除**（清 `master_cid`/`master_mac`/`role` ＋ `pair_claimed=False`
+  重新開放認領）；`_do_unbind` 會**通知對方**（＝ `todo/04` Task 1）
+- **值沒變不寫 flash**：`save_node()` 是 3 個 btree key + `flush()`，而 `kv_set`
+  沒有變更偵測 → 沒這個守衛就是「掃描每輪每台一次抹寫」。用**前後快照比對**
+
+### 31.4b ★ 「0x100D 不改方向」≠「回不去」（最容易誤解的一點）
+
+| | 誰決定 | **掃描回覆**（0x100E）| **其他回覆**（0x1102/0x3102…）|
+|---|---|---|---|
+| **協議層 addr**（幀頭）| `_reply(addr=…)` | `reply_cid`（**payload** 帶來的）| `bus.master_cid`；**未設 = `0xFFFF`** |
+| **射頻層去向**（MAC）| 管子自己 `resolve()` | **這一幀的來源** | `master_mac` → `by_cid()` → 剛剛講話的人 |
+
+**Master 的 MAC 不是用 payload 傳的** —— ESP-NOW 每一幀到達時驅動層就附帶了來源
+（`espnow.recv()` 的 `peer`）。所以 `0x1016` 一次帶來兩層：payload 的 `master_cid`
+（協議）＋**收幀當下的來源 MAC**（射頻）→ 存成 `master_mac`。與 `0x100E` 完全對稱。
+
+`0x100D` 的 `reply_cid` 只管**那一封**；`0x1016` 管的是**以後每一封的預設**。
+→ **任何情況下都送得回去**（未配對時協定 addr 就是 `0xFFFF`）。
+測試 `test/protocol/test_node_pairing.py` §15 把這個性質釘住。
+
+### 31.5 UI 的分界線：**MAC 不得出現在協議層或 UI**
+
+| 入口 | 語意 | 走 Router？ |
+|---|---|---|
+| `disp.exec_cmd(cmd, args, ctx)` | 「我呼叫一個函式」—— **絕對內部執行** | ❌ |
+| `vbus.inject(frame)` | 「我發起一幀」—— 可能被轉發出去 | ✅ |
+
+- `CircuitBus.inject()` 🆕（從 `ScheduleTask._inject` 搬出來 —— 通用能力不該是
+  scheduler 的私產）；`ScheduleTask` 建 vBus 時**同時註冊具名服務** `"vbus"`，
+  並提供 `sys_bus.get_vbus()` 讓所有呼叫端共用查找順序
+- `remote.py`：`_tx()` 改走 vBus（**移除** `now.add_peer` / `write_to` / `broadcast`）
+- 🆕 `pixel_controller.py`：舊版**直接抓 `now._esp`（私有屬性）自己 `send()`**，
+  連 `connected`、統計、Router 全繞過 —— 比 `remote.py` 舊版更糟。已改走 vBus
+- 測試用 AST 釘住：`slave/ui/` 底下**不得**出現 `NowBus` / `add_peer` / `write_to`
+  / `_esp` / `broadcast` / `import espnow|network`
+
+### 31.6 ★ `NowBus.init()` 在 AP-only 時**靜默失效**（真機實測）
+
+實測（ESP32-S3）：`STA-only` → `send()` 正常；**`AP-only` → `send()` 回
+`ESP_ERR_ESPNOW_IF (-12396)`**；兩者都開 → 正常。**ESP-NOW 綁的是 STA。**
+
+而舊碼的條件是 `not sta.active() and not ap.active()` → **AP 開著就整段跳過**，
+但 `ESPNow().active(True)` 與 `add_peer()` 都「成功」→ `connected = True`，
+之後**每一次 send() 都失敗**，而 `send()` 的錯誤處理只有一個計數器
+→ **UI 顯示 ON，卻什麼都送不出去**。已改成「不論 AP 狀態，STA 一定要開」。
+
+### 31.7 真機驗證結果（`/dev/cu.usbmodem11401`，1 板）
+
+| 項目 | 結果 |
+|---|---|
+| `machine.unique_id()` vs ESP-NOW STA MAC | **相同**（`24EC4A2CA430`）→ `slave_id` 可直接當射頻位址 |
+| AP MAC | `24EC4A2CA431`（+1）—— **與 ESP-NOW 無關** |
+| `urandom` / `random` | 兩者都有 `getrandbits` → 抖動用 `urandom` |
+
+### 31.8 測試與文件
+
+- `test/protocol/test_node_pairing.py` 🆕 **68/68 PASS**（階段 1~4 全涵蓋）
+- `test/protocol/test_master_writer.py` 19/19（C3 回歸；AST 斷言改成
+  「**只有 `on_set_master` 能寫 `master_cid`**」—— 解除分支本來就需要第二個賦值）
+- 實作時測試抓到的 3 個真 bug（假隨機聚簇、`cid_conflict` 沒重算、解除沒通知對方）
+  → 見 `todo/05` §11
+
+---
+
+## 32) 節點配對的**真機驗證**：三個真 bug ＋ 一個開發流程陷阱（2026-10）
+
+`todo/05` §12 的真機驗證（兩塊板：面板 `/dev/cu.usbmodem11401` ＋ B 板
+`/dev/cu.usbmodem101`）。腳本在 `temp/`：`board_util.py`、
+`two_board_jitter_test.py`、`two_board_status_probe.py`、`probe_panel_reset.py`。
+
+**§12 九項全數通過**；抖動、`reply_cid`、認主、閃寫保護、重開機換手都在真機上量到了
+（數據見 `todo/05` §12.1~§12.3）。以下記「驗證過程抓到的東西」——
+這一輪真正有價值的產出其實是這四件事。
+
+### 32.1 ★ `NowBus.send()` 帶 hex 字串會 `ValueError`：**定向發射從來沒成功過**
+
+```
+espnow.send("ffffffffffff", b"x")      → ValueError: invalid buffer length
+espnow.send(b"\xff\xff\xff\xff\xff\xff", b"x") → True
+```
+
+`mac_bytes()` 的註解早就寫了「espnow 只吃 6-byte bytes」，但**收斂點漏了**：
+`resolve_addr()` 回傳的是 `PeerRegistry.mac` / `bus.master_mac`（**hex 字串**），
+一路餵進 `send()` / `add_peer()`。
+
+而 `add_peer()` 的例外被吞掉、**還回 `True`** —— 所以：
+**UI 顯示綁定成功、peer 表看起來有東西，但每一次定向發射都在射頻層失敗。**
+廣播走 `BCAST_MAC`（本來就是 bytes）所以沒事 → P5 的離線/單板冒煙測試看不出來。
+
+修法：`mac_bytes()` 套在 `NowBus` **所有**入口（`add_peer`/`learn_peer`/`has_peer`/
+`send`/`write_to`），認不出來的位址回 `False` 並印訊息，不再靜默說謊。
+
+### 32.2 ★ 「已經在表裡」被當成失敗（`ESP_ERR_ESPNOW_EXIST`）
+
+修完 32.1 之後真機立刻冒出第二個：`add_peer("ffffffffffff")` 回 `False`，
+因為 `init()` 開機就把廣播位址加進**硬體表**，卻**沒同步記進 `self._peers`**
+（它直接呼叫 `self._esp.add_peer`，繞過了簿記）→ 之後每一次「確保存在」都撞 `EXIST`。
+
+為什麼這會傷到配對：`learn_peer()` 把 `add_peer()` 的結果往上傳，
+於是對**已經認識的對象回 `False`** → 配對流程誤判成「學不到對方」，明明對方就在表裡。
+
+修法兩處：`init()` 改走 `self.add_peer(BCAST_MAC)`；
+`add_peer()` 用新的 `_is_exist_error()` 把 `EXIST(-12395)` 當**成功**（真機例外形狀是
+`OSError(-12395, 'ESP_ERR_ESPNOW_EXIST')`，離線測試得自己造，所以錯誤碼與訊息字串都認）。
+
+> 這個坑我在**自己的測試腳本上又踩了一次**（`two_board_status_probe.py` 第二輪
+> 就死在 `add_peer`）—— 目前提是「把已存在當失敗」，代價立刻可見。
+
+### 32.3 `0x1016` 是 fire-and-forget：「送了」不等於「到了」
+
+實測 **送 5 次 `0x1016` 只到 4 次**（乾淨的兩板環境、ESP-NOW 廣播、無 ACK）。
+一開始我把它誤判成「同一次開機裡第二個 `0x1016` 不生效」，
+實際上是**掉幀** —— 加上「送 → 用 `0x1101` 查 → 沒到就重送」之後就全數穩定。
+
+→ `0x1016` 沒有 ACK 是**設計如此**（`on_set_master` 的 docstring 已寫明：
+被拒絕時回覆會跑到舊 master，所以拒絕只能靠 `0x1101` 查）。
+本輪確立：**請求者的正確用法就是「送＋查＋重送」**，
+而 `0x1101 STATUS_GET{keys:"node"}` 的空中查詢在真機上可用（20~30ms 往返）。
+這條路同時就是 `todo/04` D1 / Task 2 指定的查法 —— 順便完成。
+
+### 32.4 ⚠️ 開發流程陷阱：`Ctrl-D` 軟重開機會**耗盡內部 SRAM**
+
+**症狀**：面板開機失敗，而**失敗點每次都不一樣** ——
+`Core_Manager.py:10 MemoryError 512 bytes`、下一次 `driver/pixel_drv.py:13 MemoryError 1756 bytes`，
+連四次都失敗。**失敗點會往前跑**就是洩漏的指紋（不是程式碼 bug）。
+
+同一次開機前量 `esp32.idf_heap_info(esp32.HEAP_DATA)`：
+
+```
+total=236360  free=624    largest=200     ← 236 KB 的堆只剩 200 bytes 最大塊
+total=22308   free=4      largest=0       ← 完全耗盡
+```
+
+**根因**：ESP32-S3 的 `MPY: soft reboot` **不會拆掉 WiFi / ESP-NOW 驅動**，
+驅動佔的內部 SRAM 每次軟重開機都留著。而 `Ctrl-D` 與
+**`mpremote` 的預設收尾都是軟重開機** → 開發時反覆上傳／進 REPL 就會累積到開不了機。
+⚠️ `gc.mem_free()` 這時還報 **7 MB**（那是 PSRAM）→ **完全看不出問題**。
+
+**解法**：`machine.reset()`（hard reset）。代價是 USB-CDC 重新列舉、
+`/dev/cu.usbmodem*` 消失約 7 秒再出現 → **控制代碼必須重開**（`temp/board_util.py`）。
+
+**併發教訓**：`Ctrl-B` 在 **friendly REPL 是無作用的**（只在 raw REPL 有意義），
+所以「送 `\x02` 當重開機」是錯的 —— 這讓第一次除錯多繞一圈（面板日誌全空，
+看起來像沒開機，其實是根本沒重開）。重開機只有 `Ctrl-D` 或 `machine.reset()`。
+
+### 32.5 我自己的驗證方法也錯了一次（值得記）
+
+第一版探針去讀面板的 **`config.json`** 的 `node` 節，量到四個「失敗」。
+實際上節點狀態存在 **btree**（`ConfigManager.kv_set`），`config.json` 裡永遠沒有 `node`。
+→ **驗證要走專案自己的機制**（`0x1101`），不要另外找一個檔案讀 ——
+換一個檔案讀只會得到另一組假答案。
+
+### 32.6 這一輪的程式碼改動
+
+| 檔案 | 改動 |
+|---|---|
+| `slave/lib/sys/now_bus.py` | `mac_bytes` 收斂；`_is_exist_error()`＋`ESPNOW_ERR_EXIST`；`add_peer` 把 EXIST 當成功；`init()` 改走 `self.add_peer(BCAST_MAC)` |
+| `slave/action/net_actions.py` | `on_set_master` 成功路徑新增 `認主` 日誌（＝ flash 寫入次數的可觀察面）|
+| `test/protocol/test_node_pairing.py` | **107/107 PASS**（+12：§18 `_is_exist_error`/EXIST 語意/`init` 簿記、§19 認主日誌＝flash 次數）|
+| `todo/05_node_pairing.md` | §12 改寫成驗證結果（§12.1~§12.5）|
+
+> 前一輪（§31）的程式碼改動沒有動到；本輪只修「真機才會現形」的三個靜默失敗。
+
+### 32.7 順手收掉：測試與裝置腳本的 import 路徑（同日）
+
+`test/protocol/night_run/REPORT.md` 早就記了「**`lib/` 三級重構後 test/ 腳本未同步
+import 路徑**」，這次一次清掉：
+
+| 檔案 | 修正 |
+|---|---|
+| `test/protocol/router_selftest.py` | **75/75 PASS**（基線是崩潰）。三個問題：`build()` 沒註冊介面 → route 全進 `_pending`；`VBUS → "self"` 的期待過時；★ `Router._by_id` 用 `id()` 當索引，測試的臨時 `FakeBus` 被 GC 後位址重用 → 查到死人名字 |
+| `test/protocol/test_proto_hotpath.py` | **9 PASS / 0 FAIL**。`lib.proto` → `lib.sys.proto` ＋ 補 `sys.path` bootstrap |
+| `test/protocol/test_decode_perf.py` | 4 處模組路徑 |
+| `test/protocol/test_proto_speed.py` | 模組路徑 ＋ 補 bootstrap（以前只能從專案根目錄跑）|
+| 其餘 **15 個裝置腳本** | `lib.X` → `lib.sys.X` 共 24 處（tft/sd/thread/husb238/ui/bench_net）|
+
+原則：**只改程式碼行**（行首是 `from`/`import` 的）——
+說明文字與註解裡提到的舊路徑是**歷史敘述**，改了反而看不懂。
+
+`test/protocol/`、`test/buffer/`、`test/thread/` 在 PC 上**全綠**。
+`test/ui/ui_test_tool.py`（硬寫 `/ui/lvgl/src`）與 `espnow_*.py` / `rs485_probe.py` /
+`wtt_rx_probe.py`（需要 `network`/`machine`）是**裝置專用**，在 PC 上失敗是正常的。
+
+### 32.8 補驗：換 master **不必重啟**（先解除就好）
+
+`todo/05` §12 上一輪只驗了「重啟後換手」，漏掉「**先解除、再換手、全程不重啟**」。
+補測（`temp/probe_master_swap.py`，**整場只開機一次**）：
+
+```
+claim(0x0002)     → 2        認主 0x0002
+claim(0x0003) ×3  → 2 不變   忽略 ×3
+claim(0xFFFF)     → 65535    解除
+claim(0x0003)     → 3  ★★    不重啟直接接手（第 1 次就成功）
+claim(0x0007) ×3  → 3 不變   忽略 ×2
+claim(0xFFFF)     → 65535    解除
+```
+
+→ 對照 `todo/05` **D8**，兩條路都成立且都保留：
+
+| 路徑 | 行為 | 為什麼保留 |
+|---|---|---|
+| A **直接**換 B | 被 `pair_claimed` 擋掉 → 要重啟 | 防止「廣播掃描就把人家的 master 搶走」|
+| A → **解除** → B | `pair_claimed = False` → **不必重啟** | 給「人明確要換手」一條不必動電源的路 |
+
+⚠️ 教訓：**同一條流程的兩條分支，只驗一條不算驗完。**
+「拒絕換手」很容易蓋住「解除後可換手」——因為兩者都表現成「狀態沒變」。
+
+---
+
+## 33) 通訊頻道：**執行期可換、不必重啟**（2026-10 真機兩板實測）
+
+### 33.1 問題
+
+「Master 發現 Slave 換了通訊頻道，需不需要重啟？」（使用者不希望 Master 重啟）
+
+帳面上像是「要」：`NowBus.init(channel=N)` 只在 `sta.active()` 為 False 時才設頻道
+（`now_bus.py` 的 `if not sta.active():`），而 `0x1301 NOW_INIT` 只有
+`action` 0=查詢／1=開／2=關 —— **沒有換頻道**。STA 一開著，`init(channel=N)` 會被**靜默忽略**。
+
+### 33.2 實測結論：不必重啟
+
+`temp/probe_channel_switch.py`（兩板都不重啟，只有進 REPL 時 Ctrl-C）：
+
+| 回合 | 送方 | 收方 | 結果 |
+|---|---|---|---|
+| B1 | ch6 | ch6 | **收 12/12 幀** ✓ 基線 |
+| B2 | → ch11 | ch6（沒跟著換）| **收 0/12** ← 換頻道**真的生效**，不是沒作用 |
+| B3 | ch11 | → ch11 | **收 12/12 幀** ★★ 兩端都執行期換頻道 → 通了 |
+
+`sta.config(channel=N)` 在 STA 已 active 時**有效**（6 → 11 → 6 當場驗過）。
+→ **缺口純粹在 `NowBus` 與缺指令，不是硬體限制。**
+
+### 33.3 ★ 每個 peer 可以有自己的頻道（Master 跟隨 Slave 的關鍵）
+
+真機量到的形狀：
+
+```python
+e.add_peer(mac, channel=11)          # ← 接受
+e.get_peer(mac)
+# (b'...mac...', b'\x00'*16, 11, 0, False)
+#                            ↑ channel 是第 3 欄，0 = 用當前頻道
+```
+
+所以 Master **不必為了某台 Slave 而搬家**：登記時記住它的頻道，送的時候驅動自己切過去。
+
+### 33.4 ⚠️ 但無線電只有一顆：**TX 可以多頻道，RX 只能待一個**
+
+這是本題**真正的設計限制**，不是實作細節：
+
+| | 能力 |
+|---|---|
+| **定向 TX** 給不同頻道的 peer | ✅ 用 per-peer channel，送完自動切回 |
+| **廣播** `0x100D` | ❌ 只會發在**當前**頻道 → 只找得到同頻道的 Slave |
+| **RX** | ❌ 停在某一頻道時，聽不到其他頻道的任何東西 |
+
+→ 要跨頻道發現，只能**頻道跳躍掃描**（像 BLE）：逐頻道切過去、廣播、收一輪、再換。
+**這件事不需要重啟**，但需要一個「掃描」任務。
+→ 也因為 RX 的限制，Slave **無法主動告訴 Master「我換頻道了」**（Master 聽不到）
+—— 只能由 Master 掃到、或由使用者指定。
+
+### 33.5 順手抓到的真 bug：`espnow.recv()` 會回 `(mac, None)`
+
+實測 3 秒的接收迴圈裡出現 **2871 次** `(mac, None)` —— 那是 peer event／控制訊框，
+**不是資料幀**。
+
+- `poll()` 沒事（用 `not msg` 擋，None 與 `b""` 都擋）
+- **`recv()` / `recv_timeout()` 會炸**：只擋 `peer is None` → `bytes(None)` → `TypeError`，
+  而且會被 `discover()` 的迴圈原樣拋出去
+- `discover()` 目前**零呼叫者** → **潛在** bug（與 `by_cid()` 同性質：接上去才會咬人）
+
+已修（兩個方法都擋 `msg is None`），並在 `test_node_pairing.py` §20 加回歸
+（**112/112 PASS**）。
+
+> ⚠️ 我自己的測試 harness 也踩了同一個坑：監聽腳本沒防 `(mac, None)` → 一收到就
+> `TypeError` 爆掉 → **「什麼都沒收到」長得跟「頻道不對」一模一樣**，第一輪因此
+> 得到兩個假結果。教訓：**驗證腳本一定要把 stderr 印出來**。
+
+### 33.6 實作：`set_channel` / `del_peer` / `apply_peers` / `0x1301 action=3`
+
+使用者定案的兩個語意：
+
+- **頻道＝區分不同網路**，不是漫遊 → **不做跨頻道兼容、不需要掃描**。
+  同頻道的 Master／Slave 才看得到彼此；換頻道就是「搬到另一個網路」。
+- **peer 表上限 20**，UI 是 Windows 式的 **可選／已選兩張表**，
+  滿了**不自動淘汰**，直接拒絕並提示「請先移除一些」。
+
+| 新增 | 位置 | 做什麼 |
+|---|---|---|
+| `MAX_PEERS = 20` | `now_bus.py` | ESP-IDF 硬體上限；廣播固定佔 1 格 |
+| `set_channel(n)` | `now_bus.py` | **執行期**換頻道；回報**實測值**而不是假設成功 |
+| `del_peer(mac)` | `now_bus.py` | 接上 `espnow.del_peer`，硬體表終於**能減** |
+| `apply_peers(keep)` | `now_bus.py` | 把表**重建**成「廣播 ＋ 已選清單」（兩張表的「套用」）|
+| `action=3` ＋ `channel(u8)` | `0x1301`／`now.json` | 換頻道的指令入口 |
+
+**修掉的靜默失敗**：`init(channel=N)` 在 STA 已開時**靜默忽略** channel
+（呼叫端以為設了、其實沒有）→ 改走 `set_channel()` 並印出「要求 vs 實測」。
+
+**向後相容**：`channel` 是追加的第二欄位。SchemaCodec 兩條解碼路徑都有
+`if pos >= plen and tc != 5: break` → 舊客戶端只送 1 byte（`action`）時
+`args` 裡根本沒有 `channel` → 擋掉並提示，**不會誤動作**。
+
+#### 真機驗證（`temp/probe_channel_cmd.py`，**10/10 PASS**）
+
+面板跑正式韌體、**只開機一次**，B 板用 ESP-NOW 送指令並用 `0x1101` 確認：
+
+| | 動作 | 結果 |
+|---|---|---|
+| C1 | 雙方 ch6 | `0x1101` 查得到 ✓ 基線 |
+| C2a | 送 `0x1301{3,11}`，B 留在 ch6 | **查不到** ← 換頻道真的生效 |
+| C2b | B 也換 ch11 | **又查得到** ★★ 應用程式層執行期搬過去了 |
+| C3 | 送 `0x1301{3,6}`，雙方回 ch6 | 查得到 ✓ |
+
+```
+📶 [NOW-Bus] 頻道 → 11（實測回報 11）
+📶 [NOW-Bus] 頻道 → 6（實測回報 6）
+開機 「Boot complete」×1
+```
+
+傳輸層（面板 REPL）：
+
+```
+DELPEER base=1 after_add=4 after_del=3            ← 格數真的下降
+📋 peer 表套用：已選 1／新增 0／移除 1／失敗 0 → 現有 2
+DELPEER after_apply=2 peers=['FFFFFFFFFFFF', '010203040506']
+DELPEER 廣播還在嗎 = True
+```
+
+離線測試 `test_node_pairing.py` **132/132 PASS**（+20：§21 換頻道／del_peer／
+apply_peers／上限，§22 `0x1301 action=3` 含舊客戶端不誤動作）。
+
+順手：`now_actions.py` 的 `import ubinascii` 改成 try/except（與 `now_bus.py` 一致），
+否則這個模組在 CPython 上根本 import 不了、無法離線測試。
+
+#### ⚠️ 兩個 harness 教訓（都不是韌體問題）
+
+1. **上傳要在板子「站穩」之後**：在 `machine.reset()` 剛觸發、USB-CDC 還在重新列舉時
+   上傳會**全部失敗**，而我第一版把 stderr 丟掉 → 測到舊韌體還以為是功能壞了。
+   → 上傳後**一定要在板上驗證新程式碼真的在**（`print('del_peer' in open(...).read())`）。
+2. **同一塊板連續跑多輪要先把舊的 ESP-NOW 關掉**：舊 `ESPNow` 實例還 active 時
+   直接再建一個，`recv()` 會拋 `ValueError: ESPNow.recv(): buffer error`
+   → 例外處理不能只接 `OSError`。
+
+#### 還沒做
+
+**UI 的兩張表**（可選／已選、上限 20、滿了提示）還沒接。傳輸層與指令都已經就緒，
+`apply_peers()` 就是「套用」那顆按鈕要呼叫的東西。
+
+---
+
+## 34) ESP-NOW 設定頁的資料層（2026-10；UI 尚未接）
+
+使用者要兩頁：**ESP-NOW 設定**（傳輸層）與**遙控器設定**（應用層）。本節只做前者
+的資料層 —— 三個定案：金鑰**一組共用**放 btree、「清除所有記錄」**只清 ESP-NOW**、
+Slave 清單**用現有的 `PeerRegistry`**（它已經有 `via` / `ifaces` 標來源總線）。
+
+### 34.1 新增
+
+| 位置 | 東西 |
+|---|---|
+| `NowBus.set_encrypt(on, pmk, lmk)` | 開關加密；**沒有金鑰就不給開** |
+| `NowBus.peer_cap()` | 一般 19（20 − 廣播）／**加密 6** |
+| `NowBus.clear_peers()` | 清光射頻 peer，只留廣播 |
+| `NowBus.add_peer(mac, encrypt=None)` | 加密路徑 |
+| `ConfigManager.now_state/load_now/save_now/clear_now` | `@now.*`（btree＝secrets.db）|
+
+金鑰**不進 config.json**：那個人可讀、會被 commit。放 `@now.pmk` / `@now.lmk`，
+和 `@node.*` / `@peer.*` 同一個 secrets.db。
+
+### 34.2 ★ 測試抓到的三個真 bug
+
+1. **`bool(encrypt) and self.encrypt`** —— `encrypt=None`（＝沿用本管設定）會被
+   `bool()` 壓成 `False` → **加密永遠不生效**。改成明確的三元式。
+2. **★★ 廣播不能加密** —— ESP-NOW 的加密只支援**單點**。讓
+   `add_peer(BCAST_MAC)` 帶 `encrypt=True` 會變成「加得進去、但廣播從此送不出去」
+   —— 又是靜默失敗。現在廣播**一律不加密**（也因為如此，`peer_cap()` 加密時是 6：
+   廣播那格不佔加密額度）。
+3. **`apply_peers` 的錨點**（我的 patch 打錯括號）→ 整個 patch 沒寫入。
+   教訓：**逐錨點回報命中次數**再套用，不要一個大 patch 失敗了才知道。
+
+### 34.3 ★ 修掉一個 12% 失敗率的 flaky 斷言
+
+`test_node_pairing.py` §4 原本要求「12 個抖動值**全部相異**」—— 那是**生日悖論**：
+從 501 個值抽 12 個全不撞的機率只有 `exp(-12*11/(2*501)) ≈ 88%`
+→ 大約**每 8 次跑就紅一次**（實測踩到）。
+
+> 一個 12% 失敗率的斷言等於沒有斷言，還會訓練人忽略紅燈。
+
+改成「相異值 >= 9」（低於 9 的機率 < 1e-4），並把生日悖論寫在旁邊，
+免得下一個人又把它「收緊」。**連跑 8 次全過。**
+
+### 34.4 狀態
+
+- `test_node_pairing.py` **153 / 153 PASS**（+21：§23 加密／上限／清除／btree 持久化）
+- ⚠️ **`_hw_add_peer` 的加密形式（位置參數 vs kwarg）還沒真機驗證** ——
+  兩條路都寫了，但那塊板子當時不在 USB 上（見下）。
+
+### 34.5 ⚠️ 板子從 USB 上消失了
+
+做到一半時，`/dev/cu.usbmodem101` 與 `11401` **同時**消失，等 30 秒以上沒回來。
+兩個同時不見比較像實體原因（拔線／hub 斷電），但也要記著另一種可能：
+**我這輪反覆用 `mpremote exec`（預設結尾是軟重開機）＋ hard reset，
+內部 SRAM 可能被 WiFi/ESP-NOW 驅動耗盡 → 開機 hard fault →
+ESP32-S3 的 USB-CDC 會整個從匯流排消失**（§12.5 / §32.4 同一個機制）。
+
+→ 這正好是「軟重開機不可靠」這件事在**開發流程**上咬人的第二次。
+**斷電重上**就會回來；但根本解是別讓 `mpremote` 用軟重開機收尾
+（`--no-soft-reset`），或至少在連續操作之間做 hard reset。
+
+### 34.6 文件
+
+新增 **`todo/07_now_setting_ui.md`** —— 「ESP-NOW 設定 ＋ 遙控器設定」兩頁的計劃書。
+
+拆頁的理由（不只是排版）：**兩個清單的鍵與限制根本不同**
+
+| | 鍵 | 來源 | 上限 |
+|---|---|---|---|
+| ESP-NOW 已選 | **MAC**（射頻層）| 掃到的 radio peer | **19**／加密 **6** |
+| 遙控器已選 | **cid / slave_id**（協議層）| `PeerRegistry`（任何總線）| **無** |
+
+混在一張表裡，「已選 3/19」會被讀成「我最多只能控 3 台」—— 而遙控器明明沒有這個限制。
+
+計劃書裡同時記了**六個踩過的陷阱**（軟重開機洩漏、上傳時機、廣播不能加密、
+`recv()` 的 `(mac, None)`、ESP-NOW 重複實例、`0x1016` 掉幀），
+以及**板子回來後要先驗的五件事**（其中 `_hw_add_peer` 的加密形式尚未真機驗證）。

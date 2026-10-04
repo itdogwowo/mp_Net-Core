@@ -48,7 +48,7 @@
 
 | CMD | 名稱 | 方向 | Payload | 說明 |
 |-----|------|------|---------|------|
-| 0x100D | IDENTIFY_REQ | Master→Slave | `reply_addr(u16)` | 逐 address 掃描；帶 reply_addr 告知 master_cid |
+| 0x100D | IDENTIFY_REQ | Master→Slave | `reply_cid(u16)` `timeout_ms(u16)` | **點名**；`reply_cid` 指定**這一封** 0x100E 回信寄哪 —— **不改 `master_cid`**。`timeout_ms`=**抖動視窗**（0/缺席=立即回，>0=隨機延遲 [0,timeout_ms]）；追加在尾端，舊客戶端安全 |
 | 0x100E | IDENTIFY_RSP | Slave→Master | `cid(u16)` `slave_id(str)` `ip(str)` | 回應；`ip`=多介面 JSON |
 | 0x100F | REBOOT | Master→Slave | `delay_ms(u32)` | 延遲後 `machine.reset()` |
 | 0x1010 | WREPL_CTRL | Master→Slave | `action(u8)` 0=查 1=開 2=關 | 回 0x1011 |
@@ -57,7 +57,7 @@
 | 0x1013 | NET_START_RSP | Slave→Master | `ok(u8)` `iface(str)` `ip(str)` | 啟動結果 |
 | 0x1014 | GET_IP | Master→Slave | (空) | 回 0x1015 |
 | 0x1015 | IP_RSP | Slave→Master | `ip(str)` | `ip`=多介面 JSON |
-| 0x1016 | SET_MASTER | Master→Slave | `master_cid(u16)` | 顯式設 master_cid |
+| 0x1016 | SET_MASTER | Master→Slave | `master_cid(u16)` | **唯一會改方向的指令**：告知對方「你的 master 是我」，記 `master_cid` + `role="slave"` + 落盤。可廣播（＝一次認領一群）|
 | 0x1017 | WEBUI_CTRL | Master→Slave | `action(u8)` 0=查 1=開 2=關 | 回 0x1018 |
 | 0x1018 | WEBUI_RSP | Slave→Master | `enabled(u8)` `info(str)` | WebUI 狀態 |
 

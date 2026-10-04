@@ -17,6 +17,44 @@
 | # | 決策 | 本計劃採用 | 替代方案 | 改動影響 |
 |---|---|---|---|---|
 | **D1** | 綁定後如何確認執行端接納 | **A：主控查 `0x1101 STATUS_GET{keys:"node.master_cid"}` 驗證**（零新增指令）| B：新增 `0x1019 PAIR_ACK`；C：執行端回 `0x1002` 公告 | 只有 Task 2。選 B 要多一個 Task（schema + handler + 測試）|
+| **D2** | 兩台主控搶同一台執行端 | ~~**需明確解除才能換 master**~~ ⚠️ **已被 `todo/05` D8 取代** | — | ~~Task 3~~ → 見下方「決策變更」|
+| **D3** | `0x1002 SLAVE_ANNOUNCE` 定位 | **不參與配對**，降級為「節點自我介紹」（顯示用 `pixel_count`/`hw_version`）| 也參與配對（主固件需補發送端）／直接廢掉 | Task 5 的文件描述；廢掉的話多加一個刪除 Task |
+
+---
+
+## ⚠️ 決策變更（2026-10）：D2 與 Task 3 已被 `todo/05` 取代
+
+| 項目 | 本檔原案 | **現行定案（`todo/05` D8）** |
+|---|---|---|
+| 換 master | D2：**需明確解除才能換**（後到者被拒）| **重啟 Slave** —— `_claimed` 每次開機歸零 → **每次開機先到先得** |
+| 拒絕政策 | Task 3：`on_set_master` 加「已有 master 就拒絕」| **不做「已有 master 就拒絕」**；改成「本次開機第一次接受、之後忽略」（`todo/05` §7.3）|
+
+**為什麼原案的兩個理由都失效了：**
+
+1. **「掃描會讓射程內所有執行端認掃描者為 master」** —— 那是 `0x100D` 隱含寫 `master_cid` 的副作用，
+   **已由 C3 移除**（`0x100D` 現在只點名，不改方向）。
+2. **「允許搶奪等於配對沒有意義」** —— 現在認領是**明確的定向 `0x1016`**（有 log、有落盤、查得到），
+   不是隱含副作用；而且「重啟才能換」讓節點與 master 失聯後能**自癒**。
+
+**仍然有效的部分：**
+
+| 項目 | 狀態 |
+|---|---|
+| D1（用 `0x1101` 查 `node.master_cid` 驗證）| ✅ 仍有效 —— 而且 **C3 修正後才可信**（修之前查到的是過期快照）|
+| D3（`0x1002` 不參與配對）| ✅ 仍有效 |
+| Task 1（`0x1016{0xFFFF}` = 解除，雙邊同步）| ✅ 仍有效（`todo/05` L6 明示不處理）|
+| Task 2（綁定後驗證）| ✅ 仍有效（同上）|
+| ~~Task 3（執行端拒絕搶奪）~~ | ❌ **取消** —— 由 `todo/05` §7.3 的狀態機取代 |
+| Task 4（UI 顯示配對狀態）| ✅ 仍有效（`todo/05` 另有 cid 撞號警示）|
+| Task 5/6（文件同步 / 回歸）| ✅ 仍有效，但內容要跟著上面調整 |
+
+---
+
+## 原決策表（保留為歷史記錄）
+
+| # | 決策 | 本計劃採用 | 替代方案 | 改動影響 |
+|---|---|---|---|---|
+| **D1** | 綁定後如何確認執行端接納 | **A：主控查 `0x1101 STATUS_GET{keys:"node.master_cid"}` 驗證**（零新增指令）| B：新增 `0x1019 PAIR_ACK`；C：執行端回 `0x1002` 公告 | 只有 Task 2。選 B 要多一個 Task（schema + handler + 測試）|
 | **D2** | 兩台主控搶同一台執行端 | **需明確解除才能換 master** | 允許接手（舊主控事後發現）／後到直接搶（現狀）| 只有 Task 3 |
 | **D3** | `0x1002 SLAVE_ANNOUNCE` 定位 | **不參與配對**，降級為「節點自我介紹」（顯示用 `pixel_count`/`hw_version`）| 也參與配對（主固件需補發送端）／直接廢掉 | Task 5 的文件描述；廢掉的話多加一個刪除 Task |
 
@@ -30,9 +68,9 @@
 
 ```
 【已存在且可用】
-  發現    主控 廣播 0x100D{reply_addr=自己cid}
+  發現    主控 廣播 0x100D{reply_cid=自己cid}
             └→ 執行端 on_identify_req: 記 master_cid + 回 0x100E{cid,slave_id,ip}
-            └→ 主控 PeerRegistry.learn_from_identify_rsp（含 ctx["_peer_mac"]）
+            └→ 主控 PeerRegistry.learn_from_identify_rsp（含 ctx["_src_mac"]）
   綁定    主控 0x1016{master_cid=自己cid} → 執行端 save_node() 落盤
   持久化  btree @node.role / @node.master_cid / @node.targets
   執行期  bus.role / bus.master_cid / bus.targets
@@ -252,7 +290,7 @@ def on_set_master(ctx, args):
 
     ★ 這裡是**唯一會持久化方向的地方**：
       - 本指令是明確動作（人按了綁定/解除，或對方明確告知）→ 值得寫 flash
-      - `0x100D IDENTIFY_REQ` 的 `reply_addr` 是隱含版本（每次敲門都來）
+      - `0x100D IDENTIFY_REQ` 的 `reply_cid` 是隱含版本（每次敲門都來）
         → 只寫記憶體，不落盤（見 on_identify_req）
     持久化失敗不影響本次設定（記憶體已生效），只印訊息。
     """
@@ -477,7 +515,11 @@ git commit -m "feat(pairing): 綁定後查 node.master_cid 驗證對方接納（
 
 ---
 
-## Task 3: 執行端拒絕搶奪（D2 = 需明確解除）
+## Task 3: ~~執行端拒絕搶奪（D2 = 需明確解除）~~ ❌ **已取消（2026-10）**
+
+> ⚠️ **本 Task 不執行。** D2 已被 `todo/05_node_pairing.md` 的 **D8** 取代
+> （換 master = **重啟 Slave**，`_claimed` 開機歸零 → 每次開機先到先得）。
+> 本節保留為歷史記錄；**新行為見 `todo/05` §7.3 狀態機**。
 
 **Files:**
 - Modify: `slave/action/net_actions.py`（`on_set_master` 加已有 master 檢查）

@@ -188,8 +188,8 @@ disp.dispatch(cmd, payload, ctx)
 | **自動學習** | 被動：任何帶 MAC 的幀 → `learn_from_frame()` | `tasks/bus_decode.py:229-234` | ✅ 已接 |
 | **自動學習** | 主動：`0x100E IDENTIFY_RSP` → `learn_from_identify_rsp()` | `action/net_actions.py:70-77` | ✅ 已接 |
 | **落盤** | `housekeep()` → `save()`（節流 2 秒 + tmp→rename 原子替換） | `tasks/bus_decode.py:182-186` | ✅ 已接 |
-| **掃描** | `0x100D IDENTIFY_REQ {reply_addr}` → `0x100E {cid, slave_id, ip}` | `action/net_actions.py:83-93` | ✅ **接收端有**；❌ **發起端只有 PC 測試腳本**（`test/protocol/night_run/scan.py`） |
-| **方向** | `0x1016 SET_MASTER {master_cid}` → `bus.master_cid` | `action/net_actions.py:176-181` | ✅ 有；⚠️ **只存記憶體，重開機丟**（`sys_bus.py:23`） |
+| **掃描** | `0x100D IDENTIFY_REQ {reply_cid}` → `0x100E {cid, slave_id, ip}` | `action/net_actions.py` `on_identify_req` | ✅ **接收端有**；❌ **發起端只有 PC 測試腳本**（`test/protocol/night_run/scan.py`）。★ 只**點名**，`reply_cid` 不改方向（2026-10 修正）|
+| **方向** | `0x1016 SET_MASTER {master_cid}` → `bus.master_cid` | `action/net_actions.py` `on_set_master` | ✅ 有；**唯一的方向寫入者**，落盤 `@node.master_cid`（原本只存記憶體，P2 已修）|
 | **自己的位址** | `bus.cid`（來自 config `System.cID`） | `lib/sys/ConfigManager.py` `ensure_cID()` | ✅ 有 |
 | **晶片開關** | `0x1008 WIFI_CTRL` / `0x1012 NET_START`（lan/wifi/ap/espnow）/ `0x1014 GET_IP` | `action/net_actions.py` | ✅ 有 |
 | **ESP-NOW** | `0x1301 NOW_INIT` / `0x1302 NOW_SEND_HB` / `0x1303 NOW_STATS` | `action/now_actions.py` | ✅ 有 |
@@ -221,7 +221,7 @@ disp.dispatch(cmd, payload, ctx)
 |---|---|---|---|
 | **1** | **`disp` 沒註冊成 bus 服務** | UI 拿不到指令接口 | `app.py` 的 `App.__init__` 加 `bus.register_service("disp", self.disp)`（**1 行**） |
 | **2** | **`master_cid` / 角色不持久化** | 每次開機要重綁 | 寫進 btree（`@node.*`）（§6） |
-| **3** | **掃描沒有發起端** | 裝置自己不能掃 | UI 按鈕 → `make_cmd(0x100D, {"reply_addr": bus.cid})` → 發射 |
+| **3** | **掃描沒有發起端** | 裝置自己不能掃 | UI 按鈕 → `make_cmd(0x100D, {"reply_cid": bus.cid})` → 發射 |
 | **4** | **射頻配對從未建立** | unicast 送不出去（`ESP_ERR_NOT_FOUND(-12393)`） | ✅ **P6 已完成**：`NowBus.poll()` 收幀即 `learn_peer(peer)`（**對稱**：兩端各自學），另加硬體 peer 表上限（§9.7） |
 | **5** | **沒有 `ESP-NOW 關` 指令** | 只能開不能關（UI 開關是單向的） | ✅ **P6 已完成**：`0x1301 NOW_INIT` 加 `action`（0=查詢／1=開／2=關；**不給參數 = 0 = 查詢**），成為 ESP-NOW 生命週期的唯一入口。**順帶修掉一個舊洞**：`0x1301` 對「服務在、但已斷線」只印 `already initialized` 就返回 → 關掉之後再也開不回來（§9.8）。<br>⚠️ **2026-09 整併**：原 `0x1304 NOW_CTRL` 已廢除（只活了一晚，無真機驗證、零外部呼叫者），能力併入 `0x1301`；`0x1012 NET_START{iface_type:3}` 也改走同一個 `_now_on()`——原本三套啟動邏輯、其中兩套是壞的 |
 | **6** | **沒有「發送任務」** | 廣播/定向的判斷散在呼叫端 | 抽一個統一發射出口（§2.6/§2.7）—— **可延後** |
@@ -258,7 +258,7 @@ disp.dispatch(cmd, payload, ctx)
 
 ⚠️ 「廣播不回」是對的，但**不要**推論成「廣播一定沒回覆」——`0x100D` 是廣播出去、
 **單播**回來。回覆位址不由 NC4 header 的 `addr` 決定（ESP-NOW 上 `ctx["send"]` = `NowBus.write`
-= `_last_peer`），這件事很容易誤判，見 §9.3。
+= `_last_src_mac`），這件事很容易誤判，見 §9.3。
 
 ---
 
@@ -300,9 +300,15 @@ cfg_manager.clear_node()    # 解除綁定：回預設 + 刪 key
 **執行期真相**在 `bus` 上（`sys_bus.py` 新增）：`bus.role` / `bus.master_cid`（原有）/ `bus.targets`
 **持久化**：`@node.role` / `@node.master_cid` / `@node.targets`（逐 key）
 
+> ✅ **2026-10 實作完成**：`@node.master_mac`（新增）、`pair_claimed`（記憶體 1 bit）、
+> `0x1016{0xFFFF}` = 解除、值沒變不寫 flash、`NowBus.write()` 依 `addr` 解析、
+> `CircuitBus.inject()`、UI 改走 vBus、cid 撞號偵測、`NowBus.init()` AP 修正。
+> 完整內容 → **`todo/05_node_pairing.md`**；變更摘要 → `doc/03_notes/01_changelog.md` §31。
+
 **誰會寫它**：
-- `on_set_master`（`0x1016`，**方向確認**）→ 設定 + `save_node()` —— **唯一會持久化方向的地方**
-- `on_identify_req` 的 `reply_addr`（隱含版本，每次敲門都來）→ **只寫記憶體，不落盤**
+- `on_set_master`（`0x1016`，**方向確認**）→ 設定 + `save_node()` —— **唯一會改方向的地方**，也是唯一為它寫 flash 的地方
+- `on_identify_req`（`0x100D`，**點名**）→ **不寫**（2026-10 修正）。以前它會把 `reply_cid` 寫進 `master_cid`（因為 `_reply()` 沒有目的位址參數），造成「掃描＝無聲搶奪」；現在 `reply_cid` 只作用在那一封 `0x100E`
+- 開機 `load_node()` 由 btree 還原 / 解除 `clear_node()` 清空
 - UI 綁定/解除 → `exec_cmd(0x1016, ...)` / `cfg_manager.clear_node()`
 
 ⚠️ **目標的 MAC 不存** —— 由 peers 表 `by_cid(master_cid)` 查（避免兩份真相）。
@@ -415,7 +421,7 @@ cfg_manager.clear_modes()
 
 | 動作 | 實作 |
 |---|---|
-| 掃描 | `make_cmd(0x100D, {"reply_addr": 我的cid})` → **廣播**（回覆自動被 PeerRegistry 登記） |
+| 掃描 | `make_cmd(0x100D, {"reply_cid": 我的cid})` → **廣播**（回覆自動被 PeerRegistry 登記） |
 | **綁定** | ① `add_peer(mac)`（配對＝建立通道）② **發射** `SET_MASTER(我的cid)` ③ 本地 `@node.targets` 加入 + active |
 | 解除 | 從 `targets` 移除選中的；選中的不是目標 → 退路解除 active；清空後 `role=None` |
 | 取清單 | `make_cmd(0x3101, {"mode_type":0})` → **定向**（unicast 給選中節點） |
@@ -496,7 +502,7 @@ cfg_manager.clear_modes()
 
 | UI 動作 | 實作 |
 |---|---|
-| 掃描 | `make_cmd(0x100D, {"reply_addr": bus.cid})` → 發射（回覆自動登記） |
+| 掃描 | `make_cmd(0x100D, {"reply_cid": bus.cid})` → 發射（回覆自動登記） |
 | 節點清單 | 讀 `bus.shared["peers"]`（或搬家後 `kv_keys("peer.")`） |
 | 綁定方向 | `exec_cmd(0x1016, {"master_cid": cid})` ＋ 寫 `@node.master_cid` |
 | 解除方向 | `exec_cmd(0x1016, {"master_cid": 0xFFFF})` ＋ 清 `@node.*` |
@@ -545,17 +551,17 @@ cfg_manager.save_from_bus(update_key="Router")
 ```python
 # now_bus.py:129-132
 def write(self, data):
-    if self._last_peer is None:
+    if self._last_src_mac is None:
         return False                          # 沒人 unicast 給過我們 → 丟棄
-    return self.send(self._last_peer, data)   # 單播給「最後一個來源」
+    return self.send(self._last_src_mac, data)   # 單播給「最後一個來源」
 ```
 `handle_stream` 把它當 `ctx["send"]` 傳給 handler（**回覆路徑**）→ **必須保持單播**。
 
 ⚠️ **但這意味著：Router 轉發到 `now` 時會變成 unicast**（`signal_router.py:803` 只認 `write`）
-→ 若 `_last_peer` 是 `None` 就**直接丟棄**。
+→ 若 `_last_src_mac` 是 `None` 就**直接丟棄**。
 → **所以「面板自己發射」目前不能靠 Router 的出口**（這正是 P7「發送任務」要解的問題）。
 → 若要走 Router，需要讓管子自己宣告轉發方式（例：`NowBus.forward = broadcast`），
-   或確認 `_last_peer` 一定存在。**動之前先讀 `doc/03_notes/18_...md` §5.1 末段。**
+   或確認 `_last_src_mac` 一定存在。**動之前先讀 `doc/03_notes/18_...md` §5.1 末段。**
 
 ### 9.4 `SchemaCodec.encode` 的超界行為（P0 已修）
 
@@ -756,4 +762,6 @@ add_peer 呼叫: ['ffffffffffff', 'aabbccddeeff']      ← 廣播位址 + 學會
       to=aabbccddeeff cmd=0x100E addr=0x0001          ← 回覆（單播回面板）
 bus.master_cid = 0x0001                               ← 對端記住了方向
 ```
+> ⚠️ 最後一行是**當時的**輸出。2026-10 修正後 `0x100D` 不再改 `master_cid`
+> （`addr=0x0001` 仍會對，因為那來自 `reply_cid`），方向改由 `0x1016` 設定。
 

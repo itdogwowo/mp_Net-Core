@@ -92,7 +92,7 @@ if self._st_pixel is not None and hasattr(self._st_pixel, "set_brightness"):
 | **`0x3103 MODE_GET` 沒有 handler** | 全 `slave/` 只有 `schema/pixel.json:33` 有定義；`pixel_actions.register()` 只註冊 `0x3101/0x3105/0x3106/0x3107` | 面板問「現在播什麼」**永遠沒人回** → 計時器與狀態沒有來源 |
 | **`0x3104 MODE_GET_RSP` 沒人送** | 同上 | 同上 |
 | **`0x3108` 的 `total_ms` 恆為 0** | `pixel_actions.py:132` 寫死 `"total_ms": 0` | 面板拿不到時長 → **倒數無從起算** |
-| **`0x3102` 的回覆在射頻層可能送不出去** | `_send()` → `ctx["send"]` = `NowBus.write`；`write()` 在 `_last_peer is None` 時回 `False`（`now_bus.py:129-132`） | 第一次回覆可能丟失 —— **這與 NC4 定址無關，見 §5.1 末段** |
+| **`0x3102` 的回覆在射頻層可能送不出去** | `_send()` → `ctx["send"]` = `NowBus.write`；`write()` 在 `_last_src_mac is None` 時回 `False`（`now_bus.py:129-132`） | 第一次回覆可能丟失 —— **這與 NC4 定址無關，見 §5.1 末段** |
 
 > NC4 層的**位址**已經解決了（`master_cid` / `SET_MASTER`，見 §5.1）；
 > 這四個是「有沒有人送」與「射頻層送不送得出去」，是另一回事。
@@ -169,29 +169,35 @@ if self._st_pixel is not None and hasattr(self._st_pixel, "set_brightness"):
 ### 5.1 回覆路徑 —— **基礎設施已經在了，不用新發明**（2026-09 修正）
 
 > 上一版把這條寫成「裝置端必須改、三個選項挑一個」是**錯的**。
-> `SET_MASTER` / `master_cid` / `reply_addr` 這套主動告知 master address 的機制**已經實作**。
+> `SET_MASTER` / `master_cid` / `reply_cid` 這套主動告知 master address 的機制**已經實作**。
 
 **機制**（`lib/sys/sys_bus.py` + `action/net_actions.py`）：
 
 ```python
 # sys_bus.py:22-23 —— 兩個 cID 是不同東西
 self.cid        = 0xFFFF   # 裝置自己的協議短身份（ConfigManager 於 T0 由 System.cID 推動）
-self.master_cid = 0xFFFF   # 回應定址「目標」；0xFFFF = 未設定 = 廣播；僅內存，重開機丟失
+self.master_cid = 0xFFFF   # 回應定址「目標」；0xFFFF = 未設定 = 廣播
+                           # ★ 只有 0x1016 能改（+ 開機 load_node / 解除 clear_node）；會落盤
 
-# net_actions.py:40-47 —— 所有回應都回 master_cid
-def _reply(ctx, rsp_cmd, fields):
-    ctx["send"](Proto.pack(rsp_cmd, payload, addr=bus.master_cid))   # ★ 關鍵
+# net_actions.py —— 回應預設回 master_cid；addr 參數是「這一封」的單次覆寫
+def _reply(ctx, rsp_cmd, fields, addr=None):
+    ctx["send"](Proto.pack(rsp_cmd, payload,
+                           addr=bus.master_cid if addr is None else addr))
 
-# net_actions.py:160-163 —— 0x1016 SET_MASTER：顯式設定
+# net_actions.py —— 0x1016 SET_MASTER：唯一改方向的指令
 def on_set_master(ctx, args):
-    bus.master_cid = args.get("master_cid", 0xFFFF) & 0xFFFF
+    bus.master_cid = args.get("master_cid", 0xFFFF) & 0xFFFF   # + role="slave" + save_node()
 
-# net_actions.py:67-71 —— 0x100D IDENTIFY_REQ：也可用 reply_addr 順帶告知
+# net_actions.py —— 0x100D IDENTIFY_REQ：只點名，不改方向（2026-10 修正）
 def on_identify_req(ctx, args):
-    reply_addr = args.get("reply_addr", 0xFFFF) & 0xFFFF
-    if reply_addr != ADDR_BROADCAST:
-        bus.master_cid = reply_addr      # 這一輪開機保持住
+    reply_cid = args.get("reply_cid", 0xFFFF) & 0xFFFF
+    _reply(ctx, CMD_IDENTIFY_RSP, {...}, addr=reply_cid)      # ★ 只是這一封的回信位址
 ```
+
+> **2026-10 修正**：`on_identify_req` 原本會 `bus.master_cid = reply_cid`（因為當時
+> `_reply()` 沒有目的位址參數）。副作用是**任何一次廣播掃描都等於認掃描者當 master**
+> —— 第二台遙控器按一下掃描就無聲搶走射程內所有節點。現在位址走 `_reply` 的參數，
+> 方向只有 `0x1016` 能改。回歸測試：`test/protocol/test_master_writer.py`。
 
 **完整迴路**：
 
@@ -212,11 +218,15 @@ def on_identify_req(ctx, args):
 | # | 條件 | 現況 |
 |---|---|---|
 | 1 | **面板要有自己的 `System.cID`** —— 沒設時 `bus.cid = 0xFFFF` = 廣播，**什麼都收**（會誤收別人的回覆） | ✅ 本 port 已設 `"cID": "0001"`（`ports/S3/ESP32-S3-Control_Panel/config.json`）|
-| 2 | **執行裝置要先知道「master 是面板」** —— `master_cid` **只存內存、重開機丟失**，所以面板開機後要**主動告知一次** | ❌ 面板還沒有這一步 |
+| 2 | **執行裝置要先知道「master 是面板」** —— `master_cid` 由 `0x1016` 設定並**落盤**（btree `@node.master_cid`），所以設定過一次就跨開機有效；沒設定過才需要告知 | ❌ 面板還沒有這一步 |
 
 → 面板要送 **`0x1016 SET_MASTER`（payload = 面板自己的 cID）** 給執行裝置。
 可以廣播（`master_cid` 欄位本身就帶目標，所有執行裝置都會記住面板）；
-協議原本的慣例是 `0x100D IDENTIFY_REQ` 帶 `reply_addr` 逐 address 掃描 —— 對「一台面板 + 少數執行裝置」用 `SET_MASTER` 直接設定更省事。
+協議原本的慣例是 `0x100D IDENTIFY_REQ` 帶 `reply_cid` 逐 address 掃描 —— 對「一台面板 + 少數執行裝置」用 `SET_MASTER` 直接設定更省事。
+
+> ⚠️ **`0x100D` 不能拿來代替這一步**（2026-10 修正）：它只是**點名**，`reply_cid` 現在
+> 只決定那一封 `0x100E` 回信寄哪，**不改 `master_cid`**。以前它會順便設定方向，那正是
+> 「掃描＝無聲搶奪」的來源，已移除。要定方向就只有 `0x1016`。
 
 > **合作項目**：因為要跟別人合作的項目對接，**對方會送**（有 `master_cid` 就送得到）。
 
@@ -232,12 +242,12 @@ def on_identify_req(ctx, args):
 ```python
 # now_bus.py:129-132
 def write(self, data):
-    if self._last_peer is None:
+    if self._last_src_mac is None:
         return False      # 沒人 unicast 給過我們 → 回 False
 ```
 
-`_last_peer` 只在**有人 unicast 進來**時才設定（`now_bus.py:178`）。
-若面板用**射頻廣播**發查詢，裝置端的 `_last_peer` 仍是 `None` → 第一次回覆回 `False`。
+`_last_src_mac` 只在**有人 unicast 進來**時才設定（`now_bus.py:178`）。
+若面板用**射頻廣播**發查詢，裝置端的 `_last_src_mac` 仍是 `None` → 第一次回覆回 `False`。
 
 **三個緩解方向**（未拍板）：
 
@@ -245,7 +255,7 @@ def write(self, data):
 |---|---|
 | A. 面板在射頻層 unicast | 面板要知道裝置 MAC（`NowBus.add_peer(mac)`；`NowBus.discover()` 存在但**沒人呼叫**，或 config 寫死） |
 | B. 裝置端改成廣播回覆 | 改 `NowBus.write()` 的 fallback；但那是**對方（合作項目）的實作**，管不到 |
-| C. 靠 `add_peer` 的副作用 | 若面板曾 unicast 進來過（例如對方先送），`_last_peer` 就有了 —— 時序依賴，不可靠 |
+| C. 靠 `add_peer` 的副作用 | 若面板曾 unicast 進來過（例如對方先送），`_last_src_mac` 就有了 —— 時序依賴，不可靠 |
 
 > 這條要跟合作方對接時一起確認：**「你們收到查詢時怎麼回？」**
 
@@ -322,7 +332,8 @@ def write(self, data):
 PixelControlPanelTask
   ├─ ⓪ 開機後：0x1016 SET_MASTER（payload = 面板自己的 cID）
   │      → 執行裝置記住 master_cid → 之後所有回覆都回面板（見 §5.1）
-  │      ※ master_cid 只存內存、重開機丟失 → 每次開機都要告知一次
+  │      ※ master_cid 由 0x1016 落盤（@node.master_cid）→ 設定過就跨開機有效；
+  │        沒設定過（或換 master）才需要再告知一次
   ├─ 送出 0x3101 MODE_LIST_QUERY（addr = 執行裝置 cID，mode_type=0 全部）
   │      ← 「獲取列表」按鈕（定向，不是廣播）
   ├─ 收到 0x3102 → 重建 pixel_panel.modes（entries 每筆 2B = 16-bit id）
@@ -335,7 +346,7 @@ PixelControlPanelTask
 靠對方主動送進來時記下來源。
 
 ⚠️ **這條路目前還走不通**，因為 §1.4 的裝置端缺口
-（`0x3103/0x3104` 沒 handler、`0x3108.total_ms` 恆為 0）與 §5.1 的射頻層 `_last_peer`。
+（`0x3103/0x3104` 沒 handler、`0x3108.total_ms` 恆為 0）與 §5.1 的射頻層 `_last_src_mac`。
 **先把主路徑（7.1）做出來，加分項再補。**
 
 > 📌 面板**只廣播設定、定向查詢** —— 這是本設計的硬規則（§1.3）。

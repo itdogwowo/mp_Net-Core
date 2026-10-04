@@ -9,10 +9,13 @@
 >           ② `self` 成為一等**來源**（本機迴路＝vBus 的幀一律以 `self` 進來）
 >           ③ autofill 改成「**主動函數**：開機一次 + 任務開始一次」，之後不再自動跑；
 >              跑的時候會把整張表**註冊進 config.json**，且 `self` 預設 `[]`
->           - 離線自測：`test/protocol/router_self_selftest.py` **43 項全過**（PC，不需硬體）
->           - ⚠️ `test/protocol/router_selftest.py`（舊稱 440 項）與 `router_board_test.py`
->             **這兩份檔案目前不存在於 repo**，但 §11/§12/§15 等處仍引用它們 —— 見 `todo/03_signal_router.md`
-> **最後更新**：2026-09（self 來源統一 ＋ autofill 改為開機一次 ＋ 介面名索引化）
+>           ⚠️ **2026-10 追記：② 那次「統一」把原本設計的兩個本機來源摺成了一個。**
+>              這是「絕對內部執行」這條路徑消失的原因 —— 見 **§3.4**，待辦見
+>              `todo/06_router_local_paths.md`。
+>           - 測試檔現況（**2026-10 逐檔核對，舊版這行寫反了**）：
+>             · `test/protocol/router_selftest.py` —— **存在，但壞的**（§1 就掛；根因見 §3.4）
+>             · `test/protocol/router_self_selftest.py`、`router_board_test.py` —— **不存在於 repo**
+> **最後更新**：2026-10（§3.4 追記兩個本機來源的設計意圖；修正測試檔現況；見 `todo/06`）
 
 ---
 
@@ -240,8 +243,8 @@ def _wire(self, name):
 
 | 位置 | 行為 |
 |---|---|
-| `Router.routes` 的 `in: "vbus"` | ✅ **有效** —— vbus 在 `ALWAYS_PRESENT`，永遠進表 |
-| `out: ["vbus"]` | ❌ **無視**（不是出口、不警告、不計入丟幀）|
+| `Router.routes` 的 `in: "vbus"` | ⚠️ **進表，但永遠查不到** —— vbus 在 `ALWAYS_PRESENT`，所以它會進表；但 `name_of()` 把 vBus 映成 `self`，所以 `gate()` 查的是 `by_in["self"]`。**「進表」≠「會被查到」，寫了沒用**（實測見 §3.4）|
+| `out: ["vbus"]` | ❌ **無視**（不是出口、不警告、不計入丟帧）|
 | vBus 注入的幀 | `name_of()` 回 `SELF` → 查 `by_in["self"]`（**不是** `by_in["vbus"]`）|
 | autofill | ✅ 替 `vbus` 補 `["self"]`（跟其他通道一樣）|
 
@@ -249,6 +252,122 @@ def _wire(self, name):
 > 「**vBus 不是出口**」（`out` 無視）≠「**vBus 不是來源**」（它在表裡）。
 >
 > 使用者定案：`self`、`vbus` 是**最開頭的兩個**（本機群），排在網路與實體線之前。
+
+#### ★★ 兩個本機來源：設計意圖 vs 現況（2026-10 追記）
+
+> **這一節是為了不要再重複解釋一遍而寫的。動 `self` / `vbus` 之前先讀完。**
+>
+> ## ✅ 已決（2026-10）：**不改 Router**
+>
+> 「本機發起」的兩個意圖改由**產生指令的人**用**兩個 API** 分流（＝ `doc/03_notes/19` §2.5）：
+>
+> | 意圖 | API | 走 Router？ | 會外送嗎 |
+> |---|---|---|---|
+> | **絕對內部執行** | `app.disp.exec_cmd(cmd, args, ctx)` | ❌ | ❌ **結構上保證不會** |
+> | **可能對外發出** | `vbus.inject(frame)` | ✅ | 依 `out` |
+>
+> **Router 的角色不變**：只管「已決定要發射的幀」走哪條管子，**不管意圖**。
+> 把 `vbus` 從 `self` 拆回來（以下 §B）**已否決，勿重提** —— 理由見 `todo/06_router_local_paths.md` §1。
+
+**原本的設計意圖是「兩個本機來源」，職責不同：**
+
+| 來源 | 語意 | 要不要能被配置成外送 |
+|---|---|---|
+| **一個**（設計上叫 `vbus`）| 本地發起 → **絕對內部執行，不會路由出去** | ❌ **不可以** —— 這就是它的價值 |
+| **一個**（`self`）| 本地發起 → **依 `out` 決定**（可執行／可外送／兩者）| ✅ 可以 |
+
+**為什麼非得分兩個 —— 因為 `in` 是純量（§4.2）：一個來源恰好一條 route。**
+
+一旦兩個本機來源摺成同一個名字，本機發起的幀就**只剩一種行為可以配**：
+
+```
+{ "in": "self", "out": ["now"] }          → 全部外送，沒有「只執行」的寫法
+{ "in": "self", "out": ["self"] }         → 全部執行，沒有「只外送」的寫法
+{ "in": "self", "out": ["self","now"] }   → 兩者都做，但**無法逐指令區分**
+```
+
+而「執行」與「外送」是**兩個不同意圖**（§5.1；`doc/03_notes/19` §2.5「意圖由產生者決定」）。
+`schedule` 就是實例：它對自己發起的任務**要被執行**，也有些要**對外發出** —— 兩者都源自
+「本機」，卻需要走不同的路。**全部倚賴同一條 `self` 配置是表達不出來的。**
+
+**現況（2026-09 ② 的後果）：兩者已被摺成一個**
+
+```python
+# signal_router.py:84
+_LABEL_EXACT = { ..., "VBUS": "self" }   # ← 摺疊點 ②
+```
+
+**而且有兩個摺疊點，兩個都在查表之前：**
+
+```python
+def name_of(self, bus_obj):
+    if is_local_bus(bus_obj):        # ← 摺疊點 ① io is None → 直接回 "self"
+        return SELF
+    ...
+    return iface_name_from_label(label)   # ← ② "VBUS" → _LABEL_EXACT → "self"
+```
+
+→ `gate()` 查的是 `by_in["self"]`，**永遠不會去問 `by_in["vbus"]`**。
+表上的 `vbus` 條目只是為了「本機群排在最前面」而存在。
+
+**★ 實測（`python -B temp/probe_router_vbus.py`，2026-10）**
+
+| 受測 | 結果 |
+|---|---|
+| `name_of(真實 vBus：io=None, label=VBUS)` | `'self'`（① 攔）|
+| `name_of(只有 label=VBUS，無 io)` | `'self'`（② 攔）|
+| 只寫 `{ "in": "vbus", "out": ["self"] }` → `by_in` | **`['vbus']`** ← 表裡**有**這一條 |
+| 同上，`gate(真實 vBus)` | **`V_DROP`** ❌ 沒生效 |
+| 同上，`gate(只有 label)` | **`V_DROP`** ❌ 沒生效 |
+| 改寫 `{ "in": "self", "out": ["self"] }` → `gate(...)` | `V_EXECUTE` ✅ |
+
+> ★ **光寫 config 不會生效。**「**進表**」≠「**會被查到**」（本節開頭那張表的「有效」就是這個陷阱）。
+
+**證據：測試檔保留的還是原設計**
+
+```python
+# test/protocol/router_selftest.py:189-196
+        {"in": "vbus", "out": ["self"]}])
+eq(r2.gate(FakeBus("VBUS"), ADDR_BROADCAST, 0x3105, b""), V_EXECUTE,
+   "label VBUS → 邏輯名 vbus")        # ← 期望 VBUS 的邏輯名是 "vbus"，不是 "self"
+```
+
+測試期望 `VBUS → "vbus"` 並因此得到 `V_EXECUTE`；實作卻回 `"self"` → 查不到 `by_in["vbus"]`
+→ 回 `V_DROP`。**這就是 `router_selftest.py`「§1 就掛」的根因**（`doc/03_notes/19` §11
+第 12 條只記了症狀「既有問題」，沒查出原因）。
+
+> 換句話說：**不是測試過時，是實作在 2026-09 統一時偏離了原設計，測試沒跟上。**
+
+**目前「絕對內部執行」的正解（0 改動）**
+
+不要繞 Router —— 直接呼叫 handler：
+
+```python
+app.disp.exec_cmd(cmd, args, ctx)      # args 已是 dict，不經編解碼、不經 Router
+```
+
+> `app.py` header 原文：⚠️ 要「不受路由政策影響、絕對執行」時，**不要繞 Router**
+> —— 那會連 CRC 與 ADDR 過濾都跳過。語意是「**我呼叫一個函式**」，而不是
+> 「我假裝收到一幀」。兩者場合不同，不要混用。
+
+**但它不在路由表上、看不到**，而且與「送出去」是兩個不同的 API ——
+如果你想用「兩條 route」把這個區分**表達在表上**，就需要把 `VBUS` 從 `self` 拆回來。
+
+**兩條路（✅ 已定案：A）**
+
+| | 做法 | 改動 | 「絕對」嗎 | 表上可見 | 結論 |
+|---|---|---|---|---|---|
+| **A** | 維持現況：`exec_cmd()` 當「絕對內部執行」 | **0** | ✅ | ❌ | ✅ **採用** |
+| **B** | 把 `"VBUS": "self"` 拆回 `"vbus"`，且 `in:"vbus"` **硬性 `V_EXECUTE`**（`out` 也改不動它）| ~6 行 | ✅ | ✅ | ❌ **否決（勿重提）** |
+
+**否決 B 的理由**：`exec_cmd` 提供的是**結構上**的保證（不經 Router ＝ 不可能被路由出去），
+而 B 要用「執行期語意」達成同一件事，還要改動 2026-09 已定案的來源模型。**A 更強且更便宜。**
+
+**B 的改動點（僅存查，不再施工）** —— 見 `todo/06_router_local_paths.md` §1。
+
+> **對測試的影響**：`router_selftest.py:189-196` 期望 `VBUS → "vbus"` —— 那是**原設計**。
+> A 定案後，**是測試要改**（改成符合現行語意），不是實作要改。
+> （對比：`by_cid()` 那次是**實作漂走、文件對**，要修的是實作。**兩者要先分清。**）
 
 > **為什麼叫 `net` 而不是 `lan`**：這條線是 WS 控制通道，**它可能跑在 LAN 也可能跑在 WiFi 上**。
 > 叫 `lan` 會在 WiFi 部署時說謊。`net` 描述的是「網路控制通道」這個角色，與底層媒體無關。
@@ -477,7 +596,7 @@ def gate(self, bus_obj, addr, cmd):
 
 | 通道 | 收包時自動記錄 | 位置 |
 |---|---|---|
-| ESP-NOW | `_decode_ctx["_peer_mac"] = peer` | `now_bus.py:179` |
+| ESP-NOW | `_decode_ctx["_src_mac"] = peer` | `now_bus.py:179` |
 | UDP | `self.target_addr = addr` | `net_bus.py:358` |
 
 而 action 回覆走的是 **`ctx["send"]`＝來源通道的 `write`**（`app.py:54`），
@@ -574,7 +693,7 @@ PC ─────┤                  ├──── Router
 
 | 曾提議 | 原本用途 | 砍掉的理由 |
 |---|---|---|
-| `peers` | MAC ↔ cid 對照表 | **回覆地址是協議的事**：`IDENTIFY_REQ.reply_addr`（`sys.json:36`）與 `SET_MASTER.master_cid`（`sys.json:66`）已經由發起方帶上來。回程 MAC 是**學來的**（`_peer_mac`），廣播更不需要。**MAC 是學來的，不是填來的** |
+| `peers` | MAC ↔ cid 對照表 | **回覆地址是協議的事**：`IDENTIFY_REQ.reply_cid`（`sys.json:36`）與 `SET_MASTER.master_cid`（`sys.json:66`）已經由發起方帶上來。回程 MAC 是**學來的**（`_src_mac`），廣播更不需要。**MAC 是學來的，不是填來的** |
 | `self` | 本機 cid 覆寫 | 已有唯一真相 `System.cID` → `bus.cid`（`ConfigManager.py:330`），Router 不重複定義 |
 | `ifaces` | 介面實例清單 | 介面存在性屬驅動層（`UART.list` / `Network.*`），Router 只引用不重複宣告 |
 | `links` / `protect` | 防環 | §7.3 |
@@ -736,11 +855,15 @@ routes（記憶體）: [
 
 ```bash
 # 離線（PC，不需硬體）—— 現行
-python3 -B test/protocol/router_selftest.py          # 離線自測（注意：§1 目前是壞的，見 todo/03）
+python3 -B test/protocol/router_selftest.py          # 離線自測
+#   ⚠️ §1 目前是壞的 —— **根因已查明（2026-10）**：它期望 `VBUS → 邏輯名 vbus`
+#      並得到 V_EXECUTE，但實作把 VBUS 摺成了 `self` → 查不到 by_in["vbus"]。
+#      見 §3.4 與 todo/06_router_local_paths.md（修 B 會讓它變對）。
 python3 -B test/protocol/router_show_defaults.py     # dump 實際預設（snapshot/table/status）
 
-# ⚠️ 下面這份「真機 114 項」目前**不存在於 repo**（`test/protocol/router_board_test.py`），
-#    本檔與其他 5 個地方仍在引用它 —— 見 todo/03_signal_router.md 的 §近期變更。
+# ⚠️ `test/protocol/router_self_selftest.py`（舊版稱「43 項全過」）與
+#    `router_board_test.py`（「真機 114 項」）**都不存在於 repo** —— 別再引用它們。
+#    見 todo/03_signal_router.md 的 §近期變更。
 ```
 
 真機實測數字（ESP32-S3 @160MHz）:

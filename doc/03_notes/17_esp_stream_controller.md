@@ -69,7 +69,8 @@ PC 主控的 9,800 行拆開來看，真正與「下指令」有關的只有：
 
 ### 2.3 唯一需要的「方向」概念：回應往哪裡回
 
-裝置把回應送到 `bus.master_cid`（由 `0x1016 SET_MASTER` 或 `0x100D IDENTIFY_REQ.reply_addr` 設定）。
+裝置把回應送到 `bus.master_cid`（**只由 `0x1016 SET_MASTER` 設定**）。
+`0x100D IDENTIFY_REQ.reply_cid` **不改方向** —— 它只是那一封 `0x100E` 的回信位址。
 
 - 對**同一個網路介面**上的裝置來說，誰最後告訴它「我是你的 master」，回應就回給誰。
 - 因此板子要下令前，先對目標發 `0x1016 SET_MASTER`，把回應指向自己。

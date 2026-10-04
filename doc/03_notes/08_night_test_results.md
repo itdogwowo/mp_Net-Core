@@ -673,6 +673,7 @@
   1. NowBus 兩端 channel/peer 是否一致（master `ESP-TX` vs slave `NOW-Bus`）。
   2. slave NowTask.loop 的 `now_bus.poll()` 是否真的被 TaskManager 調度執行。
   3. FILE handler 回應走 `ctx["send"]` 時，NowBus.write 需要 `_last_peer`（對板 MAC），確認收到後有記住 MAC 才回 ACK。
+> （`_last_peer` 已於 2026-10 更名為 `_last_src_mac`；本行保留當時的名字。）
 
 ### 29.5 測試腳本
 - `test/protocol/night_run/espnow_file_test.py` — ESP-NOW 走 NC4 FILE 協議發送端（CHUNK=200）。

@@ -196,8 +196,89 @@ decode 邊界行為（對接工具需注意）：
 
 ### 定址模型（cID / master_cid）
 
+#### ★★ 定址詞彙表（**唯一命名依據，寫程式前先看這裡**）
+
+位址太多，所以名字一律遵守 **`<誰>_<哪層>`**：
+
+| 軸 | 值 |
+|---|---|
+| **誰** | `master`（我的上級）／ `src`（**這一幀的來源**）／ `dst`（目的地）／ **省略 = 我自己** |
+| **哪層** | `cid`（**協議層**，2 B，填在幀頭 `addr`）／ `mac`（**射頻層**，6 B，送出去用） |
+
+| 名字 | 哪一層 | 誰的 | 一句話 |
+|---|---|---|---|
+| `cid` | 協議 | 我自己 | 我的協議短位址（`bus.cid`）|
+| `slave_id` | — | 我自己 | **就是我的 MAC**（`machine.unique_id()` 的 hex）。⚠️ 歷史名，見下 |
+| `master_cid` | 協議 | 上級 | 我上級的協議位址；**未設 = `0xFFFF`** |
+| `master_mac` | 射頻 | 上級 | 我上級的 MAC；其他管子可為 `None` |
+| `reply_cid` | 協議 | 掃描者 | `0x100D` 的欄位：**這一封** `0x100E` 要回給哪個 cid |
+| `addr` | 協議 | — | **NC4 幀頭欄位**（2 B），內容是一個 `cid` |
+| `src_mac` | 射頻 | 這一幀 | 這一幀**從哪個 MAC 來**（射頻層附帶，不用對方講）|
+| `last_src_mac` | 射頻 | 上一幀 | 「剛剛講話的那個人」（`NowBus._last_src_mac`）|
+| `dst_mac` | 射頻 | 目的地 | 要送去哪個 MAC（`write_to(dst_mac, frame)`）|
+| `ADDR_BROADCAST` | 協議 | — | `0xFFFF`（協議層廣播）|
+| `BCAST_MAC` | 射頻 | — | `FF:FF:FF:FF:FF:FF`（射頻層廣播）|
+
+**三個一定要分清楚的**：
+
+1. **`cid` 不是 `mac`** —— 一個 2 B 協議位址、一個 6 B 射頻位址，活在兩層，**不可互推**
+   （cid 可以手寫，面板就是 `"0001"`）。
+2. **`src_mac` 不是 `master_mac`** —— 前者是「**這一幀**誰講的」，後者是「**我上級**是誰」。
+   兩者只有在「上級剛好正在講話」時才相同。**延後發射（抖動）時必須用前者**，
+   因為那時「剛剛講話的人」早就換了。
+3. **`slave_id` 就是 MAC** —— 它是 `machine.unique_id()` 的 hex，**真機驗證與 ESP-NOW 的
+   STA MAC 相同**。保留這個歷史名是因為它用在 heartbeat / `0x100E` / peers 表 key 等
+   很多地方；**看到它就當成「這台的 MAC」**。
+
+> **`0x100D.reply_addr` 已於 2026-10 更名為 `reply_cid`** —— 舊名看不出它帶的是 cid。
+> **wire 不變**（schema 欄位名不上線，只有順序與型別上線），只有原始碼／文件的名字變。
+
+#### ⚠️ 常見誤解：`reply_cid` 為什麼不是 `reply_mac`？
+
+問法通常是：「掃描要回覆，不就需要 MAC 嗎？沒有 MAC 怎麼送得回去？」
+
+**答案：需要 MAC，但那個 MAC 不走 payload —— 它由射頻層免費附帶。**
+
+| | 誰決定 | 掃描回覆的值 |
+|---|---|---|
+| **協定 `addr`**（幀頭）| `reply_cid`（payload 帶的）| 掃描者的 cid → 讓**別台把這封丟掉** |
+| **射頻去向**（`dst_mac`）| `src_mac`（射頻層學的）| 掃描者的 MAC → **送得到** |
+
+```python
+# now_bus.poll() —— 每一幀到達時自動發生，這就是「配對 MAC 的方法」
+peer, msg = self._esp.recv(0)      # peer = 來源 MAC（不用對方講）
+self.learn_peer(peer)              # add_peer(mac) → 通道建立
+```
+
+**為什麼這欄位不能改成 MAC（三個理由，第一個是決定性的）：**
+
+1. ★ **UART / RS485 根本沒有 MAC** —— 共用匯流排上沒有「射頻來源」可學，
+   而廣播掃描的幀頭 `addr` 是 `0xFFFF` → **`reply_cid` 是唯一能知道「回給誰」的途徑**。
+   改成 MAC，整條流程在共用匯流排上就實作不出來（本設計的前提是**傳輸層無關**）。
+2. **payload 裡的 MAC 可以說謊** —— 射頻來源是發送者的實際位址，payload 只是對方填的字串。
+   用 payload MAC 當目的地＝任何人都能叫你去打第三台。
+3. **兩個位址本來就活在兩層**（見上表），硬塞成一個會讓「哪一層」消失。
+
+**什麼時候真的需要「存下來的 MAC」？** —— **主動發送**時（`0x1002` 公告、心跳）：
+那條路**沒有幀進來**，所以沒有 `src_mac` 可學 → **只能靠 `master_mac`**。
+`master_mac` 的存在就是為了這個（它取自 `0x1016` 收幀當下的 `src_mac`）。
+
+**「沒有 master 就只能回 FF」？** 只有**協定 `addr`** 會 FF（`bus.master_cid` 初值）；
+掃描這條路徑有 `reply_cid` 擋著 → **不會 FF**，射頻去向也從來不是 FF。
+
+> 端到端證據：`test/protocol/test_node_pairing.py` **§16**（10 項，只換掉射頻與時鐘，
+> 其餘走真程式碼：`poll()` → `rx_hub` → `_src_mac` → `_TxOut` → `defer` → `_fire_due` → `send`）。
+
+#### 個別成員
+
 - **`bus.cid`（uint16）**：裝置自身的協議短身份，由 `ConfigManager.ensure_cID()` 於 T0（boot.py import 時）建立——`System.cID` 為空時以 `machine.unique_id()` 末 4 碼填入並持久化；取不到則 `"FFFF"`。cID 是**單一擁有**、由 ConfigManager 推動，消費者（解碼層）只讀不重算。
-- **`bus.master_cid`（uint16，內存）**：回應定址目標，預設 `0xFFFF`（廣播=未設定）。Master 透過 `SET_MASTER` 或 `IDENTIFY_REQ` 的 `reply_addr` 告知 slave；slave 記住後，所有回應的 `addr` 欄位都填 `bus.master_cid`。**只存內存，重開機丟失**。
+- **`bus.master_cid`（uint16）**：回應定址目標，預設 `0xFFFF`（廣播=未設定）。**只有 `0x1016 SET_MASTER` 能改它**（+ 開機 `load_node()` 還原 / 解除 `clear_node()`）——slave 記住後，所有回應的 `addr` 欄位預設都填 `bus.master_cid`。**會落盤（btree `@node.master_cid`），重開機仍在**。
+  - ⚠️ `0x100D IDENTIFY_REQ` 的 `reply_cid` **不再改這裡**。它只是**那一封** `0x100E` 的回信位址（`_reply(..., addr=reply_cid)` 的單次參數）。以前它會寫進 `master_cid`（因為 `_reply()` 沒有目的位址參數），副作用是任何一次廣播掃描都等於「認掃描者當 master」＝無聲搶奪；該寫入已移除。回覆 addr 的覆寫值優先於 `master_cid`。
+  - **「不改方向」≠「回不去」**：掃描回覆的**射頻去向**是「這一幀的來源」（`src_mac`），
+    與 `master_cid` 無關 → 未配對的裝置照樣回得去（協定 addr 就是 `0xFFFF`）。
+- **`bus.master_mac`（hex 字串或 `None`）**：上級的射頻位址。**不是用 payload 傳的** ——
+  取自 `0x1016` **收幀當下的 `src_mac`**（與 `0x100E` 帶回 cid 的方式完全對稱）。
+  用途：`NowBus.write()` 解析 `addr == master_cid` 時用它；也是主動發送的目的地。
 - **ADDR 過濾（`app.py` `handle_stream`）**：只收 `addr == ADDR_BROADCAST(0xFFFF)` 或 `addr == bus.cid` 的幀，其餘 `continue` 丟棄。這讓「逐 address 掃描」的 RX 端現成可用。
 
 ---

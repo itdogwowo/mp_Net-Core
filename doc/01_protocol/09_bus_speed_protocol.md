@@ -119,7 +119,7 @@ slave 行為（`on_speed_set` → `bus_speed_set`）：
 切速後 master 用**既有指令**敲門，確認新速下雙向都通：
 
 - `STATUS_GET`（0x1101 `{query_type:0}`）→ 等 `STATUS_RSP`（0x1102）
-- 或 `IDENTIFY_REQ`（0x100D `{reply_addr:...}`）→ 等 `IDENTIFY_RSP`（0x100E）
+- 或 `IDENTIFY_REQ`（0x100D `{reply_cid:...}`）→ 等 `IDENTIFY_RSP`（0x100E）
 
 ```
 M→S  STATUS_GET {query_type:0}

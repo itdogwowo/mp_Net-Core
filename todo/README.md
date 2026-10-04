@@ -1,7 +1,7 @@
 # TODO — 測試追蹤清單
 
 > **用途**：存放「不同模組、不同目標」的測試跟進清單。每份 md 記錄該模組/目標的待測項目、已完成驗證、以及後續要補的實測。
-> **最後更新**：2026-09
+> **最後更新**：2026-10
 
 ## 怎麼用
 
@@ -17,7 +17,15 @@
 | [01_file_update.md](01_file_update.md) | 檔案更新流程（FILE_* 0x20xx） | loopback 自測通過，實測待補 |
 | [02_rs485_de.md](02_rs485_de.md) | RS485 半雙工 DE 控制（1ms / rs485_hd 全自動） | 1ms 實測通過，rs485_hd 待真機驗證 |
 | [03_signal_router.md](03_signal_router.md) | 訊號 Router（頻道間轉送 / 路由表） | **P1~P5 完成（離線自測 401 項全過）**，P6 上板實測待做 |
+| [04_remote_pairing.md](04_remote_pairing.md) | 遙控配對（解除 / 驗證 / 衝突政策） | Task 1（解除雙邊同步）✅；**Task 2（驗證）✅ 2026-10 完成** —— 用 `0x1101` 空中查詢（真機 20~30ms 往返）；**Task 3 已取消**（由 `todo/05` D8 取代）|
+| [05_node_pairing.md](05_node_pairing.md) | **節點發現與配對（傳輸層無關）** —— 抖動 / cid 身分 / 管子介面 / UI 分界線 | ✅ **階段 1~4 已實作 ＋ 真機驗證全部完成**（離線 153/153 PASS；§12 兩板實測，含抖動分佈、`reply_cid`、認主、閃寫保護、重啟換手、**解除後不重啟換手**）|
+| [06_router_local_paths.md](06_router_local_paths.md) | Router 的兩個本機來源（`self` / `vbus`）—— 「絕對內部執行」怎麼走 | ✅ **已決：不改 Router**，分流在產生者側（`exec_cmd` ↔ `vbus.inject`）；待辦全部結案（`router_selftest` 75/75）|
+| [07_now_setting_ui.md](07_now_setting_ui.md) | **ESP-NOW 設定 ＋ 遙控器設定 兩頁 UI** —— 傳輸層 vs 應用層、兩個清單的鍵與上限、FF 互斥、加密（6 格 / 共用金鑰）| 🟡 **資料層完成並測試（153/153）**；`0x1301{action:3}` 換頻道真機 10/10；**兩頁 UI 尚未實作** |
 | `_template.md` | 新清單範本 | — |
+
+> ⚠️ **開發這幾條流程時務必 hard reset**，不要用 Ctrl-D／`mpremote` 預設的軟重開機 ——
+> 它不拆 WiFi/ESP-NOW 驅動，內部 SRAM 會累積到開機 hard fault（USB-CDC 會整個消失）。
+> 見 `todo/05` §12.5、changelog §32.4 / §34.5，以及 `todo/07` §6 的六個陷阱。
 
 ## 待開清單的模組（依 doc/02_guides 順序）
 
