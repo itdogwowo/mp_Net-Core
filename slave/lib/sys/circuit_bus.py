@@ -132,6 +132,41 @@ class CircuitBus:
             self.connected = False
             return False
 
+    def write_to(self, dst_mac, data: bytes):
+        """定向送 —— **共用線不需要實體位址**，靠幀頭 addr 過濾。
+
+        `dst_mac` 是射頻層憑證（UART/WS 沒有這種東西 → 一律 None，忽略）。
+        存在只為了讓「解碼鏈的延後發射」用同一段程式碼服務所有管子
+        （見 `tasks/bus_decode.py` 的 `_send_deferred`）。
+        """
+        return self.write(data)
+
+    def inject(self, frame):
+        """把一幀餵進**本管的 rx_hub** → 它會像「剛從這條線收到」一樣走解碼鏈。
+
+        ★ 這是「本機發起」的入口（vBus 的用途）。2026-10 從
+          `ScheduleTask._inject()` 搬過來 —— 它是**通用的**（任何 bus 的 rx_hub
+          都能被注入），不該是 scheduler 的私有方法；放在 bus 上就不必再傳 `cb`。
+        ★ 與 `tasks/bus_decode.py` 的 `_TxOut` / `defer` 的分工：
+            `inject` = 寫進**自己**的 hub（單一 bus 的操作）
+            `defer`  = **跨 bus** 的排程（需要輪詢點，所以放解碼鏈）
+        """
+        hub = self.rx_hub
+        if hub is None:
+            return False
+        n = len(frame)
+        if n > RX_BUF_SIZE:
+            print("[{}] 注入幀過長 {}>{}，跳過".format(self.label, n, RX_BUF_SIZE))
+            return False
+        view = hub.get_write_view()
+        if view is None:
+            return False        # 解碼端消化不及 → 掉（不重送）
+        struct.pack_into("<H", view, 0, n)
+        off = self._hub_off
+        view[off:off + n] = frame
+        hub.commit()
+        return True
+
     def _send_all(self, data):
         mv = memoryview(data)
         ln = len(mv)

@@ -191,53 +191,44 @@ def _sync_list():
 
 # ═══ 動作 ═══
 
-def _espnow_send_mid(mid):
-    """最直接硬件發送:拿底層 espnow 物件直接 send(broadcast),不經任何 bus 封裝。
-    點擊即發、重複也無妨。frame 印出完整 hex 供對照。"""
+def _send_mode_broadcast(mid):
+    """把「播放模式 `0x3105`（廣播）」**本機發起**出去。
+
+    ── 2026-10 改寫 ────────────────────────────────────────────────────
+    舊版（函式名與內容都留著歷史痕跡）**直接抓 `now._esp`（私有屬性）自己
+    `send()`**，連 `NowBus` 的 `connected` 檢查、統計、Router 全部繞過；
+    服務不存在時還自己 `espnow.ESPNow()` 開一個（會撞 `ESP_ERR_ESPNOW_EXIST`）。
+    那是最嚴重的一種「傳輸層細節外流到 UI」—— 比 `remote.py` 舊版更糟
+    （它至少還經過 `NowBus`）。
+
+    現在：**只產生幀 → `inject()` 進 vBus**，由 Router 決定「執行 or 發射、
+    走哪條管子」，由**管子自己**把幀頭 `addr = 0xFFFF` 解析成廣播。
+    見 `todo/05_node_pairing.md` §3.1 / D14/D16。
+    """
     import struct
-    from lib.sys.sys_bus import bus
     from lib.sys.proto import Proto
+    from lib.sys.sys_bus import get_vbus
 
     mid = int(mid) & 0xFFFF
     mode_type = (mid >> 8) & 0xFF
     mode_id = mid & 0xFF
     payload = struct.pack("<BBHB", mode_type, mode_id, 0, 0xFF)  # delay=0, bri=不設置
-    frame = bytes(Proto.pack(0x3105, payload))
 
-    # 拿底層 espnow 硬體物件(優先重用 app 已 active 的,避免 ESP_ERR_ESPNOW_EXIST)
-    esp = None
-    now = bus.get_service("NowBus")
-    if now is not None and getattr(now, "_esp", None) is not None:
-        esp = now._esp
-    else:
-        import espnow as _espnow
-        import network as _net
-        sta = _net.WLAN(_net.STA_IF)
-        if not sta.active():
-            sta.active(True)
-        try:
-            sta.config(channel=6)
-        except Exception:
-            pass
-        esp = _espnow.ESPNow()
-        esp.active(True)
-        esp.add_peer(b"\xff\xff\xff\xff\xff\xff")
+    vb = get_vbus()
+    if vb is None:
+        print("[PixelCtrl] 無 vBus（排程任務未上線？）→ 無法發射")
+        return False
+    # Proto.pack 回的是共享 buffer 的 view（下一次 pack 就覆蓋）→ inject 立即消費 ✓
+    ok = bool(vb.inject(Proto.pack(0x3105, payload, addr=0xFFFF)))
 
-    bcast = b"\xff\xff\xff\xff\xff\xff"
-    try:
-        ok = esp.send(bcast, frame)
-    except Exception as e:
-        ok = False
-        print("[PixelCtrl] ESP-NOW send 例外: {}".format(e))
-
-    print("[PixelCtrl] ESP-NOW 0x3105 type={} id={} (0x{:04X}) ret={} frame={}".format(
-        mode_type, mode_id, mid, ok, frame.hex()))
+    print("[PixelCtrl] 0x3105 type={} id={} (0x{:04X}) 已注入 vBus={}".format(
+        mode_type, mode_id, mid, ok))
     return ok
 
 
 def _set_mode(mid):
     """臨時:選中即發 ESP-NOW,不寫狀態、不經 task。"""
-    _espnow_send_mid(mid)
+    _send_mode_broadcast(mid)
     if _cur_lb is not None:
         try:
             _cur_lb.set_text("0x{:04X}".format(int(mid) & 0xFFFF))
@@ -248,7 +239,7 @@ def _set_mode(mid):
 def _apply_movable():
     """「可動」按鈕:點擊即發 ESP-NOW MODE_SET 0x0200(SERVO 組 mode 0)。"""
     print("[PixelCtrl] 可動 → 0x{:04X}".format(MOVABLE_ID))
-    _espnow_send_mid(MOVABLE_ID)
+    _send_mode_broadcast(MOVABLE_ID)
 
 
 def _sel_mode_delta(dd):

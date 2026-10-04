@@ -20,7 +20,20 @@ class SysBus:
         self.shared = {}
         self.slave_id = "UNKNOWN"
         self.cid = 0xFFFF        # 協議定址短身份 (uint16); 由 ConfigManager 於 T0 推動
-        self.master_cid = 0xFFFF # 回應定址目標 (uint16); 0xFFFF=廣播(未設定), 由 SET_MASTER/IDENTIFY 設定, 僅內存
+        self.master_cid = 0xFFFF # 回應定址目標 (uint16); 0xFFFF=廣播(未設定)
+        #   ★ 只有 `0x1016 SET_MASTER` 能改它（+ 開機 load_node / 解除 clear_node）。
+        #     `0x100D IDENTIFY_REQ` 的 reply_cid 只是**那一封**的回信位址，
+        #     不改這裡 —— 點名不該改變「我聽誰的」（見 action/net_actions.py）。
+        self.master_mac = None   # Master 的**射頻層**位址（大寫 hex 字串；取不到 = None）
+        #   ★ 與 master_cid 成對：cid 是協議層（填幀頭 addr），mac 是射頻層（送出去用）。
+        #     兩者一起被 0x1016 寫入、一起落盤（@node.master_mac）。
+        #     用途：`NowBus.write()` 解析 `addr == master_cid` 時用它；也是主動發送的
+        #     目的地。其他管子（UART/WS）不需要實體位址 → 可以是 None。
+        self.pair_claimed = False
+        #   ★ 「**本次開機**是否已被認領」—— 純記憶體，開機即為 False（不落盤）。
+        #     為什麼需要它：master_cid 是**半永久**的，光靠它會變成「永遠不能被換」。
+        #     有了這個 1 bit，就得到「**重啟一下，再讓新的 Master 執行**」
+        #     （每次開機先到先得）—— 見 todo/05_node_pairing.md D8/§7.3。
         # ── 節點狀態（遙控器用）──────────────────────────────────────
         #   role    : "master"(我有目標) | "slave"(被指定) | None(未定)
         #   targets : 目標清單（多目標切換用）；master_cid 是「當前」那一個
@@ -150,3 +163,37 @@ class SysBus:
 
 
 bus = SysBus()
+
+
+# ── vBus（本機發起的注入點）─────────────────────────────────────────
+VBUS_LABEL = "VBUS"
+
+
+def get_vbus():
+    """取得 vBus。取不到回 None。
+
+    vBus 是「**本機發起的幀**」那條虛擬管子（`CircuitBus(io=None, label="VBUS")`）。
+    任何 UI / task 要「本機發起一幀」時：
+
+        vb = get_vbus()
+        if vb is not None:
+            vb.inject(frame)          # → 解碼鏈 → Router 決定「執行 or 發射、走哪條」
+
+    ★ 為什麼要有這個 helper：`ScheduleTask` 是**按需**建立 vBus 的，開機當下可能
+      還沒上線；而且它先前只把 vBus 放進 `bus_sources`（要靠 label 搜）。
+      2026-10 起它同時註冊具名服務 `"vbus"`，所以多數情況第一行就命中；
+      這裡保留 `bus_sources` 的退路（順序不定時仍然找得到）。
+    """
+    vb = bus.get_service("vbus")
+    if vb is not None:
+        return vb
+    src = bus.get_service("bus_sources")
+    if src is None:
+        return None
+    try:
+        for x in (src.list() or []):
+            if getattr(x, "label", "") == VBUS_LABEL:
+                return x
+    except Exception:
+        pass
+    return None

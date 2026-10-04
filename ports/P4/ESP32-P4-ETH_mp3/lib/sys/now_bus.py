@@ -18,7 +18,7 @@ class NowBus:
         self.connected = False
         self._esp = None
         self._peers = {}
-        self._last_peer = None
+        self._last_src_mac = None
         self._decode_ctx = {}
 
         buf_cfg = bus.shared.get('Buffer', {}) or {}
@@ -77,7 +77,7 @@ class NowBus:
                 self._esp = None
             self.connected = False
             self._peers.clear()
-            self._last_peer = None
+            self._last_src_mac = None
             print(f"🔌 [{self.label}] Deinitialized")
         except Exception:
             pass
@@ -127,9 +127,9 @@ class NowBus:
         return self.send(BCAST_MAC, data)
 
     def write(self, data):
-        if self._last_peer is None:
+        if self._last_src_mac is None:
             return False
-        return self.send(self._last_peer, data)
+        return self.send(self._last_src_mac, data)
 
     def write_to(self, mac, data):
         if mac is None:
@@ -175,8 +175,8 @@ class NowBus:
             pv[:n] = msg
             self.rx_hub.commit()
 
-            self._last_peer = peer
-            self._decode_ctx["_peer_mac"] = peer
+            self._last_src_mac = peer
+            self._decode_ctx["_src_mac"] = peer
 
         return
 

@@ -5,7 +5,8 @@
       "cmd": "0x1301",
       "name": "NOW_INIT",
       "payload": [
-        {"name": "action", "type": "u8"}
+        {"name": "action", "type": "u8"},
+        {"name": "channel", "type": "u8"}
       ]
     },
     {

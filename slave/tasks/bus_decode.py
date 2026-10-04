@@ -13,6 +13,34 @@ def _router_log(msg):
         print(msg)
 
 
+class _TxOut:
+    """**一條管子的發射出口**（每條 bus 建一次，不是每幀）。
+
+    `ctx["send"]` 就是它 —— handler 只知道「把這一幀送出去，可延後」，
+    完全不知道 MAC、也不知道哪條管子。
+
+    ★ 為什麼延後機制在**解碼鏈**而不是各 bus：
+      抖動是**所有共享媒介**的需求（RS485 比無線更需要），而三條 bus
+      沒有共同基底類別。放解碼鏈＝三條 bus 都天生具備，未來加管子也不用改。
+
+    ★ 為什麼要 `src`：延後發射時「剛剛講話的人」（`bus._last_src_mac`）早就換人了，
+      所以**收幀當下**就要把「這一幀的來源」定下來（`src`），到期用它送。
+      這是**傳輸層憑證**（ESP-NOW = MAC；共用線 = None），協議層看不到它。
+    """
+    __slots__ = ("mgr", "bus", "src_mac")
+
+    def __init__(self, mgr, bus):
+        self.mgr = mgr
+        self.bus = bus
+        self.src_mac = None
+
+    def __call__(self, frame, delay_ms=0):
+        if delay_ms > 0:
+            self.mgr.defer(self.bus, frame, delay_ms, self.src_mac)
+            return True
+        return self.bus.write(frame)
+
+
 class BusDecodeTask(Task):
     def __init__(self, name, ctx):
         super().__init__(name, ctx)
@@ -31,6 +59,13 @@ class BusDecodeTask(Task):
         self._buses = []
         self._parsers = {}
         self._src_ts = 0
+        # ── 發射出口 ＋ 延後發射（見 `_TxOut` 的說明）────────────────
+        #   _tx      : id(bus) → _TxOut（每條 bus 快取一個，不是每幀）
+        #   _pending : id(bus) → (fire_at, bus, frame, src) —— **每條管子深度 1**
+        #              （新掃描覆蓋舊的未發項：Slave 對「當前這一輪點名」
+        #                最多只欠一封回覆）
+        self._tx = {}
+        self._pending = {}
         buf_cfg = bus.shared.get("Buffer") or {}
         self._max_slots = int(buf_cfg.get("decode_budget_slots", 32) or 0)
         if self._max_slots <= 0:
@@ -197,6 +232,62 @@ class BusDecodeTask(Task):
         hk = self._housekeep
         if hk is not None:
             hk()
+        # 延後發射：到期才送（非阻塞，見 `_TxOut` / `defer`）
+        self._fire_due()
+
+    # ── 發射出口 ＋ 延後發射 ────────────────────────────────────────
+    def _tx_of(self, b):
+        """取這一條 bus 的發射出口（快取，避免每幀配置）。"""
+        t = self._tx.get(id(b))
+        if t is None:
+            t = _TxOut(self, b)
+            self._tx[id(b)] = t
+        return t
+
+    def defer(self, b, frame, delay_ms, src_mac=None):
+        """排程一次延後發射 —— **立刻返回，不等待**。
+
+        ★ 必須在「收幀當下」呼叫：`src`（這一幀的來源）要現在定下來，
+          否則到期時「剛剛講話的人」已經換了 → 回錯對象。
+        ★ 每條管子只留一格：新的一筆覆蓋舊的未發項。
+        """
+        if delay_ms <= 0:
+            return self._send_deferred(b, frame, src_mac)
+        try:
+            fire_at = time.ticks_add(time.ticks_ms(), int(delay_ms))
+        except Exception:
+            fire_at = time.ticks_ms() + int(delay_ms)
+        self._pending[id(b)] = (fire_at, b, bytes(frame), src_mac)
+        return True
+
+    def _send_deferred(self, b, frame, src_mac):
+        """用「排程當時的來源」送出去（不是用「剛剛講話的人」）。
+
+        `write_to` 是傳輸層的既有能力：ESP-NOW 用它定向單播；
+        共用線（UART/WS）忽略憑證、直接寫出去（靠幀頭 addr 過濾）。
+        查不到 `write_to` 就退回 `write`（相容）。
+        """
+        fn = getattr(b, "write_to", None)
+        if fn is not None:
+            return bool(fn(src_mac, frame))
+        return bool(b.write(frame))
+
+    def _fire_due(self):
+        """把到點的延後發射送出去（每個 runner 週期呼叫一次，零等待）。"""
+        pend = self._pending
+        if not pend:
+            return
+        now = time.ticks_ms()
+        for k, item in list(pend.items()):
+            if item is None:
+                continue
+            fire_at, b, frame, src_mac = item
+            if time.ticks_diff(now, fire_at) >= 0:
+                del pend[k]
+                try:
+                    self._send_deferred(b, frame, src_mac)
+                except Exception as e:
+                    get_log().warn("[BusDecode] 延後發射失敗: {}".format(e))
 
     def _drain(self):
         """poll 各 bus → rx_hub → 解幀 → handle_stream（含 Router 關卡）。
@@ -215,9 +306,10 @@ class BusDecodeTask(Task):
             if p is None:
                 p = self.app.create_parser()
                 self._parsers[id(b)] = p
-            ctx_extra = getattr(b, "_decode_ctx", None) or {}
-            # 被動素描：這一幀從哪個射頻位址來（只有 NowBus 這類會填 _peer_mac）
-            peer_mac = ctx_extra.get("_peer_mac")
+            ctx_extra = getattr(b, "_decode_ctx", None)
+            if ctx_extra is None:
+                ctx_extra = {}      # ★ 空 dict 也沿用 bus 自己那個（aliasing 明確）
+            sender = self._tx_of(b)     # 這一條 bus 的發射出口（快取）
             while True:
                 if used >= self._max_slots:
                     return
@@ -231,19 +323,22 @@ class BusDecodeTask(Task):
                     ln = view[0] | (view[1] << 8)
                     if ln > 0:
                         data = view[2:2 + ln]
-                        # 被動素描：只在新位址時登記（已知的走 0 成本路徑，
-                        # 不做逐幀 learn —— 否則 hits/log 會被灌爆）
+                        # 被動素描：這一幀從哪個射頻位址來（只有 NowBus 這類會填）
+                        peer_mac = ctx_extra.get("_src_mac")
                         if peers is not None and peer_mac and not peers.knows(peer_mac):
                             try:
                                 peers.learn_from_frame(b, peer_mac, 0,
                                                        ctx_extra)
                             except Exception:
                                 pass
+                        # ★ 每幀更新「這一幀的來源」—— 延後發射要用它才不會回錯人
+                        #   （每條 bus 一個出口物件，這裡只改欄位，不配置）
+                        sender.src_mac = peer_mac
                         self.app.handle_stream(
                             p,
                             data,
                             getattr(b, "label", "Bus"),
-                            b.write,
+                            sender,      # ★ 發射出口（可延後），不是 b.write
                             ctx_extra,
                             router,      # ★ 解碼鏈上的 Router 關卡（None = 不作用）
                             b,           # ★ 這一幀的來源 bus（Router 查路由表用）

@@ -1,6 +1,11 @@
 import time
 import gc
-import ubinascii
+
+try:
+    import ubinascii
+except ImportError:                     # CPython（離線測試）：同一個 API 叫 binascii
+    import binascii as ubinascii
+
 from lib.sys.proto import Proto
 from lib.sys.schema_codec import SchemaCodec
 from lib.sys.sys_bus import bus
@@ -9,12 +14,19 @@ BCAST_MAC = b'\xff\xff\xff\xff\xff\xff'
 
 
 def _mac_str_to_bytes(mac_str):
+    """MAC 字串/bytes → 6 bytes。**解析失敗會印警告**（不再靜默回廣播）。
+
+    ★ 2026-10：舊版失敗時直接回 `BCAST_MAC` 且不吭聲 —— 打錯一個字元就從
+      「單播給某台」變成「廣播給所有人」，而且看起來一切正常。
+      現在失敗會印出原文，讓它變成看得見的錯誤（仍然回廣播，維持可運作）。
+    """
     if isinstance(mac_str, bytes) and len(mac_str) == 6:
         return mac_str
     try:
         s = mac_str.replace(":", "").replace("-", "").replace(" ", "")
         return ubinascii.unhexlify(s)
-    except Exception:
+    except Exception as e:
+        print("⚠ [NOW] MAC 解析失敗 {!r} ({}) → 退回廣播".format(mac_str, e))
         return BCAST_MAC
 
 
@@ -25,7 +37,18 @@ def on_now_init(ctx, args):
         0 → 查詢（不改變任何狀態）
         1 → 確保開
         2 → 關
+        3 → **設頻道**（讀 `channel` 欄位，1..13）—— 2026-10 新增
         其他 → 未知（只印 log，不動裝置）
+
+    ★ `channel`（u8）是 2026-10 追加的**第二個欄位**，向後相容：
+      舊客戶端只送 1 byte（`action`）→ SchemaCodec 在 payload 用完時就停
+      （`if pos >= plen and tc != 5: break`）→ `args` 裡根本沒有 `channel`
+      → 這裡擋掉並提示，不會誤動作。
+
+    ★ 為什麼「設頻道」需要一個 action：在此之前換頻道等於「改 config ＋ 重啟」
+      ——`init(channel=N)` 在 STA 已開時會**靜默忽略**（見 `NowBus.set_channel`）。
+      真機兩板實測：`sta.config(channel=N)` 執行期當場生效，兩端都換完就通了
+      → **不必重啟**。語意上「頻道＝區分不同網路」，不做跨頻道兼容、不需掃描。
 
     ★ 規則只有一句：**不給參數就是 0，0 就是查詢。**
       沒有「缺席特別代表開」這種例外規則 —— 缺席就是欄位型別的原生預設值。
@@ -81,8 +104,20 @@ def on_now_init(ctx, args):
             if what == "failed":
                 print("[NOW] init failed")
 
+    elif action == 3:
+        # ★ 2026-10：執行期換頻道（不必重啟）。見 NowBus.set_channel 的實測記錄。
+        if now is None or not now.connected:
+            print("[NOW] 要先開 ESP-NOW 才能換頻道（action=1）")
+        else:
+            ch = args.get("channel")
+            if not ch:
+                print("[NOW] action=3 需要 channel（1..13）"
+                      " —— 舊客戶端只送 action，請補上第二個位元組")
+            else:
+                now.set_channel(ch)
+
     elif action != 0:
-        print("[NOW] 未知 action={} (0=查詢 1=開 2=關)".format(action))
+        print("[NOW] 未知 action={} (0=查詢 1=開 2=關 3=設頻道)".format(action))
 
     # ── 回報（查詢與動作走同一條路，呼叫端只需讀 enabled）───────────
     now = bus.get_service("NowBus")

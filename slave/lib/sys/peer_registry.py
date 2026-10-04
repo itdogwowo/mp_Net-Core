@@ -85,6 +85,12 @@ def _mac_hex(mac):
         return None
 
 
+# ★ 對外公開的同一個函式（2026-10）：`action/net_actions.py` 收到的射頻來源是
+#   **bytes**（espnow.recv 的產物），但要存進 btree —— JSON 不能存 bytes，
+#   所以必須正規化成 hex 字串。共用同一套規則，避免兩份實作漂移。
+mac_hex = _mac_hex
+
+
 class PeerRegistry:
     """素描紀錄：誰被我問到過、從哪條線、用哪個位址可以再找到他。"""
 
@@ -266,19 +272,57 @@ class PeerRegistry:
         self._dirty = True
         self._dirty_sids.add(sid)      # 逐 key 寫入：只寫這一筆
         self._removed_sids.discard(sid)
+        self._check_cid_conflict(sid, rec)
         self._publish()
         get_log().info("[Peers] {} {} cid={} mac={} via={} iface={}".format(
             "＋" if result == "new" else "↻", sid,
             rec["cid"], rec["mac"] or "-", via, iface or "-"))
         return result
 
+    def _check_cid_conflict(self, sid, rec):
+        """🆕 偵測 cid 撞號（2026-10）：**同一個 cid 出現在兩個不同節點上**。
+
+        ★ 這是**設定錯誤**，不是本模組能修的：
+          `cid` 是協議層的位址（填在幀頭 addr），共用匯流排（UART/RS485）上
+          兩台同 cid → 定址指令**兩台都會執行** → 那條匯流排本來就壞了；
+          在 ESP-NOW 上則會讓 `by_cid()` 查回錯的 MAC（＝指令打到錯的裝置）。
+        ★ 為什麼要**看得見**：唯一鍵其實是 `slave_id`（硬體 id），cid 只是位址。
+          撞號在本表不會覆蓋資料，但對外查表會歧義 —— 所以要標記並印警告。
+          自動修（例如改用 MAC 當鍵）是**錯的**：那會把 ESP-NOW 的實作細節
+          提升成跨傳輸層的協定（見 todo/05 §2.2 的反省記錄）。
+        ★ 採**整表重算**而不是只改這一筆：撞號是「一對」的性質 ——
+          只清當前這筆會讓**另一筆永遠留著舊標記**（實測抓到）。
+          表很小（節點數十台），全掃成本可忽略。
+        """
+        by_cid = {}
+        for s, r in self._peers.items():
+            c = r.get("cid")
+            if c is not None:
+                by_cid.setdefault(c, []).append(s)
+        for c, sids in by_cid.items():
+            bad = len(sids) > 1
+            for s in sids:
+                r = self._peers[s]
+                had = bool(r.get("cid_conflict"))
+                if bad and not had:
+                    r["cid_conflict"] = True
+                    self._dirty_sids.add(s)
+                elif not bad and had:
+                    r.pop("cid_conflict", None)
+                    self._dirty_sids.add(s)
+            if bad:
+                get_log().error(
+                    "[Peers] ❌ cid 撞號 0x{:04X}：{} 兩台以上都用它 "
+                    "→ 定向指令會打到錯的裝置（請改各板 config 的 System.cID）".format(
+                        int(c) & 0xFFFF, "、".join(sids)))
+
     def learn_from_identify_rsp(self, ctx, args):
         """0x100E IDENTIFY_RSP handler —— 主動掃描的回覆（資料最完整）。
 
         payload: cid(u16) + slave_id(str_u16len) + ip(str_u16len)
-        `_peer_mac` 由 bus 從收幀當下放進 ctx（見 NowBus.poll / NetBus）。
+        `_src_mac` 由 bus 從收幀當下放進 ctx（見 NowBus.poll / NetBus）。
         """
-        peer_mac = (ctx or {}).get("_peer_mac")
+        peer_mac = (ctx or {}).get("_src_mac")
         return self._record(
             args.get("slave_id"),
             via="identify_rsp",
@@ -307,7 +351,7 @@ class PeerRegistry:
         為什麼需要它（ESP-NOW 的結構性事實）：
           射頻位址是 MAC，MAC **不是可枚舉的數值空間** → 「逐 address 掃描」
           （0x100D）在 ESP-NOW 上**無從發起**。所以「被發現」只能等對端送東西來，
-          而送來的那一刻，射頻層才會告訴我們來源 MAC（ctx["_peer_mac"]）。
+          而送來的那一刻，射頻層才會告訴我們來源 MAC（ctx["_src_mac"]）。
 
         與 `learn_from_frame` 的關係：互補，不是重複。
           - `learn_from_frame`：任何幀都登記，但**只有 MAC、沒有身份**
@@ -316,7 +360,7 @@ class PeerRegistry:
         被動學習先寫、這裡後補，結果一致；pixel_count / hw_version 只 print，
         不進記錄（塞進 `name` 會語意錯亂）。
         """
-        peer_mac = (ctx or {}).get("_peer_mac")
+        peer_mac = (ctx or {}).get("_src_mac")
         sid = args.get("slave_id") or ""
         if not sid and not peer_mac:
             return None
@@ -386,6 +430,7 @@ class PeerRegistry:
             self._dirty = True
             self._dirty_sids.discard(sid)
             self._removed_sids.add(sid)     # 下一次 save 會把 btree 那一筆刪掉
+            self._check_cid_conflict(sid, None)   # 少一台可能解掉撞號 → 重算
             self._publish()
             return True
         return False

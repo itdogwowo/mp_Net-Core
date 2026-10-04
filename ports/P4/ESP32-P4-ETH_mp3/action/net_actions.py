@@ -3,7 +3,7 @@
 #
 # 指令 (sys 群 0x10xx):
 #   請求 (Master→Slave, 本模組註冊 handler):
-#     0x100D IDENTIFY_REQ   — 逐 address 素描; 帶 reply_addr 告知 master_cid
+#     0x100D IDENTIFY_REQ   — 逐 address 素描; 帶 reply_cid 告知 master_cid
 #     0x100F REBOOT         — 延遲後重啟 (保險)
 #     0x1010 WREPL_CTRL     — 查詢/確保開/關 WebREPL (保險)
 #     0x1012 NET_START      — 依 iface_type 啟動網絡 (lan/wifi/ap/espnow)
@@ -65,10 +65,10 @@ def _ips_json():
 
 
 def on_identify_req(ctx, args):
-    """0x100D: 逐 address 素描。帶 reply_addr 告知 master_cid, 回應 cid+slave_id+IP。"""
-    reply_addr = args.get("reply_addr", 0xFFFF) & 0xFFFF
-    if reply_addr != ADDR_BROADCAST:
-        bus.master_cid = reply_addr  # 這一輪開機保持住 master address
+    """0x100D: 逐 address 素描。帶 reply_cid 告知 master_cid, 回應 cid+slave_id+IP。"""
+    reply_cid = args.get("reply_cid", 0xFFFF) & 0xFFFF
+    if reply_cid != ADDR_BROADCAST:
+        bus.master_cid = reply_cid  # 這一輪開機保持住 master address
     _reply(ctx, CMD_IDENTIFY_RSP, {
         "cid": bus.cid,
         "slave_id": bus.slave_id,

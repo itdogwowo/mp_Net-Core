@@ -19,10 +19,11 @@
 # 完整鏈（遙控器 ↔ 本對端）：
 #   ① 本機開機 → 廣播 SLAVE_ANNOUNCE(0x1002)
 #   ② 遙控器被動學到本機 MAC → bus.shared["peers"] 出現本機
-#   ③ 遙控器定向 0x100D IDENTIFY_REQ(reply_addr=它的 cid)   [用剛學到的 MAC]
+#   ③ 遙控器定向 0x100D IDENTIFY_REQ(reply_cid=它的 cid)   [用剛學到的 MAC]
 #   ④ 本機 on_identify_req 回 0x100E {cid, slave_id, ip}
-#        ★ 並用 reply_addr 記住 master_cid → 之後回覆都定向給它
+#        ★ reply_cid 只決定**那一封回信**寄哪，不改 master_cid（2026-10 修正）
 #   ⑤ 遙控器 SET_MASTER 確認方向 → 定向 0x3101/0x3107 查模式
+#        ★ 方向（回覆預設定址）只有這一步會改 —— 掃描不會順便認主人
 #
 # 預期 log（在 REPL 監看）：
 #   [Peer] SLAVE_ANNOUNCE 廣播 (3 modes)

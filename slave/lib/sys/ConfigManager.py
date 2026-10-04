@@ -380,7 +380,7 @@ class ConfigManager:
     #   ⚠️ 目標的 MAC **不在此存** —— 由 peers 表 by_cid() 查（避免兩份真相）
     # ══════════════════════════════════════════════════════════════════
 
-    _NODE_KEYS = ("node.role", "node.master_cid", "node.targets")
+    _NODE_KEYS = ("node.role", "node.master_cid", "node.master_mac", "node.targets")
 
     def node_state(self):
         """目前節點狀態快照（給 UI 讀 / 給持久化寫）。不 raise。"""
@@ -403,6 +403,10 @@ class ConfigManager:
             "hostname": sys_cfg.get("hostname", ""),
             "role": getattr(self.bus, "role", None),
             "master_cid": mcid,
+            # master_mac：Master 的**射頻層**位址（大寫 hex；其他管子可為 None）。
+            #   與 master_cid 成對 —— cid 填幀頭、mac 送出去，兩者缺一送不到。
+            #   （2026-10 新增，見 todo/05_node_pairing.md D9/§5.2）
+            "master_mac": getattr(self.bus, "master_mac", None),
             "bound": mcid != 0xFFFF,
             "targets": list(getattr(self.bus, "targets", None) or []),
         }
@@ -426,11 +430,15 @@ class ConfigManager:
                 self.bus.master_cid = int(mcid) & 0xFFFF
             except Exception:
                 pass
+        mmac = self.kv_get("node.master_mac", None)
+        self.bus.master_mac = mmac if isinstance(mmac, str) and mmac else None
+        #   ★ 只收字串（mac_hex 的產物）。壞資料/舊格式 → None，不 raise。
         self.bus.targets = list(self.kv_get("node.targets", None) or [])
         self.publish_node()
         if self.bus.role or self.bus.targets or self.bus.master_cid != 0xFFFF:
-            dprint("[Config] ✓ node state loaded: role={} master=0x{:04X} targets={}".format(
-                self.bus.role, self.bus.master_cid, len(self.bus.targets)))
+            dprint("[Config] ✓ node state loaded: role={} master=0x{:04X}/{} targets={}".format(
+                self.bus.role, self.bus.master_cid,
+                self.bus.master_mac or "-", len(self.bus.targets)))
 
     def save_node(self):
         """把節點狀態寫回 btree 並落盤。回 True/False（不 raise）。
@@ -443,6 +451,8 @@ class ConfigManager:
             ok = self.kv_set("node.role", getattr(self.bus, "role", None))
             ok = self.kv_set("node.master_cid",
                              int(getattr(self.bus, "master_cid", 0xFFFF)) & 0xFFFF) and ok
+            ok = self.kv_set("node.master_mac",
+                             getattr(self.bus, "master_mac", None)) and ok
             ok = self.kv_set("node.targets",
                              list(getattr(self.bus, "targets", None) or [])) and ok
         except Exception as e:
@@ -457,6 +467,8 @@ class ConfigManager:
         """清掉節點狀態（解除綁定）：回預設 + 刪 btree key + 落盤。"""
         self.bus.role = None
         self.bus.master_cid = 0xFFFF
+        self.bus.master_mac = None
+        self.bus.pair_claimed = False
         self.bus.targets = []
         for k in self._NODE_KEYS:
             self.kv_del(k)
@@ -465,6 +477,78 @@ class ConfigManager:
         return True
 
     # ══════════════════════════════════════════════════════════════════
+    # ══════════════════════════════════════════════════════════════════
+    # ESP-NOW 傳輸層設定（2026-10）
+    #
+    #   為什麼放 btree 而不是 config.json 的 `Network.ESP_now`：
+    #     ① **金鑰不能進 config.json** —— 那個人可讀、會被 commit
+    #     ② 「已選 peer 清單」是半永久資料，與 `@node.targets` 同性質
+    #   命名空間 `@now.*`，與 `@node.*` / `@peer.*` 一致（同一個 secrets.db）。
+    #
+    #   金鑰（使用者定案）：**全體共用一組** PMK/LMK，不是每個 peer 一組。
+    # ══════════════════════════════════════════════════════════════════
+    _NOW_KEYS = ("now.selected", "now.encrypt", "now.pmk", "now.lmk")
+
+    def now_state(self):
+        """ESP-NOW 傳輸層設定快照（給 UI 讀 / 給持久化寫）。不 raise。
+
+        `selected` = 「已選」的 MAC 清單（大寫 hex，**不含 FF**）。
+        空清單 = 只選廣播（FF）—— 那是 UI 的預設，也是「全上」的語意。
+        """
+        sel = self.kv_get("now.selected", None)
+        if not isinstance(sel, list):
+            sel = []
+        return {
+            "selected": [x for x in sel if isinstance(x, str) and x],
+            "encrypt": 1 if self.kv_get("now.encrypt", 0) else 0,
+            "pmk": self.kv_get("now.pmk", "") or "",
+            "lmk": self.kv_get("now.lmk", "") or "",
+        }
+
+    def load_now(self):
+        """載入 ESP-NOW 設定 → 推到 `bus.shared["now_setting"]`（UI 讀這一份）。"""
+        st = self.now_state()
+        try:
+            self.bus.shared["now_setting"] = st
+        except Exception:
+            pass
+        return st
+
+    def save_now(self, state=None):
+        """寫回 btree 並落盤。回 True/False（不 raise）。"""
+        st = state or (self.bus.shared.get("now_setting") or {})
+        ok = False
+        try:
+            ok = self.kv_set("now.selected", list(st.get("selected") or []))
+            ok = self.kv_set("now.encrypt", 1 if st.get("encrypt") else 0) and ok
+            ok = self.kv_set("now.pmk", st.get("pmk") or "") and ok
+            ok = self.kv_set("now.lmk", st.get("lmk") or "") and ok
+        except Exception as e:
+            dprint("[Config] ⚠ save_now 失敗: {}".format(e))
+            return False
+        if ok:
+            self.kv_flush()
+        try:
+            self.bus.shared["now_setting"] = self.now_state()
+        except Exception:
+            pass
+        return ok
+
+    def clear_now(self):
+        """清掉 ESP-NOW 設定（＝UI「清除所有記錄」的持久化那半）。
+
+        ★ 只碰 `@now.*`：節點記錄（`@peer.*`）與配向（`@node.*`）**不動**
+          —— 這是使用者定案的範圍。
+        """
+        for k in self._NOW_KEYS:
+            self.kv_del(k)
+        self.kv_flush()
+        try:
+            self.bus.shared["now_setting"] = self.now_state()
+        except Exception:
+            pass
+        return True
+
     # 模式表（遙控器用）—— 儲存模式 / 整存清單
     #
     #   儲存模式（source）回答一個問題：**這份模式表是誰給的？**

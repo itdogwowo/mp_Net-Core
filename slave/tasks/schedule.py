@@ -216,10 +216,23 @@ class ScheduleTask(Task):
                 sources = BusSources()
                 bus.register_service("bus_sources", sources)
             sources.add(self._vbus)
+            # ★ 另註冊一個具名服務（2026-10）：UI / 任何 task 要「本機發起」時
+            #   直接 `bus.get_service("vbus")` 就好，不必靠 label 搜 bus_sources。
+            #   （`signal_router._ROUTER_IFACE_SVCS` 不含 "vbus"，
+            #     所以這行不會觸發 Router 的介面表重建。）
+            bus.register_service("vbus", self._vbus)
         return self._vbus
 
     def _inject(self, cb, frame):
-        """把完整訊框寫進 vBus 的 rx_hub（2-byte len + data，BusDecodeTask 消費）。"""
+        """把完整訊框寫進 vBus 的 rx_hub（2-byte len + data，BusDecodeTask 消費）。
+
+        ⚠️ 2026-10：實作已搬到 `CircuitBus.inject()`（通用能力，不該是 scheduler
+        的私有方法）。這裡保留為**薄轉呼叫**，讓既有呼叫點與外部測試不受影響。
+        """
+        fn = getattr(cb, "inject", None)
+        if fn is not None:
+            return fn(frame)
+        # 舊介面 fallback（cb 不是 CircuitBus 時）
         hub = getattr(cb, "rx_hub", None)
         if hub is None:
             return False

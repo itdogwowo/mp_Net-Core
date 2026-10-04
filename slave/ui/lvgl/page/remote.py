@@ -26,15 +26,19 @@
 #   也就是射頻層回給**剛剛講話的那個人**，不是回給 NC4 header 裡的 addr。
 #   ⚠️ 所以「廣播不回」不等於「廣播沒回覆」—— 這兩件事容易混淆。
 #
-# ⚠️ 發射路徑（暫定）：本頁直接呼叫 NowBus.broadcast()/write_to()，與既有 task
-#    （ControlPanelTask/PixelControlPanelTask）一致。計劃書 §7 P5 的取捨：
-#    等 P7 抽出「發送任務」後，改走 Router（見 doc/03_notes/19 §2.6 / §8.3）。
+# ★ 發射路徑（2026-10 定案）：**本頁不碰實體管子、不碰 MAC**。
+#   兩個入口要分流（todo/05_node_pairing.md §3.1 / doc/19 §2.5）：
+#     ① 內部執行 → `disp.exec_cmd(...)`（不經 Router，保證不外送）
+#     ② 對外發出 → 產生幀（含 addr）→ `vbus.inject(frame)` → Router 決定走哪條管子
+#   舊版直接 `now.add_peer(mac)` / `now.write_to(mac, frame)` / `now.broadcast(frame)`
+#   —— 那是把 ESP-NOW 的實作細節寫進 UI，換一條管子就不能用（已移除）。
 import lvgl as lv
 from ui.lvgl.registry import register
 from ui.lvgl import ui_common as u
 from ui.lvgl.nav import Nav, ITEM_LIST, ITEM_BUTTON, ITEM_SWITCH
 
 REFRESH_EVERY = 10       # 每 N 幀刷新一次顯示（run % N）
+SCAN_SPREAD_MS = 500     # 掃描的抖動視窗（0 = 不抖動）。見 _do_scan
 RECENT_MS = 10000        # 多久內見過算「在線」（只是顯示標記，不代表協定上的在線）
 
 nav = Nav()
@@ -64,36 +68,52 @@ def _ctx():
     return {"app": b.get_service("app"), "transport": "ui"}
 
 
-def _tx(cmd, args, peer=None):
-    """產生並發射一個指令。回 True/False。
+def _vbus():
+    """取得 vBus（本機發起的注入點）。取不到回 None。
 
-    peer=None  → 廣播（addr=0xFFFF；用途：掃描這種「不知道對象」的指令）
-    peer=dict  → 定向（addr=對方 cid；射頻層先 add_peer 確保通道存在）
-                 ★ 「配對 = 建立通道」：定向發射前自動 add_peer（對稱的一邊）。
+    實作在 `lib/sys/sys_bus.get_vbus()` —— 讓所有 UI 頁 / task 共用同一個查找順序。
+    """
+    from lib.sys.sys_bus import get_vbus
+    return get_vbus()
+
+
+def _tx(cmd, args, peer=None):
+    """產生一個指令並**本機發起**（注入 vBus → 走 Router）。回 True/False。
+
+    ★ **本頁不碰實體管子、不碰 MAC**（`todo/05_node_pairing.md` §3.1 / D14/D16）：
+        UI 只做兩件事 —— 產生指令（含 `addr`）丟進 vBus；其餘由 Router 決定
+        「執行 or 發射、走哪條管子」，由**管子自己**解析 `addr` 成實體位址。
+      舊版直接呼叫 `now.add_peer(mac)` / `now.write_to(mac, frame)` /
+      `now.broadcast(frame)` —— 那是把 ESP-NOW 的實作細節寫進 UI，換一條管子
+      就不能用（`todo/05` §3.1 記載的現況違反）。
+
+    peer=None  → addr = 0xFFFF（廣播；用途：掃描這種「不知道對象」的指令）
+    peer=dict  → addr = 對方 cid（定向）
+
+    ⚠️ 走 Router 的前提是 `config.json` 的 `Router.routes` 有
+       `{ "in": "self", "out": ["now"] }`（面板 config 已經有了）。
+       Router `enable=0` 時 `gate()` 直接回 V_OK → 幀仍然照原路徑進來解碼，
+       所以**不轉發**（＝發不出去）—— 這一點由 §12 真機清單第 7 項驗證。
     """
     b = _kv()
     disp = b.get_service("disp")
-    now = b.get_service("NowBus")
     if disp is None:
         print("[remote] 無 disp 服務 → 無法發射")
         return False
     addr = 0xFFFF
-    mac = None
     if peer:
         cid = peer.get("cid")
         if cid is not None:
             addr = int(cid) & 0xFFFF
-        mac = peer.get("mac")
     frame = disp.make_cmd(cmd, args, addr)
     if frame is None:
         return False
-    if now is None:
-        print("[remote] 無 NowBus（ESP-NOW 未啟用？）")
+    vb = _vbus()
+    if vb is None:
+        print("[remote] 無 vBus → 無法發射")
         return False
-    if mac:
-        now.add_peer(mac)                 # 冪等；確保單播送得出去
-        return bool(now.write_to(mac, frame))
-    return bool(now.broadcast(frame))
+    # make_cmd 回的是共享 buffer 的 view（下一次 pack 就覆蓋）→ inject 立即消費 ✓
+    return bool(vb.inject(frame))
 
 
 def _selected():
@@ -104,7 +124,13 @@ def _selected():
 
 
 def _exec(cmd, args):
-    """本地執行一個指令（走 disp.exec_cmd —— 不經 Router）。"""
+    """**內部執行**一個指令（走 disp.exec_cmd —— 不經 Router、保證不外送）。
+
+    ★ 這是「兩個入口」的另一半（`todo/05` §3.1）：
+        `_exec()` = 「我呼叫一個函式」（args 已是 dict，不經編解碼）
+        `_tx()`   = 「我發起一幀」（經 Router，可能被轉發出去）
+      `app.py` header 明說「兩者場合不同，不要混用」。
+    """
     b = _kv()
     disp = b.get_service("disp")
     if disp is None:
@@ -126,13 +152,22 @@ def _do_scan():
     所以是**單播**回本板（不是廣播）。前提是對端在收幀時學到了本板的 MAC
     ——`NowBus.poll()` 的 `learn_peer()`，兩端對稱（doc/03_notes/19 §9.7）。
 
-    副作用（已知且刻意）：`on_identify_req` 會把 `reply_addr` 記成 `master_cid`，
-    所以一次廣播掃描 = 射程內**所有**對端都把本板認成 master。
-    對「一台遙控器 + 一群執行端」是想要的；若日後要「只認某一台」，
-    就不能用廣播掃描，得先靠公告（0x1002）被動認識，再定向敲門。
+    副作用：**沒有**（2026-10 修正）。掃描只問「你是誰」，**不改方向**。
+    以前 `on_identify_req` 會把 `reply_cid` 記成 `master_cid`，所以一次廣播
+    掃描 = 射程內**所有**對端都把本板認成 master（無聲搶奪：第二台遙控器
+    只要按一下掃描就搶走全部，第一台完全不知道）。那個寫入已移除 ——
+    方向只由「綁定」的 `0x1016` 決定（見 net_actions.on_identify_req）。
+
+    ★ `timeout_ms = SCAN_SPREAD_MS`（2026-10 新增）：**抖動視窗**。
+      廣播點名會讓射程內所有對端在**同一瞬間**回話 —— 在 ESP-NOW 空中／
+      RS485 匯流排上是**硬碰撞**，會整批掉。帶上這個值，各對端會各自隨機
+      延遲 `[0, timeout_ms]` 才回，把「同時」攤成「序列」。
+      **`0` 或缺席 = 不抖動**（舊對端的行為）→ 追加欄位，向後相容。
+      真的被撞掉的節點：**再按一次掃描**即可（不做自動重試）。
     """
     b = _kv()
-    ok = _tx(0x100D, {"reply_addr": int(getattr(b, "cid", 0xFFFF)) & 0xFFFF})
+    ok = _tx(0x100D, {"reply_cid": int(getattr(b, "cid", 0xFFFF)) & 0xFFFF,
+                      "timeout_ms": SCAN_SPREAD_MS})
     print("[remote] 掃描 →", ok)
 
 
@@ -144,10 +179,14 @@ def _do_bind():
         我**收**它（payload = 對方 cid）→ 我把對方當上級（action handler 處理，role=slave）
       面板是遙控器 → 這裡走**發**的那一邊。
 
-    三步：
-      ① 配對：add_peer(mac) —— 建立通道（對稱的一邊）
-      ② 方向：發 SET_MASTER(我的 cid) 告訴對方回覆要回給我
-      ③ 本地：把節點記進 @node.targets 並設 active（master_cid 不動 —— 那是「我的上級」）
+    兩步（2026-10 起；通道建立已自動化）：
+      ① 方向：發 SET_MASTER(我的 cid) 告訴對方回覆要回給我
+      ② 本地：把節點記進 @node.targets 並設 active（master_cid 不動 —— 那是「我的上級」）
+
+    ★ 原本還有一步「配對：`now.add_peer(p["mac"])` 建立通道」——
+      那是**傳輸層的實作細節**（ESP-NOW 才需要 add_peer），已從 UI 移除：
+      幀走 vBus → Router → 射頻管，由 `NowBus` **自己**在送出前確保通道
+      （`todo/05` §3.1 / D14：MAC 不得出現在協議層或 UI）。
     """
     b = _kv()
     p = _selected()
@@ -158,17 +197,18 @@ def _do_bind():
     if cid is None:
         print("[remote] 該節點沒有 cid（等 identify_rsp 補上）")
         return
-    # ① 配對：建立通道（射頻層；雙向都要做，這邊做我們這半）
-    now = b.get_service("NowBus")
-    if now is not None and p.get("mac"):
-        now.add_peer(p["mac"])
-    # ② 方向：告訴對方「你的 master 是我」
+    # ① 方向：告訴對方「你的 master 是我」
     my_cid = int(getattr(b, "cid", 0xFFFF)) & 0xFFFF
     _tx(0x1016, {"master_cid": my_cid}, p)
     # ③ 本地：記住目標（active = 當前發射對象）
-    tgt = {"cid": int(cid) & 0xFFFF, "mac": p.get("mac") or "",
+    #   ★ **只存 cid**（2026-10）：cid 是協議層的定址鍵（發射時填幀頭 addr），
+    #     射頻層的 MAC 由 `PeerRegistry.by_cid()` 查 —— **單一事實**，
+    #     與 `sys_bus.py:31` / `ConfigManager.py:380` 原本就寫明的設計一致
+    #     （那兩處說「目標的 MAC 不重複存」，但程式碼自己存了一份 = 漂移）。
+    #     額外好處：cid 撞號時不會有兩份互相矛盾的 MAC。
+    tgt = {"cid": int(cid) & 0xFFFF,
            "name": (p.get("name") or "").strip() or (p.get("slave_id") or "")[-6:],
-           "iface": (p.get("ifaces") or [""])[0], "active": True}
+           "active": True}
     targets = [t for t in (getattr(b, "targets", None) or []) if t.get("cid") != tgt["cid"]]
     for t in targets:
         t["active"] = False
@@ -184,10 +224,19 @@ def _do_bind():
 
 
 def _do_unbind():
-    """從 targets 移除選中的節點；沒有目標了就回到未定。"""
+    """從 targets 移除選中的節點；沒有目標了就回到未定。
+
+    ★ **雙邊一致（2026-10）**：配對是**兩邊的狀態** —— 本機的 `@node.targets`
+      與對方的 `master_cid`。只改本機的話，對方會永遠把回應送給一台已經不要它
+      的主控（`todo/04_remote_pairing.md` 的 G1）。
+      所以移除前先對每一台被解除的對象發 `0x1016{master_cid: 0xFFFF}` = **解除**
+      （見 `net_actions.on_set_master`：解除會清對方的 master_cid/master_mac/role
+        並**重新開放認領**，所以它不必等重開機就能被新主控接手）。
+    """
     b = _kv()
     p = _selected()
-    cur = list(getattr(b, "targets", None) or [])
+    old_targets = list(getattr(b, "targets", None) or [])
+    cur = list(old_targets)
     if not cur:
         print("[remote] 目前沒有目標")
         return
@@ -201,6 +250,18 @@ def _do_unbind():
         cur = new
     else:
         cur = []                       # 沒選中 → 全部清掉
+
+    # ① 先通知每一個「被解除」的對方（用 cid 集合比對 —— 不要用 `t not in cur`，
+    #    dict 的 `in` 是逐值相等，兩個 target 內容剛好相同時會漏判；cid 才是身分）
+    kept = {int(t.get("cid") or 0) & 0xFFFF for t in cur}
+    removed = [t for t in old_targets
+               if (int(t.get("cid") or 0) & 0xFFFF) not in kept]
+    for t in removed:
+        ok = _tx(0x1016, {"master_cid": 0xFFFF}, t)
+        print("[remote] 解除通知 0x{:04X} → {}".format(
+            int(t.get("cid") or 0) & 0xFFFF, ok))
+
+    # ② 再改本機
     if cur and not any(t.get("active") for t in cur):
         cur[0]["active"] = True        # 至少留一個 active
     b.targets = cur
