@@ -35,7 +35,7 @@ if not IS_MICROPYTHON:
     sys.exit(0)
 
 import os, time, gc
-from lib.sys_bus import bus
+from lib.sys.sys_bus import bus
 from lib.fast_io import Storage, StreamReader
 
 # ── 測試公用 ─────────────────────────────────────────────────────

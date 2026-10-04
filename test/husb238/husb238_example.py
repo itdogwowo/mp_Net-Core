@@ -55,7 +55,7 @@ def demo_standalone():
 # ════════════════════════════════════════════════════════
 def demo_sysbus():
     from driver.husb238_drv import refresh, request_voltage
-    from lib.sys_bus import bus
+    from lib.sys.sys_bus import bus
 
     # 隨時查 PD 狀態 (從 bus 快取, 不碰硬體)
     st = bus.shared.get("pd")

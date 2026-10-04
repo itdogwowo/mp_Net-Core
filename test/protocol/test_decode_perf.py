@@ -22,6 +22,8 @@ import sys, os, time
 IS_MP = (sys.implementation.name == 'micropython')
 
 
+# ★ 2026-10：proto / schema_loader / schema_codec / sys_bus 都已搬到
+#   `lib/sys/` 底下，import 路徑要跟著走（見 changelog §32.7）。
 def _bootstrap():
     """找出 slave/ (含 lib/ schema/) 加進 sys.path, 回傳 schema 目錄。"""
     cands = []
@@ -56,14 +58,14 @@ SCHEMA_DIR = "/schema" if IS_MP else _bootstrap()  # 裝置: os.path 不存在, 
 
 # CPython 相容: 讓 @viper 的 _viper_decode 作為純 Python 跑 (bytearray 可寫)
 if not IS_MP:
-    import lib.schema_codec as _sc
+    import lib.sys.schema_codec as _sc
     _sc.ptr8 = lambda x: x
     _sc.ptr16 = lambda x: x
 
-from lib.sys_bus import bus
-from lib.proto import Proto, StreamParser, MAX_PAYLOAD, ADDR_BROADCAST
-from lib.schema_loader import SchemaStore
-from lib.schema_codec import SchemaCodec
+from lib.sys.sys_bus import bus
+from lib.sys.proto import Proto, StreamParser, MAX_PAYLOAD, ADDR_BROADCAST
+from lib.sys.schema_loader import SchemaStore
+from lib.sys.schema_codec import SchemaCodec
 
 
 def now_us():

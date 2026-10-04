@@ -136,7 +136,7 @@ def scan(root='/sd'):
 
 def _identify(L):
     """廣播 IDENTIFY，回 slave 的 cid/slave_id。無回應回 None。"""
-    L.send(0x100D, {"reply_addr": 0xFFFF})
+    L.send(0x100D, {"reply_cid": 0xFFFF})
     r = L.recv_until([0x100E], 3000)
     if r is None:
         return None
@@ -196,7 +196,7 @@ def update(slave_id=None, files=None, include_boot=False, include_main=False):
         if info is None:
             L.uart.deinit()
             return "FAIL: no slave on bus"
-        # 用 reply_addr 定址（slave 的 cid）
+        # 用 reply_cid 定址（slave 的 cid）
         addr = info.get('cid', ADDR_BROADCAST)
         print("slave: %s cid=0x%04X" % (info.get('slave_id'), addr))
     else:

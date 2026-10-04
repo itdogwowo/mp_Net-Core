@@ -33,9 +33,9 @@ def run(N=50, timeout_ms=5000):
 
     import _thread
     from app import App
-    from lib.sys_bus import bus
-    from lib.proto import Proto, StreamParser, MAX_PAYLOAD
-    from lib.schema_codec import SchemaCodec
+    from lib.sys.sys_bus import bus
+    from lib.sys.proto import Proto, StreamParser, MAX_PAYLOAD
+    from lib.sys.schema_codec import SchemaCodec
 
     TEST_CMD = 0x19F0
 

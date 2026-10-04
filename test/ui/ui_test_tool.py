@@ -165,7 +165,7 @@ def frame(n=1):
 
 def peek(key="control_panel", default=None):
     """看 bus.shared[key]。"""
-    from lib.sys_bus import bus
+    from lib.sys.sys_bus import bus
     v = bus.shared.get(key, default)
     print("bus.shared[{}] = {}".format(key, v))
     return v
@@ -174,7 +174,7 @@ def peek(key="control_panel", default=None):
 def set(key, value):
     """設 bus.shared[key]=value(測試頁面讀 bus 的反應)。
     例:set("control_panel", {"mode":2,"brightness":20})"""
-    from lib.sys_bus import bus
+    from lib.sys.sys_bus import bus
     bus.shared[key] = value
     _log("bus.shared[{}] = {}".format(key, value))
 

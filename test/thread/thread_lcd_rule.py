@@ -25,7 +25,7 @@
 #   thread_lcd_rule.run(confirm=True, n=2000)   # confirm 必填，防手滑
 
 import time, _thread
-from lib.sys_bus import bus
+from lib.sys.sys_bus import bus
 
 _CHUNK = 32768
 

@@ -77,7 +77,7 @@ def _pick_local_file():
 
 def _do_ping():
     L = _L()
-    L.send(0x100D, {"reply_addr": 0xFFFF})
+    L.send(0x100D, {"reply_cid": 0xFFFF})
     r = L.recv_until([0x100E], 3000)
     if r is None:
         print("\n  ❌ slave 無回應")

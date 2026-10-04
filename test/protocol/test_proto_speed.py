@@ -28,6 +28,8 @@
 """
 
 import gc
+import os
+import sys
 import time
 
 try:
@@ -35,7 +37,15 @@ try:
 except ImportError:
     import binascii
 
-from lib.proto import Proto, StreamParser, MAX_PAYLOAD
+# ── 路徑 bootstrap（★ 2026-10 補）────────────────────────────────
+#   以前這支只能從專案根目錄跑（靠 CWD），而且路徑寫 `lib.proto`
+#   —— 模組搬到 `lib/sys/` 之後就 ModuleNotFoundError 了。
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_SLAVE = os.path.join(os.path.dirname(os.path.dirname(_HERE)), "slave")
+if _SLAVE not in sys.path:
+    sys.path.insert(0, _SLAVE)
+
+from lib.sys.proto import Proto, StreamParser, MAX_PAYLOAD
 
 _CMD = 0x18F0
 _HUB_OFF = 2
@@ -146,7 +156,7 @@ def _frame_drain_slot(slot_mv, start, end):
     支援從外部 view pop (需 carry-over), 見 _bench_fastparser.py 的 6.85 MB/s 方向。
     回傳 (start, plen) 或 None; 語意同 pop_frame (SOF/VER/LEN/CRC32)。"""
     # 保守實作: 直接用 bytes 找 SOF (拷貝一次, 定位用); 真實加速需核心 parser 支援
-    from lib.proto import HDR_LEN, CRC_LEN, SOF, CUR_VER, MAX_PAYLOAD
+    from lib.sys.proto import HDR_LEN, CRC_LEN, SOF, CUR_VER, MAX_PAYLOAD
     import binascii as _b
     buf = bytes(slot_mv)
     ln = end
@@ -184,7 +194,7 @@ def bench_pipe(chunk=4096, total_kb=1024):
     """
     try:
         import _thread
-        from lib.buffer_hub import AtomicStreamHub
+        from lib.sys.buffer_hub import AtomicStreamHub
     except ImportError as e:
         print("⚠️ bench_pipe 需裝置 (_thread + buffer_hub): {}".format(e))
         return

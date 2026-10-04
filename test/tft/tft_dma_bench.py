@@ -23,7 +23,7 @@
 #   - once set_window（只設一次，分離視窗設定損耗 vs 傳輸損耗）
 
 import gc, time, random
-from lib.sys_bus import bus
+from lib.sys.sys_bus import bus
 
 # ═══════════════════ params ═══════════════════
 

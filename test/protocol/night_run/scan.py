@@ -12,7 +12,7 @@
 定址模型（重要）：
   - 幀頭 `addr` 欄位才是「定址過濾」的依據（slave handle_stream 只收
     addr==0xFFFF(廣播) 或 addr==自己 cid 的幀）。
-  - IDENTIFY_REQ 的 payload `reply_addr` 是「回覆定址」：告訴 slave 回覆時
+  - IDENTIFY_REQ 的 payload `reply_cid` 是「回覆定址」：告訴 slave 回覆時
     addr 填多少（非 0xFFFF 時 slave 記住為 master_cid）。
 
 用法（Master 板 REPL）：
@@ -61,9 +61,9 @@ def _decode_identify(pb):
 def _identify(addr):
     """發 IDENTIFY_REQ（幀頭 addr = 參數），收 IDENTIFY_RSP。回 dict 或 None。"""
     L = _L()
-    # 發送：幀頭 addr 用參數；payload reply_addr 用廣播（讓 slave 回覆時廣播，單 master 收得到）
+    # 發送：幀頭 addr 用參數；payload reply_cid 用廣播（讓 slave 回覆時廣播，單 master 收得到）
     d = ma._store.get(0x100D)
-    payload = ma._cc.encode(d, {"reply_addr": 0xFFFF})
+    payload = ma._cc.encode(d, {"reply_cid": 0xFFFF})
     frame = ma.Proto.pack(0x100D, payload, addr=addr)
     # RS485 半雙工：必須拉高 EN(DE) 才發得出（走 Link.send 的 en 控制邏輯）
     if getattr(L, 'en', None) is not None:
@@ -140,7 +140,7 @@ def _identify_fast(addr, wait_ms=80):
     """快速版 _identify：每個位址只等 wait_ms（slave 在線會即回）。"""
     L = _L()
     d = ma._store.get(0x100D)
-    payload = ma._cc.encode(d, {"reply_addr": 0xFFFF})
+    payload = ma._cc.encode(d, {"reply_cid": 0xFFFF})
     frame = ma.Proto.pack(0x100D, payload, addr=addr)
     # RS485 半雙工：必須拉高 EN(DE) 才發得出
     if getattr(L, 'en', None) is not None:

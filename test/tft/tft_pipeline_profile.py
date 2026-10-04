@@ -11,7 +11,7 @@
 #   fire ≈ 19ms  → C 層 fire 仍是同步的（spi_bus.c 有問題）
 
 import gc, time
-from lib.sys_bus import bus
+from lib.sys.sys_bus import bus
 from tft_dma_bench import _fill_rainbow
 
 _CHUNK = 32 * 1024

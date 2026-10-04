@@ -12,7 +12,7 @@
 #   → 螢幕上看見彩虹連續滾動 = 過
 
 import gc, time
-from lib.sys_bus import bus
+from lib.sys.sys_bus import bus
 from tft_dma_bench import _fill_rainbow
 
 _WARM = 5

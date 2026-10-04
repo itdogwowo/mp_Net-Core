@@ -223,7 +223,7 @@ def wl_hw_sample(ctx, n=500):
 def wl_uart(ctx, n=300):
     """模擬 CircuitTask：UART 輪詢讀取"""
     try:
-        from lib.sys_bus import bus
+        from lib.sys.sys_bus import bus
         uart_list = bus.get_service("uart_list") or []
         if not uart_list:
             return -1

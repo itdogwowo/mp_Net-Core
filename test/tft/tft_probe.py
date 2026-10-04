@@ -1,5 +1,5 @@
 # tft_probe.py — 診斷 LCD/SPI/bus 的真實型態與能力
-from lib.sys_bus import bus
+from lib.sys.sys_bus import bus
 
 lcd = bus.get_service("lcd")
 ba = getattr(lcd, "_bus", None)

@@ -30,7 +30,7 @@
 #   tft_pipeline_probe.run_all(work_ms=20)# 指定一組
 
 import gc, time
-from lib.sys_bus import bus
+from lib.sys.sys_bus import bus
 
 _WARM = 3
 _FRAMES = 30

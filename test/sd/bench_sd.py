@@ -17,7 +17,7 @@
 """
 
 import gc, time, os
-from lib.sys_bus import bus
+from lib.sys.sys_bus import bus
 
 # ── 測試參數 ──
 TEST_SIZE = 4 * 1024 * 1024   # 4 MB 總讀取量 (可調整 2/4/8 MB)
@@ -433,7 +433,7 @@ def _bench_dma_vs_bytearray(sd, storage, name, buf_size):
     rounds = min(rounds, 256)  # 上限避免太久
 
     # 配兩種 buffer
-    from lib.buffer_hub import alloc_dma, free_dma
+    from lib.sys.buffer_hub import alloc_dma, free_dma
     dma_buf, is_dma = alloc_dma(buf_size)
     ba_buf = bytearray(buf_size)
 
@@ -476,7 +476,7 @@ def run_dma(buf_sizes=None, total_hint=2 * 1024 * 1024):
 
     try:
         from lib.fast_io import Storage
-        from lib.buffer_hub import alloc_dma
+        from lib.sys.buffer_hub import alloc_dma
         storage = Storage()
     except Exception as e:
         print("❌ Storage/alloc_dma 初始化失敗:", e)

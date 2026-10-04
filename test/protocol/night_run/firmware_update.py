@@ -62,14 +62,14 @@ def set_master(mcid=None):
     return (True, "set master 0x%04X" % mcid)
 
 
-def identify(addr=0xFFFF, reply_addr=None):
-    """發 IDENTIFY_REQ。reply_addr=None 時自動填 master 自己的 cid。
+def identify(addr=0xFFFF, reply_cid=None):
+    """發 IDENTIFY_REQ。reply_cid=None 時自動填 master 自己的 cid。
     回 (cid, slave_id) dict 或 None。"""
     L = _L()
-    if reply_addr is None:
-        reply_addr = master_cid()
+    if reply_cid is None:
+        reply_cid = master_cid()
     d = ma._store.get(0x100D)
-    payload = ma._cc.encode(d, {"reply_addr": reply_addr & 0xFFFF})
+    payload = ma._cc.encode(d, {"reply_cid": reply_cid & 0xFFFF})
     frame = ma.Proto.pack(0x100D, payload, addr=int(addr) & 0xFFFF)
     L.uart.write(frame)
     L._wait_sent()

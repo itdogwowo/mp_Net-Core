@@ -2,9 +2,9 @@
 """StreamParser / buffer_hub 熱路徑優化驗證 (自包含, 不需網路/硬體)
 
 驗證兩處生產改動:
-  1. lib/proto.py  StreamParser.feed 的「memoryview slice 賦值」取代 viper 逐 byte 複製,
+  1. lib/sys/proto.py  StreamParser.feed 的「memoryview slice 賦值」取代 viper 逐 byte 複製,
      以及 compact 的 slice 賦值。覆蓋黏包/半包/resync/compact/大 payload/CRC 壞幀/生命週期。
-  2. lib/buffer_hub.py  AtomicStreamHub 的 view 模式 (get_read_view/release_read),
+  2. lib/sys/buffer_hub.py  AtomicStreamHub 的 view 模式 (get_read_view/release_read),
      對齊 tasks/bus_decode.py 的新消費迴圈 (取代 read_into copy 模式)。
 
 用法 (裝置 REPL 或 PC 都能跑 StreamParser 部分; hub 部分需 MicroPython):
@@ -13,14 +13,27 @@
 每個用例獨立 PASS/FAIL, 最後印總計。任一 FAIL 請回報對應用例名。
 """
 
+import os
 import struct
+import sys
 
 try:
     import ubinascii as binascii
 except ImportError:
     import binascii
 
-from lib.proto import Proto, StreamParser, MAX_PAYLOAD, HDR_LEN, CRC_LEN, SOF, CUR_VER
+# ── 路徑：讓同一支測試在 PC 與裝置上都能 import 到 lib.* ────────────
+#   ★ 2026-10 修正：`proto.py` / `buffer_hub.py` 已經搬到 `lib/sys/` 底下，
+#     這裡卻還寫 `from lib.proto import ...` → 在 PC 上直接
+#     `ModuleNotFoundError: No module named 'lib''`（裝置上因為 sys.path
+#     剛好含專案根目錄才僥倖可跑）。連路徑一起修掉，兩邊一致。
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_SLAVE = os.path.join(os.path.dirname(os.path.dirname(_HERE)), "slave")
+if _SLAVE not in sys.path:
+    sys.path.insert(0, _SLAVE)
+
+from lib.sys.proto import (Proto, StreamParser, MAX_PAYLOAD, HDR_LEN,
+                           CRC_LEN, SOF, CUR_VER)
 
 
 # ── 測試用的虛擬 cmd (不衝突任何 schema) ──
@@ -163,7 +176,7 @@ _HUB_OFF = 2
 
 def test_hub_view_decode():
     try:
-        from lib.buffer_hub import AtomicStreamHub
+        from lib.sys.buffer_hub import AtomicStreamHub
     except ImportError:
         raise RuntimeError("SKIP: buffer_hub 需 MicroPython (CPython 下無 micropython 模組)")
     slot_size = 4096 + _HUB_OFF

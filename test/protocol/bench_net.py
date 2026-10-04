@@ -59,7 +59,7 @@ except ImportError:
 # 封裝, 收端用 StreamParser.feed/pop 拆解 (含 CRC 驗證)。完全模擬 slave Action 系列
 # 的封包路徑, 但用虛擬 cmd 0x18F0, 不註冊到任何 dispatcher, 不碰生產碼。
 try:
-    from lib.proto import Proto, StreamParser
+    from lib.sys.proto import Proto, StreamParser
     _HAVE_PROTO = True
 except Exception:
     _HAVE_PROTO = False
@@ -1075,8 +1075,8 @@ def profile_proto(chunk_size=4096, frames=500):
 
     # F. SchemaCodec.decode (若有 store; 模擬 dispatch 的解碼成本)
     try:
-        from lib.schema_codec import SchemaCodec
-        from lib.schema_loader import SchemaStore
+        from lib.sys.schema_codec import SchemaCodec
+        from lib.sys.schema_loader import SchemaStore
         store = SchemaStore()
         # 找一個有 bytes_rest 的現成 cmd 做解碼成本取樣 (用 bench DATA 0x1812)
         cmd_def = store.get(0x1812)

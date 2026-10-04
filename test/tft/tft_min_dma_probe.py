@@ -24,7 +24,7 @@
 #   tft_min_dma_probe.run_all(frames=50)
 
 import gc, time
-from lib.sys_bus import bus
+from lib.sys.sys_bus import bus
 
 _THEORY_US = 153600 * 8 * 1000000 // 80000000   # 240x320x2 @ 80MHz 線速 = 15,360us
 _WARM = 5
