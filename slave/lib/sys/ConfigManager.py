@@ -670,8 +670,17 @@ class ConfigManager:
             m = (modes or {}).get(mid) or (modes or {}).get(str(mid)) or {}
             lst.append({"id": mid, "name": m.get("name", "")})
         self._mode_list = lst
-        self._mode_dirty = False          # local 不持久化清單
-        self.kv_del("mode.list")          # 舊的 remote 清單失效
+        # ★ 2026-10（使用者定案）改為**落地覆蓋**，不再 kv_del。
+        #   理由：DB 要是一份「跨開機都成立」的清單。
+        #     ① 有 pixel → 註冊列表並寫進 DB 覆蓋它（就是這裡）
+        #     ② 沒 pixel → DB 就是唯一來源，開機由 load_modes() 灌進快取
+        #   舊設計（local 不落地）讓 DB 在 local 裝置上永遠是空的，
+        #   於是 pixel 載入失敗時**沒有任何備援**。
+        self._mode_dirty = True
+        try:
+            self.kv_set("mode.list", list(self._mode_list))
+        except Exception:
+            pass
         self.kv_set("mode.source", "local")
         self.kv_flush()
         self.publish_modes()
@@ -737,6 +746,24 @@ class ConfigManager:
         self._mode_list = lst
         self._mode_dirty = False
         self.publish_modes()
+        # ★ 2026-10（使用者定案）：DB 的清單也要灌進**快取**。
+        #   為什麼：`0x3101 MODE_LIST_QUERY` 的回答端**只讀快取**
+        #   （`gmode.mode_pool()` 或 `bus.shared["pixel_maps"]`），
+        #   而這裡原本只寫 ConfigManager 內部的 `_mode_list`
+        #   → 一台「不跑 PixelTask 的裝置」（＝遙控器）重開機後，
+        #     UI 的 mode_table() 看得到清單，但被問 0x3101 時回 **0 個模式**
+        #     → 對方只好每次都重新獲取。這是使用者回報的症狀。
+        #   PixelTask 若存在，它稍後會用 /pixel/modes/*.json 覆蓋同一份快取
+        #   （set_local_modes → source=local），順序正確。
+        if lst:
+            try:
+                if self.bus.shared.get("pixel_maps") is None:
+                    self.bus.shared["pixel_maps"] = {
+                        int(e["id"]): dict(e) for e in lst}
+                    dprint("[Config] ✓ modes → 快取 pixel_maps（{} 筆）".format(
+                        len(lst)))
+            except Exception:
+                pass
         src = self.kv_get("mode.source", None)
         if src:
             dprint("[Config] ✓ modes loaded: source={} count={}".format(src, len(lst)))

@@ -134,13 +134,26 @@ def on_mode_detail_query(ctx, args):
 
 
 def _is_local_provider():
-    """本板是不是「執行端」（有自己的本地模式池）？
+    """本板是不是「執行端」（自己的模式池來自 /pixel/modes/*.json）？
 
-    判準：`bus.shared["pixel_maps"]` 存在 = PixelTask 跑過 = 有本地模式池。
+    ★ 2026-10 改判準（**原本看 `pixel_maps` 有沒有，現在不能那樣看**）：
+      `ConfigManager.load_modes()` 現在也會把 **DB 的清單灌進同一個快取**
+      （為了讓不跑 PixelTask 的裝置答得出 `0x3101`），
+      所以「快取有沒有東西」已經**不再等於**「本板是不是執行端」
+      —— 拿它當判準會讓遙控器誤判成執行端，反而把收到的遠端清單丟掉。
+
+      改用 `mode.source`：那正是「**這份清單哪裡來的**」的權威記錄
+      （`set_local_modes` → "local"；`set_remote_list` → "remote"）。
+
     ★ 執行端不該被遠端清單覆蓋 —— 它的模式池來自 /pixel/modes/*.json（事實來源），
       若被遠端寫入蓋掉，UI 會顯示錯的清單，直到下次開機 PixelTask 再覆蓋。
     """
-    return bus.shared.get("pixel_maps") is not None
+    try:
+        from lib.sys.ConfigManager import cfg_manager
+        return cfg_manager.kv_get("mode.source", None) == "local"
+    except Exception:
+        # 取不到 ConfigManager 時退回舊判準（至少不會讓功能整個失效）
+        return bus.shared.get("pixel_maps") is not None
 
 
 def on_mode_list_rsp(ctx, args):
