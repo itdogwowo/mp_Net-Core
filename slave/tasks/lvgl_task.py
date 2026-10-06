@@ -62,6 +62,6 @@ class LvglTask(Task):
         except Exception:
             pass
         # 標記檔**不在這裡清**：軟重開機的觸發時機不可控（Ctrl-C / mpremote /
-        # watchdog），靠「有沒有正常收尾」會漏。boot.py Phase 0 一律自己探測
+        # watchdog），靠「有沒有正常收尾」會漏。soft_reboot_guard 一律自己探測
         # LVGL 有沒有殘留，那個才是判準。
         get_log().info("[LvglTask] stopped (LVGL state retained)")

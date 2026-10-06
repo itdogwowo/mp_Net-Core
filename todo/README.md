@@ -21,7 +21,7 @@
 | [05_node_pairing.md](05_node_pairing.md) | **節點發現與配對（傳輸層無關）** —— 抖動 / cid 身分 / 管子介面 / UI 分界線 | ✅ **階段 1~4 已實作 ＋ 真機驗證全部完成**（離線 153/153 PASS；§12 兩板實測，含抖動分佈、`reply_cid`、認主、閃寫保護、重啟換手、**解除後不重啟換手**）|
 | [06_router_local_paths.md](06_router_local_paths.md) | Router 的兩個本機來源（`self` / `vbus`）—— 「絕對內部執行」怎麼走 | ✅ **已決：不改 Router**，分流在產生者側（`exec_cmd` ↔ `vbus.inject`）；待辦全部結案（`router_selftest` 75/75）|
 | [07_now_setting_ui.md](07_now_setting_ui.md) | **ESP-NOW 設定 ＋ 遙控器設定 兩頁 UI** —— 傳輸層 vs 應用層、兩個清單的鍵與上限、FF 互斥、加密（6 格 / 共用金鑰）| 🟢 **兩頁已完成並上板**（`build_all: 7 screen(s)`；掃描／套用／清除真機跑過）。§6 的陷阱已增到 9 條 |
-| [08_lvgl_reinit.md](08_lvgl_reinit.md) | **LVGL 軟重開機後重新初始化** —— 真根因是 C 層 root pointer 跨 soft reboot 存活；用 `boot.py` Phase 0 自我修復守門（硬重置）| 🟢 **已修好並真機驗收通過**（軟重開機 → 守門 → 硬重置 → UI 自己回來；防無窮重置也驗過）。根治的 C 改法見該檔 §4 |
+| [08_lvgl_reinit.md](08_lvgl_reinit.md) | **LVGL 軟重開機後重新初始化** —— 真根因是 C 層 root pointer 跨 soft reboot 存活；用 `ui/lvgl/soft_reboot_guard.py` 自我修復守門（硬重置）| 🟢 **已修好並真機驗收通過**（軟重開機 → 守門 → 硬重置 → UI 自己回來；防無窮重置也驗過）。根治的 C 改法見該檔 §4 |
 | `_template.md` | 新清單範本 | — |
 
 > ⚠️ **開發這幾條流程時務必 hard reset**，不要用 Ctrl-D／`mpremote` 預設的軟重開機 ——
@@ -31,7 +31,7 @@
 > ⚠️ **軟重開機另外還會讓 LVGL 起不來**（`allocating 3254793227 bytes`，
 > 那個數字是指標不是尺寸）。**真根因已查清**（LVGL 的配置全在 GC heap 上，
 > 而 binding 的 `mp_lv_roots` 是跨 soft reboot 存活的 C 全域），
-> 現在由 `boot.py` Phase 0 自我修復守門處理 —— 見 **`todo/08`**、
+> 現在由 `ui/lvgl/soft_reboot_guard.py` 自我修復守門處理 —— 見 **`todo/08`**、
 > changelog §38（§37 是已被證偽的版本）。
 >
 > ⚠️ **另外兩個也會靜默失敗的**：MicroPython 沒有 refcount（`open(w)` 之後不

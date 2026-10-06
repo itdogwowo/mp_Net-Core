@@ -83,7 +83,8 @@ class LvglDisp:
         #   而在**殘留**時兩者都可能是 True + 非 None，但也可能被中途的
         #   heap 活動打亂成別的組合 —— 用旗標判斷不可靠，而且會把正常開機
         #   誤判成殘留（實際踩過一次：UI 被自己的守門擋掉）。
-        #   殘留的判斷交給 boot.py Phase 0 的標記檔，那裡是**外部狀態**、不會騙人。
+        #   殘留的判斷交給 soft_reboot_guard（標記檔是外部狀態、不會騙人），
+        #   而且它會直接 machine.reset() —— 不會走到這裡。
         lv.init()
         self._disp = lv.display_create(self.W, self.H)
         if self._disp is None:
@@ -142,39 +143,28 @@ class LvglDisp:
 
 def get_platform():
     """取得 LVGL 平台(bus service "lvgl_disp")。
-    已初始化過就 reuse;沒有就建立一次並註冊進 bus。"""
+    已初始化過就 reuse;沒有就建立一次並註冊進 bus。
+
+    ★ 這裡是 LVGL 唯一的初始化入口 —— soft-reboot 自我修復守門就掛在這裡
+      （不放 boot.py：那是硬體初始化，不該為了 LVGL 弄髒；
+        而且探測要在 LVGL 真正要被建起來的那一刻做，heap 越乾淨越安全）。
+      詳見 ui/lvgl/soft_reboot_guard.py。
+    """
     existing = bus.get_service(_SERVICE)
     if existing is not None:
         return existing
+
+    from ui.lvgl import soft_reboot_guard
+    if not soft_reboot_guard.recover():
+        # 只在 machine.reset() 沒生效時走到這裡 —— 不要硬幹（會踩死指標）
+        raise RuntimeError("LVGL soft-reboot 守門無法復原（reset 未生效）")
+
     plat = LvglDisp()
     bus.register_service(_SERVICE, plat)
+    soft_reboot_guard.note_owned()
     return plat
 
 
 def is_ready():
     """LVGL 是否已初始化並在 bus 上。"""
     return bus.get_service(_SERVICE) is not None
-
-
-# ══════════════════════════════════════════════════════════════════════════
-#  Soft-reboot 標記（boot.py 的 Phase 0 守門在用）
-# ══════════════════════════════════════════════════════════════════════════
-#  LVGL 的配置全在 MicroPython 的 GC heap 上（ext_mod/lvgl/mem_core.c:
-#  lv_malloc_core → gc_alloc），而 binding 的 root pointer 是普通 C 全域
-#  （gen/lvgl_api_gen_mpy.py: `void *mp_lv_roots`），soft reset 不會清它。
-#  ⇒ 軟重開機之後 LVGL 的每一棵樹都是死指標 —— 實測 lv.obj()/lv.screen_load()
-#    會直接打死板子（詳見 boot.py Phase 0）。
-#
-#  boot.py 開機時會**無條件**寫下這個標記，並探測 LVGL 有沒有殘留；
-#  UI 真的起來之後由這裡清掉。清掉之後，下一次軟重開機的守門就會知道
-#  「上一輪有東西，要探測」——探測結果才是真正的判準。
-_LVGL_MARK = "/lvgl_state"
-
-
-def mark_ready():
-    """UI 已經完整起來 → 清掉 soft-reboot 標記（本輪乾淨收尾）。"""
-    import os
-    try:
-        os.remove(_LVGL_MARK)
-    except Exception:
-        pass

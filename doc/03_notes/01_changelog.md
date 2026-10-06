@@ -1922,35 +1922,52 @@ pointer 與「已初始化」旗標都活著 → LVGL 整棵樹變成死指標�
 而且殘留狀態的組合**不穩定**（實測看過 `True+非None`、`False+非None`、
 甚至 `True+None`），所以不要用旗標推論 —— 要嘛探測、要嘛用外部狀態。
 
-### 38.4 修法：`boot.py` Phase 0 自我修復守門（已驗收）
+### 38.4 修法：LVGL 自己的 soft-reboot 守門（已驗收）
+
+新增 **`slave/ui/lvgl/soft_reboot_guard.py`**，掛在
+`lvgl_init.get_platform()`（LVGL 唯一初始化入口）。
 
 ```
-1) 讀 /lvgl_state：含 reset=1 → 清標記往下走（防無窮重置）
-                  ★ 這步必須在寫標記「之前」，否則會蓋掉自己的訊號（踩過）
-2) 寫下本輪標記 owned=1,reset=0
-3) 探測 lvgl.display_get_default()：非 None = 殘留
-                                    → 標記改 reset=1 → machine.reset()
-4) UI 起來（board._setup 完成）→ 清掉標記
+recover()   ← get_platform() 進來先呼叫
+  1) 讀 /lvgl_state：reset=1 → 清標記、回 True（防無窮重置）
+     ★ 這步必須在寫標記「之前」，否則會蓋掉自己的訊號（踩過）
+  2) 探測 lvgl.display_get_default()
+       非 None → 殘留 → 標記改 reset=1 → machine.reset()（不會回來）
+       None    → 乾淨 → 回 True
+note_owned()    LvglDisp 建起來後寫標記
+mark_ready()    board._setup() 跑完 → 清標記
 ```
 
-用「探測」而不是靠「上一輪有沒有正常收尾」：軟重開機的觸發時機不可控
-（Ctrl-C / `mpremote` / watchdog），靠旗標會漏。
+**為什麼不放在 `boot.py`**：`boot.py` 是硬體初始化，不該為了 LVGL 弄髒
+（第一版就是塞在那裡，已整段移出 —— 現在 `boot.py` 跟原本只差一行註解）；
+而且探測要在 LVGL 真正要被建起來的那一刻做，heap 越乾淨越安全。
+這也對齊 `mp_lcd_bus/PLAN_lcd_bus_hardening_and_selfowned.md` 的 M2：
+「`make_new` 偵測殘留 → `esp_restart()` 保險」——檢查放在物件自己的入口。
 
-改動檔案：`slave/boot.py`（新增 Phase 0）、`slave/ui/lvgl/lvgl_init.py`
-（移除錯誤的沿用路徑 + `mark_ready()`）、`slave/ui/lvgl/board.py`、
-`slave/tasks/lvgl_task.py`。
+**能不能推廣到 i80/rgb/dsi**：可以，模組介面就是照那個形狀留的，但先不做 ——
+i80 的殘留是「可 cleanup」的（deinit 外設就好），LVGL 不是（配置在死掉的
+heap 上）；而且目前只有一個呼叫者，等第二個出現再抽
+`lib/sys/soft_reboot.py`。
 
-### 38.5 驗收（真機 11401，全部通過）
+改動檔案：`slave/ui/lvgl/soft_reboot_guard.py`（新增）、
+`slave/ui/lvgl/lvgl_init.py`、`slave/ui/lvgl/board.py`；
+`slave/tasks/lvgl_task.py` 不再嘗試清標記（時機不可控）。
+
+### 38.5 驗收（真機 11401，重構後重跑，全部通過）
 
 | 情境 | 結果 |
 |---|---|
-| 軟重開機（有殘留） | ✅ 守門攔下 → 硬重置 → `(全新 init)` → `_setup done` → `Boot complete` |
-| 軟重開機（乾淨） | ✅ 不重置，28s 完成，USB 沒斷 |
-| 強制 `reset=1` | ✅ `重置後重入，清標記繼續` → 不再重置 |
+| 軟重開機（有殘留） | ✅ `[lvgl_guard] 偵測到 soft-reboot 殘留 → hard reset` → USB 斷線 → `已是重置後的重入，清標記繼續` → `(全新 init)` → `_setup done` → `Boot complete` |
+| 軟重開機（乾淨） | ✅ 不重置，直接開機成功 |
+| 強制 `reset=1` | ✅ `已是重置後的重入 → 清標記繼續`，不再重置 |
 | 開機後畫面 | ✅ 320x240、`app.cur='launcher'`、active screen 14 個 widget、`_ui_active=True` |
+
+> ℹ️ 守門那句 `print` 有時會被 USB-CDC 斷線吞掉（`machine.reset()` 太靠近）；
+> 驗收腳本因此把「有 SERIAL BREAK」也算成守門有動作的證據。
 
 ### 38.6 根治（待做，需重編韌體）
 
 把 `mp_lv_roots_initialized` 從 function-local static 換成 `MP_STATE_VM`
 （soft reset 會清），讓 `mp_lv_init_gc()` 在新 heap 上重建 `lv_global`。
-改法與注意事項寫在 `todo/08_lvgl_reinit.md` §4。做完就不必再硬重置。
+改法與注意事項寫在 `todo/08_lvgl_reinit.md` §4。做完
+`soft_reboot_guard.py` 就可以整包刪掉。
