@@ -1866,3 +1866,91 @@ flush_cb 被呼叫次數 = 6        ← 真的畫出來了
 「LVGL 只能初始化一次」那條也一併更新 —— 它原本寫的解法
 （`get_platform()` 一次初始化 + bus reuse）**在軟重開機後是無效的**，
 因為 `bus` 本身就是被重開機清掉的 Python 物件。
+
+---
+
+## 38) §37 結案：真根因是 C 層 root pointer 跨 soft reboot 存活（2026-10）
+
+> §37 的方向（元兇是 `deinit()`、修法是「沿用同一個 display」）**已被證偽**。
+> 這一節是查到底之後的結論，並且**已修好、已真機驗收**。
+
+### 38.1 真根因：三行程式碼
+
+| 位置 | 內容 | 軟重開機後 |
+|---|---|---|
+| `ext_mod/lvgl/mem_core.c` | `lv_malloc_core()` → `gc_alloc()` | **GC heap 被 `mp_init()` 清空** |
+| `gen/lvgl_api_gen_mpy.py` | `void *mp_lv_roots;`（普通 C 全域） | **指到的 `lv_global_t` 在舊 heap → 死指標** |
+| 同上 | `static bool mp_lv_roots_initialized = false;`（function-local static） | **仍是 `true` → 永遠不會重建 `lv_global`** |
+
+ELF 符號（`build-ESP32_GENERIC_S3-SPIRAM_OCT/micropython.elf`）證實兩者都在 `.bss`：
+
+```
+3fcaceec B mp_lv_roots
+3fcacef4 b mp_lv_roots_initialized$7
+```
+
+⇒ **LVGL 的每一筆配置（display / screen / widget / timer / anim / style）
+都在 MicroPython 的 GC heap 上；軟重開機把 heap 整個重來，但 C 層的 root
+pointer 與「已初始化」旗標都活著 → LVGL 整棵樹變成死指標。**
+
+### 38.2 為什麼「沿用同一個 Object」不可行（§37.3 已證偽）
+
+軟重開機後攔在 REPL（`main.py` 未執行）實測：
+
+| 動作 | 結果 |
+|---|---|
+| `display_get_default()` | 有物件（解析度還讀得到 320x240）← 看起來「堪用」 |
+| `screen_active().get_child_count()` | **14** ← 上一個 session 的 UI 樹還在 |
+| `lv.display_create(320,240)` | ✅ OK |
+| **`lv.obj()` / `lv.label()` / `lv.screen_load()` / `lv.deinit()`** | ❌ **直接打死板子**（USB-CDC 消失） |
+
+能沿用的不是「一個堪用的 display」，是**一整棵死指標樹**。
+另外試過 4 種純 Python 復原配方（含 `lv.mp_lv_deinit_gc()` +
+`lv.mp_lv_init_gc()`，兩者確實存在且能清掉 Python 側狀態）——全部失敗，
+因為這個 binding **沒有把真正的 `lv_init()` 匯出到 Python**
+（`lv.init` 是 `lv_anim_del_all` 的別名，no-op），沒有辦法治好 C 層。
+
+### 38.3 一個重要的判準陷阱（踩過）
+
+**`lv.is_initialized()` 不能當「有沒有殘留」的判準** ——
+這個 binding 在 **import `lvgl` 的當下就會做掉 C 層初始化**，
+所以乾淨開機時它也可能是 `True`。第一版守門拿它判斷，
+結果把正常開機誤判成殘留、**自己的守門把 UI 擋掉**。
+
+要看的是 **`lv.display_get_default() is not None`**。
+
+而且殘留狀態的組合**不穩定**（實測看過 `True+非None`、`False+非None`、
+甚至 `True+None`），所以不要用旗標推論 —— 要嘛探測、要嘛用外部狀態。
+
+### 38.4 修法：`boot.py` Phase 0 自我修復守門（已驗收）
+
+```
+1) 讀 /lvgl_state：含 reset=1 → 清標記往下走（防無窮重置）
+                  ★ 這步必須在寫標記「之前」，否則會蓋掉自己的訊號（踩過）
+2) 寫下本輪標記 owned=1,reset=0
+3) 探測 lvgl.display_get_default()：非 None = 殘留
+                                    → 標記改 reset=1 → machine.reset()
+4) UI 起來（board._setup 完成）→ 清掉標記
+```
+
+用「探測」而不是靠「上一輪有沒有正常收尾」：軟重開機的觸發時機不可控
+（Ctrl-C / `mpremote` / watchdog），靠旗標會漏。
+
+改動檔案：`slave/boot.py`（新增 Phase 0）、`slave/ui/lvgl/lvgl_init.py`
+（移除錯誤的沿用路徑 + `mark_ready()`）、`slave/ui/lvgl/board.py`、
+`slave/tasks/lvgl_task.py`。
+
+### 38.5 驗收（真機 11401，全部通過）
+
+| 情境 | 結果 |
+|---|---|
+| 軟重開機（有殘留） | ✅ 守門攔下 → 硬重置 → `(全新 init)` → `_setup done` → `Boot complete` |
+| 軟重開機（乾淨） | ✅ 不重置，28s 完成，USB 沒斷 |
+| 強制 `reset=1` | ✅ `重置後重入，清標記繼續` → 不再重置 |
+| 開機後畫面 | ✅ 320x240、`app.cur='launcher'`、active screen 14 個 widget、`_ui_active=True` |
+
+### 38.6 根治（待做，需重編韌體）
+
+把 `mp_lv_roots_initialized` 從 function-local static 換成 `MP_STATE_VM`
+（soft reset 會清），讓 `mp_lv_init_gc()` 在新 heap 上重建 `lv_global`。
+改法與注意事項寫在 `todo/08_lvgl_reinit.md` §4。做完就不必再硬重置。

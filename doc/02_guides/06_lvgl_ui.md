@@ -197,17 +197,33 @@ control_panel 頁與 `tasks/action_task_1.py` 共享 mode byte：
 
 ## 8. 踩坑記錄（開發技巧）
 
-1. **LVGL 不能重新初始化 —— 但要「沿用」不是「deinit」**。
+1. **LVGL 在軟重開機後一定不能沿用 —— 交給 `boot.py` Phase 0 處理**。
    soft-reboot 後 C 層殘留，`lv.init()` + `lv.display_create()` 會
    `MemoryError` 要求數百 MB（**那個數字是指標，不是尺寸**）。
-   ⚠️ 原本這裡寫的解法是「`get_platform()` 一次初始化 + bus reuse」——
-   **那在軟重開機後是無效的**，因為 `bus` 本身就是被重開機清掉的 Python 物件，
-   `get_service()` 一定回 None。
-   正確做法（2026-10 實測）：**C 層還在就直接沿用同一個 display**，
-   只重裝 buffers / flush_cb，**千萬不要先 `deinit()`**
-   （它會把還堪用的 display 弄成半死），**也不要 `delete()`**
-   （記憶體已不屬於 LVGL → 直接 hard fault）。
-   見 `todo/08_lvgl_reinit.md` 與 changelog §37。
+
+   **真根因（2026-10 查到底，C 源碼 + ELF 確認）**：
+   `lv_malloc_core()` → `gc_alloc()`（`ext_mod/lvgl/mem_core.c`），
+   所以 **LVGL 的每一筆配置都在 MicroPython 的 GC heap 上**；
+   而 binding 的 root pointer `mp_lv_roots` 是**普通 C 全域**（`.bss`，
+   軟重開機不會清），指到的 `lv_global_t` 卻在舊 heap 上
+   → 整棵樹變死指標。且 `static bool mp_lv_roots_initialized` 也是常駐，
+   所以 `mp_lv_init_gc()` 再也不會重建 `lv_global`。
+
+   ⚠️ **歷史教訓（本檔與 `todo/08` 前兩版都寫錯過）**：
+   - ❌「`deinit()` 是元兇，改成沿用既有 display」→ 能沿用的不是堪用的
+     display，是**一整棵死指標樹**；實測 `lv.obj()` / `lv.screen_load()` /
+     `lv.deinit()` 全部**直接打死板子**。
+   - ❌「用 `lv.is_initialized()` 判斷有沒有殘留」→ 這個 binding 在
+     **import `lvgl` 時就會做掉 C 層初始化**，乾淨開機時它也可能是 `True`；
+     拿它判斷會誤判、把自己的 UI 擋掉。**要看 `display_get_default()`。**
+
+   ✅ **正確做法**：`boot.py` Phase 0 在開機第一件事探測
+   `lvgl.display_get_default() is not None` → 是殘留就
+   `machine.reset()`（硬重置會把 C 層與 heap 一起歸零），
+   用 `/lvgl_state` 標記檔防無窮重置。實測硬重置後
+   `display_create()` 成功、UI 正常起來。
+
+   詳見 `todo/08_lvgl_reinit.md` 與 changelog §38（§37 是已被證偽的版本）。
 2. **MADCTL 只能一邊送**：driver rotation 與 LVGL 自送 MADCTL 只能擇一，否則 double-rotate 花屏。
 3. **declare/build 時機**：頁面 `@register` 在 import 時跑、`build()` 在 `build_all()` 跑；依賴「build 後才有的 widget 資料」的邏輯要放對時機。
 4. **switch binding API 差異**：`add_state`/`clear_state`/`has_state` 各 binding 名稱不一，用 `ui_common.sw_set/sw_get` wrapper 防護。

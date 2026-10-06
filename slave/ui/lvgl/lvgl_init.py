@@ -44,83 +44,61 @@ class LvglDisp:
         self._bus.write_cmd_data(0x36, bytes([_MADCTL]))
 
         # ══════════════════════════════════════════════════════════════
-        #  LVGL 初始化：軟重開機後**沿用同一個 display**，絕不重新 create
+        #  LVGL 初始化：軟重開機後**不能沿用**，只能走全新 init
         # ══════════════════════════════════════════════════════════════
         # 舊版寫的是：
         #     if lv.is_initialized(): lv.deinit()
         #     lv.init(); disp = lv.display_create(W, H)
-        # 軟重開機（Ctrl-D／mpremote 預設收尾）之後那條路會炸：
-        #
+        # 軟重開機之後那條路會炸：
         #     [ERROR] ❌ [Core 0] Failed to start lvgl:
         #             memory allocation failed, allocating 1634034300 bytes
+        # 那個數字**不是尺寸，是指標**（每次都不一樣）。
         #
-        # 那個數字**不是尺寸，是指標**（每次跑都不一樣：3254793227 / 1009759640 /
-        # 1634034300）。逐步量出來的因果是：
+        # 有一版改成「沿用 C 層還活著的 display」，結果也不對 —— 真相是：
         #
-        #     lv.is_initialized()            -> True     ← C 層確實還活著
-        #     lv.display_get_default()       -> 有物件
-        #       └ resolution                 -> 320 x 240 ← **好的！**
-        #     lv.deinit()                    -> 回 OK，但 is_initialized() 仍 True
-        #       └ 這一步之後 resolution 變成 (1009033516, 8029) ← 壞了
-        #     lv.display_create(320,240)     -> MemoryError
+        # ★ LVGL 的**每一筆配置**都在 MicroPython 的 GC heap 上
+        #   （ext_mod/lvgl/mem_core.c: lv_malloc_core → gc_alloc），
+        #   而 binding 的 root pointer 是普通 C 全域，soft reset 不會清它
+        #   （gen/lvgl_api_gen_mpy.py: `void *mp_lv_roots` +
+        #    `static bool mp_lv_roots_initialized`，實測在 .bss
+        #    0x3fcaceec / 0x3fcacef4，軟重開機不動）。
+        #   ⇒ 軟重開機後 LVGL 的每一棵樹都是**死指標**。
         #
-        # ★ 所以元兇是 **deinit**：它沒有真的把狀態清乾淨，反而把一個**還堪用**的
-        #   display 弄成半死。而就算 deinit 有效，`display_create` 也會在舊的還在
-        #   的時候再建一個 —— 那也是錯的。
-        # ★ 為什麼不能「刪掉舊的再建」：軟重開機把 MicroPython 的整個 heap 重來，
-        #   LVGL 記的那些指標已經不屬於它了。實測 `disp.delete()` → 直接 hard fault。
+        # 真機實測（軟重開機後攔在 REPL、main.py 未執行）：
+        #     lv.is_initialized()          -> True       ← 乾淨開機時**也是 True**（見下）
+        #     display_get_default()        -> 有物件      ← ★ 這才是殘留的判準
+        #       └ resolution               -> 320 x 240   ← 讀得到（舊 heap 還沒被覆寫）
+        #     screen_active() 子物件數       -> 14         ← 上一個 session 的 UI 樹
+        #     lv.display_create(320,240)   -> OK
+        #     ★ lv.obj() / lv.label() / lv.screen_load() / lv.deinit()
+        #                                  -> **直接打死板子**（USB-CDC 消失）
         #
-        # 正確做法（＝使用者提的「重複使用同一個 Object」）：
-        #   **C 層還在就直接拿回來用**，只把 buffers / flush_cb 重新裝上去。
-        #   實測可行：set_buffers + set_flush_cb + screen_load + task_handler
-        #   全部 OK，flush_cb 真的被呼叫（畫面有出來）。
-        self._reused = False
-        self._disp = None
-        if lv.is_initialized():
-            try:
-                self._disp = lv.display_get_default()
-            except Exception as e:
-                print("[lvgl_init] display_get_default 失敗:", e)
-                self._disp = None
-        if self._disp is not None:
-            self._reused = True
-        else:
-            lv.init()
-            self._disp = lv.display_create(self.W, self.H)
+        #   ⇒ 「沿用同一個 Object」不可行：能沿用的不是一個堪用的 display，
+        #     是一整棵死指標樹。唯一保證可靠的路是**硬重置一次**。
+        #
+        # 所以這裡只保留「全新 init」一條路。
+        # ★ 不要去「偵測殘留」——真機實測在**乾淨開機**時：
+        #       is_initialized() = True   （binding 在 import 時就做掉 C 層初始化）
+        #       display_get_default() = None
+        #   而在**殘留**時兩者都可能是 True + 非 None，但也可能被中途的
+        #   heap 活動打亂成別的組合 —— 用旗標判斷不可靠，而且會把正常開機
+        #   誤判成殘留（實際踩過一次：UI 被自己的守門擋掉）。
+        #   殘留的判斷交給 boot.py Phase 0 的標記檔，那裡是**外部狀態**、不會騙人。
+        lv.init()
+        self._disp = lv.display_create(self.W, self.H)
+        if self._disp is None:
+            # 走到這裡代表 C 層是壞的（lv_global 沒被重生）。這條路在真機上
+            # 只在「軟重開機且守門沒攔到」時出現 —— 留明確訊息方便定位。
+            raise RuntimeError(
+                "display_create 回 None — LVGL 的 C 層狀態不乾淨"
+                "（軟重開機殘留）。請硬重置（RST / 斷電）。")
 
         self._disp.set_color_format(18)  # RGB565
         buf = bytearray(self.W * _LINES * _BPP)
         self._disp.set_buffers(buf, None, len(buf), 0)  # PARTIAL
         self._disp.set_flush_cb(self._flush_cb)
-        self._drop_stale()
-        print("[lvgl_init] {}x{} MADCTL=0x{:02X} PARTIAL lines={}{}".format(
-            self.W, self.H, _MADCTL, _LINES,
-            "  (沿用既有 display)" if self._reused else "  (全新 init)"))
-
-    def _drop_stale(self):
-        """把「目前畫面」從上一個執行週期留下來的 screen 換掉（只在沿用時做）。
-
-        軟重開機後 C 層的 `act_scr` 還指著舊的 widget 樹，而那些物件已經被
-        MicroPython 的 heap 重來回收掉了 —— 那是**死指標**。
-        換上一個全新的空 screen，renderer 就不會再去走訪它。
-
-        ★ 刻意**只做最小的一件事**：
-          - 不呼叫 `lv.anim_delete()`。它會走訪殘留的動畫鏈，而那些節點同樣是
-            死指標 —— 我沒有真機證據說它安全，就不放進來。
-          - 不做任何 free/delete。記憶體已經不屬於 LVGL，實測 `disp.delete()`
-            直接 hard fault。
-          殘留的動畫計時器到期時最多是「找不到物件而不動作」，比主動去走訪安全。
-
-        ★ app 自己也會載入新 screen（`app.cur` 初值是 None，所以
-          `app.go("launcher")` 不會 early-return）。這裡先墊一次是為了
-          「就算那條路以後改了，LVGL 也不會踩到死 screen」。
-        """
-        if not self._reused:
-            return
-        try:
-            lv.screen_load(lv.obj())
-        except Exception as e:
-            print("[lvgl_init] 換掉殘留 screen 失敗:", e)
+        print("[lvgl_init] {}x{} MADCTL=0x{:02X} PARTIAL lines={}  (全新 init)".format(
+            self.W, self.H, _MADCTL, _LINES))
 
     def _flush_cb(self, disp_drv, area, color_p):
         """LVGL 渲染一塊 → 拷貝到 bytes(PARTIAL 單緩衝必須拷貝)+ 立即 flush_ready。"""
@@ -176,3 +154,27 @@ def get_platform():
 def is_ready():
     """LVGL 是否已初始化並在 bus 上。"""
     return bus.get_service(_SERVICE) is not None
+
+
+# ══════════════════════════════════════════════════════════════════════════
+#  Soft-reboot 標記（boot.py 的 Phase 0 守門在用）
+# ══════════════════════════════════════════════════════════════════════════
+#  LVGL 的配置全在 MicroPython 的 GC heap 上（ext_mod/lvgl/mem_core.c:
+#  lv_malloc_core → gc_alloc），而 binding 的 root pointer 是普通 C 全域
+#  （gen/lvgl_api_gen_mpy.py: `void *mp_lv_roots`），soft reset 不會清它。
+#  ⇒ 軟重開機之後 LVGL 的每一棵樹都是死指標 —— 實測 lv.obj()/lv.screen_load()
+#    會直接打死板子（詳見 boot.py Phase 0）。
+#
+#  boot.py 開機時會**無條件**寫下這個標記，並探測 LVGL 有沒有殘留；
+#  UI 真的起來之後由這裡清掉。清掉之後，下一次軟重開機的守門就會知道
+#  「上一輪有東西，要探測」——探測結果才是真正的判準。
+_LVGL_MARK = "/lvgl_state"
+
+
+def mark_ready():
+    """UI 已經完整起來 → 清掉 soft-reboot 標記（本輪乾淨收尾）。"""
+    import os
+    try:
+        os.remove(_LVGL_MARK)
+    except Exception:
+        pass
