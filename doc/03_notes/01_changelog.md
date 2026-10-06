@@ -1970,3 +1970,36 @@ heap 上）；而且目前只有一個呼叫者，等第二個出現再抽
 （soft reset 會清），讓 `mp_lv_init_gc()` 在新 heap 上重建 `lv_global`。
 改法與注意事項寫在 `todo/08_lvgl_reinit.md` §4。做完
 `lvgl_init.py` 那一段就可以整包刪掉。
+
+### 38.7 順帶查到：soft-reboot 的資源殘留（新增 `lib/sys/soft_reboot.py`）
+
+修 LVGL 的過程中順手查了「軟重開機之後，還有什麼東西沒還回來」，
+結果推翻了兩個我先做出的結論。完整記錄見
+**`doc/03_notes/20_soft_reboot_residue.md`**，摘要：
+
+| 來源 | 誰在用 | soft reboot 後 |
+|---|---|---|
+| GC heap | Python 物件、`bytearray`、**LVGL 全部配置** | 整個重來 |
+| `heap_caps.malloc(CAP_DMA)` | `buffer_hub.alloc_dma()`（唯一入口） | **實測：會自己回來** |
+| 內部 SRAM 靜態/BSS | driver 殘留、`mp_lv_roots`、heap_caps 追蹤陣列 | 原封不動 |
+
+`mp_heap_caps` 有 BSS 追蹤 + `heap_caps.reset()`（文件說「designed to be
+called from boot.py」），**但本專案從未呼叫過**。實測兩輪：
+
+```
+        A 基準    B 配置後(未free)   C 軟重開機後   D reset()
+第1輪   118,023   68,859 (−49,164)   106,359        106,359 (回收 0)
+第2輪   106,359   40,807 (−65,552)    95,895         95,895 (回收 0)
+```
+
+**孤兒在 C 那一格就回來了**，所以 `reset()` 無事可做 ——
+我第一次量到的「62KB 存活、reset 回收 65KB」是量測假象（基準本身在漂移）。
+
+仍然加了 `lib/sys/soft_reboot.py`（`reclaim_all()`，`boot.py` 第一件事呼叫），
+定位是**保險**：同一輪還有追蹤項時它真的會 free（實測 8x16KB 全回收），
+放最前面是為了不誤殺本輪剛配好的緩衝。現行 config 是 no-op
+（沒有地方傳 `try_dma=True`、SD 沒起來）。
+
+**未解**：`internal_free` 基準每輪掉約 10 KB（118,023 → 106,359 → 95,895），
+不是 heap_caps 記帳的那些。嫌疑是反覆 Ctrl-C 打斷 `main.py` 讓 driver
+重複配置而沒走 teardown。**要另外查，別跟 LVGL 混在一起。**

@@ -2,6 +2,7 @@
 # 硬體初始化 — config.json (扁平 {enable, list}) → driver init_xxx(bus) → bus service
 #
 # 流程:
+#   Phase 0: soft-reboot 資源回收（跨子系統，必須在任何配置之前）
 #   Phase 1: 各 driver gpios() 回報腳位 → bus.gpio_claim → validate (衝突檢查)
 #   Phase 2: 線性呼叫 init_xxx(bus) 建立硬體 Object 並註冊到 bus
 #
@@ -10,6 +11,12 @@
 # 注意:這裡**只做硬體**。子系統自己的 soft-reboot 復原屬於子系統,
 #      掛在它自己的初始化入口 —— 例如 LVGL 在
 #      `ui/lvgl/lvgl_init.py` 的 `_soft_reboot_recover()`。
+
+# ── Phase 0: 回收被 soft reboot 遺棄的資源（heap_caps/DMA 等）──
+#   **必須是第一步**：它會 free「所有還被追蹤的配置」，先配好的會被誤殺。
+#   （實測現行 config 是 no-op —— 沒有任何地方用到 heap_caps；見該檔說明）
+from lib.sys.soft_reboot import reclaim_all
+reclaim_all()
 
 import ubinascii, machine
 
