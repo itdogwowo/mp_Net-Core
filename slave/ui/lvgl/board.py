@@ -119,9 +119,8 @@ def _setup():
     # (LV 模式 → 不發 vbtn;按鈕模式 → 發 vbtn),lvgl_task.on_stop 清除。
     bus.shared["_ui_active"] = True
     app.go("launcher")
-    # UI 完整起來了 → 讓 soft-reboot 守門知道本輪乾淨收尾。
-    from ui.lvgl import soft_reboot_guard
-    soft_reboot_guard.mark_ready()
+    # UI 完整起來了 → 讓 soft-reboot 修復知道本輪乾淨收尾(清標記)。
+    lvgl_init.mark_ready()
     print("[board] _setup done")
 
 

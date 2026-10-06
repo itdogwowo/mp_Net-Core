@@ -9,7 +9,7 @@
 #
 # 注意:這裡**只做硬體**。子系統自己的 soft-reboot 復原屬於子系統,
 #      掛在它自己的初始化入口 —— 例如 LVGL 在
-#      `ui/lvgl/soft_reboot_guard.py`(由 `lvgl_init.get_platform()` 呼叫)。
+#      `ui/lvgl/lvgl_init.py` 的 `_soft_reboot_recover()`。
 
 import ubinascii, machine
 

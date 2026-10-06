@@ -197,7 +197,7 @@ control_panel 頁與 `tasks/action_task_1.py` 共享 mode byte：
 
 ## 8. 踩坑記錄（開發技巧）
 
-1. **LVGL 在軟重開機後一定不能沿用 —— 交給 `ui/lvgl/soft_reboot_guard.py`**。
+1. **LVGL 在軟重開機後一定不能沿用 —— 交給 `lvgl_init` 的 soft-reboot 復原**。
    soft-reboot 後 C 層殘留，`lv.init()` + `lv.display_create()` 會
    `MemoryError` 要求數百 MB（**那個數字是指標，不是尺寸**）。
 
@@ -217,8 +217,8 @@ control_panel 頁與 `tasks/action_task_1.py` 共享 mode byte：
      **import `lvgl` 時就會做掉 C 層初始化**，乾淨開機時它也可能是 `True`；
      拿它判斷會誤判、把自己的 UI 擋掉。**要看 `display_get_default()`。**
 
-   ✅ **正確做法**：`ui/lvgl/soft_reboot_guard.py` —— 掛在
-   `lvgl_init.get_platform()`（LVGL 唯一入口），進來先探測
+   ✅ **正確做法**：`slave/ui/lvgl/lvgl_init.py` 的 `_soft_reboot_recover()`
+   —— 掛在 `lvgl_init.get_platform()`（LVGL 唯一入口），進來先探測
    `lvgl.display_get_default() is not None`，是殘留就 `machine.reset()`
    （硬重置會把 C 層與 heap 一起歸零），用 `/lvgl_state` 標記檔防無窮重置。
    實測硬重置後 `display_create()` 成功、UI 正常起來。

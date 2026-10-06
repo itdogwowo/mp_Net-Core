@@ -1924,7 +1924,7 @@ pointer 與「已初始化」旗標都活著 → LVGL 整棵樹變成死指標�
 
 ### 38.4 修法：LVGL 自己的 soft-reboot 守門（已驗收）
 
-新增 **`slave/ui/lvgl/soft_reboot_guard.py`**，掛在
+實作放在 **`slave/ui/lvgl/lvgl_init.py`**（`_soft_reboot_recover()`），掛在
 `lvgl_init.get_platform()`（LVGL 唯一初始化入口）。
 
 ```
@@ -1949,8 +1949,7 @@ i80 的殘留是「可 cleanup」的（deinit 外設就好），LVGL 不是（�
 heap 上）；而且目前只有一個呼叫者，等第二個出現再抽
 `lib/sys/soft_reboot.py`。
 
-改動檔案：`slave/ui/lvgl/soft_reboot_guard.py`（新增）、
-`slave/ui/lvgl/lvgl_init.py`、`slave/ui/lvgl/board.py`；
+改動檔案：`slave/ui/lvgl/lvgl_init.py`、`slave/ui/lvgl/board.py`；
 `slave/tasks/lvgl_task.py` 不再嘗試清標記（時機不可控）。
 
 ### 38.5 驗收（真機 11401，重構後重跑，全部通過）
@@ -1970,4 +1969,4 @@ heap 上）；而且目前只有一個呼叫者，等第二個出現再抽
 把 `mp_lv_roots_initialized` 從 function-local static 換成 `MP_STATE_VM`
 （soft reset 會清），讓 `mp_lv_init_gc()` 在新 heap 上重建 `lv_global`。
 改法與注意事項寫在 `todo/08_lvgl_reinit.md` §4。做完
-`soft_reboot_guard.py` 就可以整包刪掉。
+`lvgl_init.py` 那一段就可以整包刪掉。

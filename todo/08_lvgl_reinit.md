@@ -125,7 +125,7 @@ root pointer 與「已初始化」旗標都活著 → LVGL 整棵樹變成死指
 
 ## 3. 修法 A（已實作、已驗收）：LVGL 自己的 soft-reboot 守門
 
-> 新增 **`slave/ui/lvgl/soft_reboot_guard.py`**
+> 實作在 **`slave/ui/lvgl/lvgl_init.py`**（`_soft_reboot_recover()` 一組）
 > 掛在 `lvgl_init.get_platform()`（LVGL 唯一初始化入口）
 > ＋ `board._setup()`（UI 起來後收尾）
 >
@@ -137,15 +137,15 @@ root pointer 與「已初始化」旗標都活著 → LVGL 整棵樹變成死指
 
 ```
 lvgl_init.get_platform()          ← LVGL 唯一入口
-  └ soft_reboot_guard.recover()
+  └ lvgl_init._soft_reboot_recover()
       1) 讀 /lvgl_state：reset=1 → 清標記、回 True（防無窮重置）
          ★ 這步必須在寫標記「之前」，否則會蓋掉自己的訊號（踩過）
       2) 探測 lvgl.display_get_default()
            非 None → 殘留 → 標記改 reset=1 → machine.reset()（不會回來）
            None    → 乾淨 → 回 True
-  └ LvglDisp() 建起來 → soft_reboot_guard.note_owned()
+  └ LvglDisp() 建起來 → 寫標記 owned=1,reset=0
 
-board._setup() 跑完      → soft_reboot_guard.mark_ready()   ← 清標記
+board._setup() 跑完      → lvgl_init.mark_ready()          ← 清標記
 ```
 
 **為什麼放在 `get_platform()` 而不是 `boot.py`**：

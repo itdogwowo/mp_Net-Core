@@ -83,7 +83,7 @@ class LvglDisp:
         #   而在**殘留**時兩者都可能是 True + 非 None，但也可能被中途的
         #   heap 活動打亂成別的組合 —— 用旗標判斷不可靠，而且會把正常開機
         #   誤判成殘留（實際踩過一次：UI 被自己的守門擋掉）。
-        #   殘留的判斷交給 soft_reboot_guard（標記檔是外部狀態、不會騙人），
+        #   殘留的判斷交給 _soft_reboot_recover()（標記檔是外部狀態、不會騙人），
         #   而且它會直接 machine.reset() —— 不會走到這裡。
         lv.init()
         self._disp = lv.display_create(self.W, self.H)
@@ -145,26 +145,168 @@ def get_platform():
     """取得 LVGL 平台(bus service "lvgl_disp")。
     已初始化過就 reuse;沒有就建立一次並註冊進 bus。
 
-    ★ 這裡是 LVGL 唯一的初始化入口 —— soft-reboot 自我修復守門就掛在這裡
-      （不放 boot.py：那是硬體初始化，不該為了 LVGL 弄髒；
-        而且探測要在 LVGL 真正要被建起來的那一刻做，heap 越乾淨越安全）。
-      詳見 ui/lvgl/soft_reboot_guard.py。
+    ★ 這裡是 LVGL 唯一的初始化入口,soft-reboot 自我修復就掛在這裡。
+      **不放 boot.py** —— 那是硬體初始化,子系統的復原屬於子系統自己;
+      而且探測要在 LVGL 真正要被建起來的那一刻做,heap 越乾淨越安全。
     """
     existing = bus.get_service(_SERVICE)
     if existing is not None:
         return existing
 
-    from ui.lvgl import soft_reboot_guard
-    if not soft_reboot_guard.recover():
-        # 只在 machine.reset() 沒生效時走到這裡 —— 不要硬幹（會踩死指標）
-        raise RuntimeError("LVGL soft-reboot 守門無法復原（reset 未生效）")
+    if not _soft_reboot_recover():
+        # 只在 machine.reset() 沒生效時走到這裡 —— 不要硬幹(會踩死指標)
+        raise RuntimeError("LVGL soft-reboot 復原失敗(reset 未生效)")
 
     plat = LvglDisp()
     bus.register_service(_SERVICE, plat)
-    soft_reboot_guard.note_owned()
+    _mark_write("owned=1,reset=0")
     return plat
 
 
 def is_ready():
     """LVGL 是否已初始化並在 bus 上。"""
     return bus.get_service(_SERVICE) is not None
+
+
+# ══════════════════════════════════════════════════════════════════════════
+#  Soft-reboot 自我修復
+# ══════════════════════════════════════════════════════════════════════════
+#  為什麼需要:軟重開機(friendly REPL 的 Ctrl-D／mpremote 預設收尾)之後
+#  LVGL 一定起不來。真根因(C 源碼 + ELF + 真機三路確認):
+#
+#    ext_mod/lvgl/mem_core.c   lv_malloc_core() → gc_alloc()
+#        → LVGL 的**每一筆配置**(display/screen/widget/timer/anim/style…)
+#          都在 MicroPython 的 GC heap 上
+#    gen/lvgl_api_gen_mpy.py   void *mp_lv_roots                    ← 普通 C 全域
+#                              static bool mp_lv_roots_initialized ← 也是常駐
+#        ELF 實證:3fcaceec B mp_lv_roots
+#                  3fcacef4 b mp_lv_roots_initialized$7  (兩個都在 .bss)
+#
+#    軟重開機把 GC heap 整個重來,卻不清這兩個 C 全域 →
+#      (a) `lv_global`(在舊 heap 上)變成死指標
+#      (b) `mp_lv_init_gc()` 因為旗標還是 true,再也不會重建它
+#    ⇒ LVGL 整棵樹都是死指標。
+#
+#  真機實測(軟重開機後攔在 REPL、main.py 未執行):
+#      display_get_default()      -> 上一個 session 的 display ← ★ 判準
+#        └ 解析度                -> 320 x 240  (還讀得到,舊 heap 沒被覆寫)
+#      screen_active() 子物件數   -> 14         (上一個 session 的 UI 樹)
+#      lv.obj() / lv.label() / lv.screen_load() / lv.deinit()
+#                                 -> **直接打死板子**(USB-CDC 消失)
+#
+#  ⚠️ 兩個踩過的陷阱:
+#    1. `lv.is_initialized()` **不能**當判準 —— 這個 binding 在 import
+#       `lvgl` 時就會做掉 C 層初始化,乾淨開機時它也可能是 True。
+#       拿它判斷會誤判、把自己的 UI 擋掉(真的發生過)。
+#    2. 純 Python 沒有任何辦法救 —— 試過 4 種配方全失敗,包括
+#       `lv.mp_lv_deinit_gc()` + `lv.mp_lv_init_gc()`(能清掉 Python 側狀態,
+#       但這個 binding 沒把真正的 `lv_init()` 匯出到 Python,治不了 C 層)。
+#       ⇒ 唯一保證可靠的路是**硬重置一次**。
+#
+#  判準 vs 動作(重要區分):
+#    - **判準是 LVGL 專屬的**:只有 LVGL 知道自己的 C 層有沒有跨過 soft reboot。
+#      i80/rgb/dsi 要看 esp_lcd handle、SPI 是 `SPI(sid).deinit()` ——
+#      同一個問題,但每個子系統的探針都不一樣。
+#    - **動作(硬重置)是系統層的**:它會一起清掉內部 SRAM 上殘留的
+#      `heap_caps.malloc(CAP_DMA)` 佔用(見 Skills/buffer-conventions 規則一,
+#      DMA 緩衝在內部 SRAM,soft reboot **不會**釋放)。
+#    所以這一整包留在 LVGL 的初始化檔裡是**暫時的**:它目前的唯一價值是
+#    修 LVGL。等到第二個子系統也真的需要「探測殘留 → 硬重置」,再把
+#    「標記檔 + 防無窮重置」那段 boilerplate 抽成 lib/sys/ 的共用模組,
+#    各子系統註冊自己的探針(＝ mp_lcd_bus 計畫書 M1/M2 的形狀)。
+#    在那之前不預先抽象 —— 一個呼叫者的抽象是猜測。
+#
+#  標記檔 /lvgl_state: `owned=<0|1>,reset=<0|1>`
+#      recover  讀標記 → reset=1 就清掉、直接放行(防無窮重置)
+#               ★ 讀必須在寫「之前」,否則會蓋掉自己的訊號(踩過)
+#               然後探測 display_get_default() → 非 None 就 reset
+#      note     LvglDisp 建起來 → owned=1,reset=0
+#      mark_ready()  UI 完整起來(board._setup) → 清標記
+#
+#  防無窮重置:reset=1 是「點數」。硬重置後重入會消耗掉它;降到 0 之後若又
+#  偵測到殘留,會再重置一次(重新累積 1 點)→ 最壞是「每兩次開機重置一次」,
+#  不會卡死、也不會無限快速重置。
+#
+#  代價:每次軟重開機多一次約 8 秒的硬重置 + USB 重新列舉。
+#
+#  根治(待做,需重編韌體):把 `mp_lv_roots_initialized` 從 function-local
+#  static 換成 `MP_STATE_VM`(soft reset 會清),`mp_lv_init_gc()` 就會在
+#  新 heap 上重建 `lv_global`。改法見 todo/08_lvgl_reinit.md §4。
+#  做完這一整段就可以刪掉。
+# ══════════════════════════════════════════════════════════════════════════
+_MARK = "/lvgl_state"
+
+
+def _mark_read():
+    try:
+        with open(_MARK) as f:
+            return f.read()
+    except Exception:
+        return ""
+
+
+def _mark_write(txt):
+    try:
+        f = open(_MARK, "w")
+        f.write(txt)
+        f.close()
+    except Exception as e:
+        print("[lvgl_init] soft-reboot 標記寫入失敗:", e)
+
+
+def _mark_clear():
+    import os
+    try:
+        os.remove(_MARK)
+    except Exception:
+        pass
+
+
+def _decide(mark_txt):
+    """讀完標記後的決策:'skip'(不再重置) | 'probe'(要探測)。可離線測。"""
+    if "reset=1" in mark_txt:
+        return "skip"
+    return "probe"
+
+
+def _residual():
+    """LVGL 的 C 層是否還握著上一個 session 的 display(＝soft-reboot 殘留)。
+
+    唯一可靠的判準是 `display_get_default()`:
+        乾淨開機     -> None(這個 session 還沒建過 display)
+        軟重開機殘留 -> 指向上一個 session 的 display
+    (`is_initialized()` 不行,見上面陷阱 1。)
+    """
+    try:
+        return lv.display_get_default() is not None
+    except Exception as e:
+        print("[lvgl_init] 殘留探測失敗,放棄守門:", e)
+        return False
+
+
+def _soft_reboot_recover():
+    """在 LVGL 被初始化之前呼叫。回傳 True = 可以往下走。
+
+    偵測到 soft-reboot 殘留時會 `machine.reset()`(**不會回來**)。
+    """
+    if _decide(_mark_read()) == "skip":
+        print("[lvgl_init] 已是重置後的重入 → 清標記繼續")
+        _mark_clear()
+        return True
+
+    if not _residual():
+        return True
+
+    print("[lvgl_init] 偵測到 soft-reboot 殘留的 LVGL 狀態 → hard reset")
+    _mark_write("owned=1,reset=1")   # ★ 必須在 reset 之前寫,否則重置後會無限循環
+    try:
+        import machine
+        machine.reset()
+    except Exception as e:
+        print("[lvgl_init] reset 失敗:", e)
+    return False                     # 走到這裡代表 reset 沒生效
+
+
+def mark_ready():
+    """UI 完整起來(board._setup) → 清掉標記(本輪乾淨收尾)。"""
+    _mark_clear()
