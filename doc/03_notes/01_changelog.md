@@ -1771,3 +1771,98 @@ glyf 前 512B 相同: True  → 來源 TTF 一致，字形不會變
 `doc/02_guides/06_lvgl_ui.md` §6 整節改寫。舊版有三個問題：
 `-o ui/lvgl/src/...` **路徑漏了 `slave/`**、「多收無害（註釋字也收）」**會多胖 85%**、
 而且完全沒有「怎麼驗」。新版補上 §6.3 的四個坑與 §6.5 的動態文字限制。
+
+---
+
+## 37) LVGL 軟重開機後重新初始化：元兇是 `deinit()`（2026-10）
+
+### 37.1 症狀
+
+```
+[ERROR] ❌ [Core 0] Failed to start lvgl:
+        memory allocation failed, allocating 3254793227 bytes
+```
+
+數字每次都不一樣（實測 3254793227 / 1009759640 / 1634034300）——
+**那個數字不是尺寸，是指標**。只有**軟重開機**會觸發，hard reset 完全正常。
+
+### 37.2 根因（逐步量出來的）
+
+軟重開機後打斷進 REPL，把 `LvglDisp.__init__` 的每一道手續分開跑：
+
+```
+lv.is_initialized()          -> True
+lv.display_get_default()     -> 有物件
+  └ resolution               -> 320 x 240    ← ★ 好的！display 還能用
+lv.deinit()                  -> 回 OK，但 is_initialized() 仍 True
+  └ resolution 變成 (1009033516, 8029)       ← ★ 壞了（0x3C238B2C 是 PSRAM 指標）
+lv.display_create(320,240)   -> MemoryError（垃圾尺寸）
+```
+
+舊版 `lvgl_init.py` 寫的是「有殘留就 `deinit()`，然後 `lv.init()` +
+`display_create()`」。**三步都錯**：
+
+1. `deinit()` 沒把狀態清乾淨，反而把一個**還堪用**的 display 弄成半死。
+2. 就算 `deinit()` 有效，`display_create()` 也會在舊的還在時再建一個。
+3. 不能改成「先 `delete()` 舊的再建」—— 軟重開機把 MicroPython 的 heap 整個重來，
+   LVGL 記的指標已經不屬於它了。實測 `disp.delete()` → **直接 hard fault**（USB 消失）。
+
+### 37.3 修法：沿用同一個 display
+
+C 層還在就把 display 拿回來用，只重裝 buffers / flush_cb：
+
+```
+resolution = 320 x 240
+OK set_color_format / set_buffers / set_flush_cb
+OK lv.obj() / label / screen_load / task_handler x20
+flush_cb 被呼叫次數 = 6        ← 真的畫出來了
+```
+
+`_drop_stale()` 只做 `lv.screen_load(lv.obj())` 一件事，**刻意不做**：
+
+- `lv.anim_delete()` —— 會走訪殘留的動畫鏈，那些節點同樣是死指標。
+  沒有真機證據就不放（放過一次，疑似造成 USB 掉線，已移除）。
+- 任何 free/delete（見 37.2.3）。
+
+### 37.4 已驗證 / 未驗證
+
+| | |
+|---|---|
+| ✅ hard reset 走全新 init | `[lvgl_init] ... (全新 init)`、`build_all: 7 screen(s)`、`_ui_active=True`、`app.cur='launcher'`、active screen 14 個 widget、`mem_free=7.24MB` |
+| ✅ 沿用路徑本身 | 手動實測全通（37.3），flush_cb 真的被呼叫 |
+| ❌ 軟重開機的端到端 | **沒驗成** —— 見 37.5 |
+
+### 37.5 ⚠️ 一個**沒有排除**的相關性
+
+**軟重開機會讓 USB-CDC 重新列舉**，序列埠控制代碼中途失效 → log 只抓到一半
+（停在 `Task Runner Started`）、重開後也查不到狀態（`Device not configured`）。
+
+要留意的是：**改動前**的軟重開機能抓完整 log（一路到 `schedule`），
+**改動後**兩次都在中途斷線。這條相關性還沒排除 ——
+可能是當時版本裡的 `lv.anim_delete()`（已移除），也可能只是時序競爭。
+
+→ 所以**這個修法目前只能說是「根因正確、方向正確、尚未端到端驗證」**，
+詳細的下一步與備案寫在 `todo/08_lvgl_reinit.md`。
+
+### 37.6 備案
+
+若「沿用」仍有不安全的情況，有一條保證可靠的路：**偵測到剛軟重開機就
+`machine.reset()` 自我修復**（hard reset 會把 C 層一起清掉；而且不會無窮迴圈，
+因為 hard reset 後 `is_initialized()` 是 False）。代價是約 7 秒 + USB 重新列舉。
+
+### 37.7 工具坑（這一輪花最多時間的地方）
+
+1. **`\x04` 的意義看你在哪個 REPL**：friendly = 軟重開機；raw = 「執行我送的程式」。
+2. **`machine.soft_reset()` 從 raw REPL 呼叫，回來還是 raw REPL** → `main.py`
+   根本不跑，會讓人以為「軟重開機沒事」。要 Ctrl-C → `\x02` →**等 `>>>`**
+   →才送 `\x04`。
+3. **`sys.stdout.flush()` 在 MicroPython 不存在**。
+4. 軟重開機後必須 `reopen` 序列埠，但 reopen 成功不等於連線穩定。
+
+### 37.8 文件
+
+新增 **`todo/08_lvgl_reinit.md`**（症狀、根因、修法、驗證狀態、下一步、備案、
+七個工具坑、五支診斷工具）。`doc/02_guides/06_lvgl_ui.md` §8 的
+「LVGL 只能初始化一次」那條也一併更新 —— 它原本寫的解法
+（`get_platform()` 一次初始化 + bus reuse）**在軟重開機後是無效的**，
+因為 `bus` 本身就是被重開機清掉的 Python 物件。

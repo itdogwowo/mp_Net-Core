@@ -197,7 +197,17 @@ control_panel 頁與 `tasks/action_task_1.py` 共享 mode byte：
 
 ## 8. 踩坑記錄（開發技巧）
 
-1. **LVGL 只能初始化一次**：soft-reboot 後 C 層殘留，重複 `lv.init()`+`display_create()` 會 `MemoryError` 要求數百 MB。解法：`get_platform()` 一次初始化 + bus reuse。
+1. **LVGL 不能重新初始化 —— 但要「沿用」不是「deinit」**。
+   soft-reboot 後 C 層殘留，`lv.init()` + `lv.display_create()` 會
+   `MemoryError` 要求數百 MB（**那個數字是指標，不是尺寸**）。
+   ⚠️ 原本這裡寫的解法是「`get_platform()` 一次初始化 + bus reuse」——
+   **那在軟重開機後是無效的**，因為 `bus` 本身就是被重開機清掉的 Python 物件，
+   `get_service()` 一定回 None。
+   正確做法（2026-10 實測）：**C 層還在就直接沿用同一個 display**，
+   只重裝 buffers / flush_cb，**千萬不要先 `deinit()`**
+   （它會把還堪用的 display 弄成半死），**也不要 `delete()`**
+   （記憶體已不屬於 LVGL → 直接 hard fault）。
+   見 `todo/08_lvgl_reinit.md` 與 changelog §37。
 2. **MADCTL 只能一邊送**：driver rotation 與 LVGL 自送 MADCTL 只能擇一，否則 double-rotate 花屏。
 3. **declare/build 時機**：頁面 `@register` 在 import 時跑、`build()` 在 `build_all()` 跑；依賴「build 後才有的 widget 資料」的邏輯要放對時機。
 4. **switch binding API 差異**：`add_state`/`clear_state`/`has_state` 各 binding 名稱不一，用 `ui_common.sw_set/sw_get` wrapper 防護。
