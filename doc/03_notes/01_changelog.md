@@ -1422,3 +1422,243 @@ ESP32-S3 的 USB-CDC 會整個從匯流排消失**（§12.5 / §32.4 同一個�
 計劃書裡同時記了**六個踩過的陷阱**（軟重開機洩漏、上傳時機、廣播不能加密、
 `recv()` 的 `(mac, None)`、ESP-NOW 重複實例、`0x1016` 掉幀），
 以及**板子回來後要先驗的五件事**（其中 `_hw_add_peer` 的加密形式尚未真機驗證）。
+
+---
+
+## 35) 兩頁 UI 落地 ＋ 模式表覆蓋驗證 ＋ 三個靜默失敗（2026-10）
+
+§34 的資料層接上 UI，並且把使用者點名的四件事全部做完／認證完。
+這一節記的是**驗證結果**與**驗證過程本身踩到的坑**——後者比前者值錢。
+
+### 35.1 先說結論：使用者要的四件事
+
+| # | 要求 | 狀態 |
+|---|---|---|
+| 1 | 有 pixel 的裝置要用 `/pixel/modes/*.json` **覆蓋** DB | ✅ 真機驗證（§35.3）|
+| 2 | 修 `remote.py` 兩顆開關重疊、移除重複的 Wi-Fi 開關 | ✅ 已修（§35.4）|
+| 3 | `c3` 那個裸 `12345ms` 要加標籤 | ✅ 已改（§35.4）|
+| 4 | 依 `todo/07` 執行兩頁拆分 | ✅ `now_setting.py` 新頁上板（§35.5）|
+
+### 35.2 ⚠️ 為什麼「pixel 沒覆蓋 DB」看起來像個 bug，其實不是
+
+上一輪的結論是「改動 ① 邏輯對，但真機上驗不出來」。這一輪查到了原因：
+
+```
+11401 的 /Core_Manager.py:119
+    tm.register_task("pixel", PixelTask, default_affinity=(1, 0), layer=-1)
+                                                        ↑ repo 這一行是 layer=2
+```
+
+`layer == -1` 在 `task_manager._task_eligible_for_boot()` 裡是**無條件回 False**：
+
+```python
+def _task_eligible_for_boot(self, name):
+    layer = self.layers.get(name, 0)
+    if layer == -1:
+        return False          # ← 「這層永遠不開機」
+```
+
+**這是 task_manager 內建的「關掉某個 task」開關，不是 bug。**
+`layer=-1` 同時被排除在 `_max_layer` 的計算之外（`if layer > _max_layer and layer >= 0`），
+所以 boot 推進層數時也不會被它卡住。
+
+→ 使用者早就用這個開關把 11401 的 pixel 關掉了。PixelTask 從不啟動
+→ `_init_modes()` 從不執行 → `set_local_modes()` 從不被呼叫
+→ DB 裡的舊值當然活得好好的。**行為完全正確，只是我找錯了地方。**
+
+（`Core_Manager.py` 裡「佈署時要拿掉某個功能，直接註解掉對應一行即可」那行註解
+已經過時了 —— 現在有 `layer=-1` 這個不用改結構的作法。）
+
+### 35.3 ① 的真機驗證（11401）
+
+把板上的 `layer=-1` 暫時改成 `layer=2`，種 3 筆假資料，hard reset：
+
+```
+【測試前】@mode.source = remote
+          ids  = ['0x101', '0x102', '0x200']
+          names= ['FAKE_a', 'FAKE_b', 'FAKE_servo']
+
+【開機 log】
+          [Config] ✓ modes(local): 2 個        ← set_local_modes() 真的被呼叫
+          [Pixel] modes: 2 個
+
+【測試後】@mode.source = local
+          ids  = ['0x1', '0x2']
+          names= ['demo_eyes', 'motor_sine']   ← 假資料被真的模式檔覆蓋掉了
+          @mode.list n = 2
+```
+
+**① 成立。** 驗完立刻把 `layer=-1` 還原（並驗證還原後的檔案與測試前備份一致）。
+
+順帶量到 11401 真實的模式表是 `0x0001 demo_eyes` / `0x0002 motor_sine` ——
+`0x0200`（`MOVABLE_ID`）**不是**任何模式檔，它是 `pixel_controller.py` 硬寫的
+「可動（鐵打模式）」，只在臨時應急用。
+
+### 35.4 排版 bug 與裸數字（`remote.py`）
+
+```
+mk_switch() 實寸 44×24（ui_common.py:251）
+  _wifi_sw (10, 224)  x∈[10,54]   標籤 "Wi-Fi"    x=34  ← 壓在開關上
+  _now_sw  (168,224)  x∈[168,212] 標籤 "ESP-NOW"  x=192 ← 壓在開關上
+  y=224 + 24 = 248 > 240（螢幕高）→ 下緣被切掉 8px
+```
+
+兩顆開關都移除（Wi-Fi 那份與 `settings.py` 重複；ESP-NOW 搬到新頁），
+空出來的 42px 還給內容：左欄清單 `h 168→180`、`c3` `h 42→58`、底列按鈕 `y 198→210`。
+`ITEM_SWITCH` 從 import 拿掉（本頁已無開關）。
+
+`c3` 的 `_lb["sel2"]` 原本是 `"{}ms".format(age_ms)` —— **沒有主詞也沒有方向**，
+分不出是「多久沒聽到」還是「回得多快」。改成三行都有標籤：
+
+```
+sel  : 0x0002  test-peer
+sel2 : 最後 1234ms 前  ●在線     ← age_ms 的定義就是「距離最後一次收到它」
+sel3 : 總線 NOW-Bus
+```
+
+### 35.5 新頁 `now_setting.py`（傳輸層）
+
+`@register(id="now_setting", title="ESP-NOW", icon="sensors", order=2, accent=0x7B1FA2)`
+
+版面：三張卡（啟用／頻道／加密）＋ 兩張表（可選／已選）＋ 五顆按鈕
+（掃描／加入／移除／套用／清除）。
+
+實作時對 `todo/07` 做了**兩個判斷**：
+
+1. **不另開 `remote_setting.py`**（§3.5）。`remote.py` 本身就是應用層那一頁，
+   計劃書的 §3.1 與 §3.4 描述的是同一頁，再拆一次只會多一個空殼。
+   「兩頁」的實際落點 = `now_setting.py`（傳輸層）＋ `remote.py`（應用層）。
+2. **「可選」清單不放 FF**。FF 不是掃到的、也不能被「加入」—— 它是「已選」的預設值。
+   放在可選裡只會讓人以為可以把它加到已選（它本來就在）。
+
+### 35.6 真機驗證（11401，`build_all: 7 screen(s)`）
+
+| 項目 | 結果 |
+|---|---|
+| 頁面註冊 ＋ `build()` 跑得起來 | ✅ `[app] build_all: 7 screen(s)`（原 6），無 `import skip` |
+| `registry.ordered()` | ✅ `remote 0, control_panel 1, now_setting 2, ...` |
+| 掃描（真廣播 `0x100D`） | ✅ 收到對板 `2C:65:B8 → 0x0002 [NOW-Bus]` |
+| `apply_peers([mac])` | ✅ `(1,0,0)`，peer 1→2，**廣播格保留** |
+| `apply_peers([])` | ✅ `(0,1,0)` → 只剩廣播（「已選＝只有 FF」的預設語意）|
+| `clear_peers()` ＋ `clear_now()` | ✅ 移除 1 筆；`@now.selected`→`[]`、`@now.encrypt`→`0` |
+| **清除不越界** | ✅ `@node.*` 與 `@peer.*` 都沒動（使用者定案的範圍）|
+
+⚠️ **沒驗到的**：`_do_add` / `_do_remove` / `_do_encrypt` 這三支會經過
+`lb.set_text()`，而 REPL 是**另一個執行緒** —— LVGL 不是 thread-safe，
+跨執行緒改 widget 有 hard fault 的風險，所以沒有從 REPL 直接呼叫。
+它們由「`build()` 沒報錯」＋程式碼審閱涵蓋；要真機確認請**用手轉編碼器**走一遍。
+
+### 35.7 三個靜默失敗（這一節的重點）
+
+三個都是「**看起來成功了，其實沒有**」，而且都不是靠讀程式碼看出來的。
+
+#### (a) MicroPython 沒有 refcount → reset 前寫入消失
+
+要在板上改一行設定，寫了：
+
+```python
+open("/Core_Manager.py", "w").write(src.replace("layer=-1", "layer=2"))
+machine.reset()
+```
+
+印出了「✓ 已改成 layer=2」，但開機後 PixelTask **還是沒啟動**。
+原因：MicroPython 沒有引用計數，`open().write()` 之後檔案物件**還開著**，
+要等 GC 才 flush；`machine.reset()` 搶在它前面 → **寫入整批消失**。
+
+修法：明確 `f = open(p,"w"); f.write(s); f.close()`，
+而且**寫完先讀回來印出那一行**再重置。
+（這個坑第一次踩的時候，我把它誤判成「layer=-1 不是開關」，
+差點去改 task_manager。）
+
+#### (b) 板上的檔案比 repo 舊，而 `try/except` 把它變成靜默的錯值
+
+新頁的 `_cap()` 長這樣：
+
+```python
+def _cap():
+    now = _now()
+    try:
+        return int(now.peer_cap()) if now is not None else 19
+    except Exception:
+        return 19          # ← 取不到服務時的保守值
+```
+
+板上的 `NowBus` **沒有 `peer_cap`**（`now_bus.py` 是舊版，20739 B vs repo 33822 B）
+→ `AttributeError` → 落到 `except` → **回 19**。
+於是「加密時上限應該是 6」在這一頁上會**安靜地顯示 19**，完全不會報錯。
+
+→ 教訓：**動到既有 API 之後，上板前先問板子有沒有那個方法**。
+```python
+for n in ("peer_cap", "set_encrypt", "clear_peers"):
+    print(n, hasattr(bus.get_service("NowBus"), n))
+```
+補上 `now_bus.py` 之後，`_cap()` 才真的回 19／6。
+
+#### (c) `peers` 回的是 `bytes`，不是 hex 字串
+
+`now.peers` 是 `@property`（不是方法，加 `()` 會 `TypeError`），
+而且內容是 `[b'\xff\xff\xff\xff\xff\xff', b'$\xecJ,e\xb8']` —— **bytes**。
+所以 `"FFFFFFFFFFFF" in now.peers` 恆為 False（還會噴
+`Warning: Comparison between bytes and str`），會讓人誤判「廣播不見了」。
+要比對請走 `mac_bytes()`。
+
+### 35.8 文件與註解
+
+`ConfigManager` 裡有三處**已經與程式碼相反**的說明，一併修正：
+
+- `set_local_modes()` 的 docstring 原本寫「★ 不把清單寫進 btree」「會刪掉舊的
+  `@mode.list`」—— 但 §35.3 的改動已經讓它**寫進去且覆蓋**。
+  留著會讓下一個人以為 local 不落地。
+- 模式表那段區塊註解（`# ★ 只有 remote 需要持久化…`）同理。
+- `load_modes()` 的「只有 remote 的清單在 btree」。
+
+新的說法把**理由**寫清楚：原本「local 不落地」的前提是
+「PixelTask 一定會跑」，而它**是可以被關掉的**（`layer=-1`）。
+關掉之後 DB 就是唯一來源，「不寫」等於讓錯的舊值永遠沒人管。
+
+`todo/07` 補上：§2.5／§3.4 完成清單、§3.5 不另開 `remote_setting.py` 的決定、
+§5.1 這一輪的驗證表、以及 §6 新增三個陷阱（refcount、舊檔案、bytes vs str）。
+
+### 35.9 測試
+
+```
+test_node_pairing.py    153 / 153 PASS
+test_master_writer.py    19 /  19 PASS
+router_selftest.py       75 /  75 PASS
+test_proto_hotpath.py     9 PASS
+```
+
+### 35.10 排版的算術（以及一件我**沒能**驗到的事）
+
+`remote.py` 的 bug 修完之後，回頭把新頁的每個座標也算過一遍。
+字型是 `ui/lvgl/src/zh_hant_16.bin` → **中文字 16px 寬、數字約 8px**。
+算完抓到一個還沒發生的溢出：`啟用` 卡只有 96px 寬，開關（44px）擺在 x=6
+佔到 50，右邊只剩 46px —— 而「未授權」是 **3 個中文字 = 48px**，會超出 2px。
+
+→ 三張卡改成**照最長的字串**訂寬，而不是平均分：
+
+```
+啟用卡 112 (4..116)    52..112 放得下「未授權」
+頻道卡 104 (120..224)  26+6 左鈕 / 標籤 36 / 右鈕 72..98
+加密卡  88 (228..316)  52..88 放「19格」
+合計 112+4+104+4+88 = 312，左右各留 4
+```
+
+垂直方向：卡片標題 y4..20、元件 y20..44（高 46）；清單標題 y72..88、
+清單 y88..202；底列按鈕 y208..230。**全部 ≤ 240，且相鄰只是相接、不重疊。**
+
+#### ⚠️ 沒驗到的：螢幕上的實際幾何
+
+本來想量真機的 widget 座標來當證據，失敗了，記下來免得下次重蹈：
+
+1. **直接量會全部得到 0×0** —— LVGL 的幾何在 screen **被 load** 之後才算；
+   `app.build_all()` 只預建、不顯示（當下顯示的是 launcher）。
+2. **不能從 REPL 呼叫 `lv.screen_load()`** —— LVGL 不是 thread-safe，
+   而 REPL 與 LvglTask 是不同執行緒，跨執行緒改 LVGL 狀態可能 hard fault。
+3. **`lv.async_call()` 這條正路在這塊固件上沒反應** ——
+   `lvgl_init.tick()` 確實有呼叫 `lv.task_handler()`（＝timer handler，
+   理論上會處理 async 佇列），也試過把回呼存進模組屬性防 GC，
+   排進去的回呼就是沒被執行。**原因未查明。**
+
+所以 §35.4 與這一節的結論是**算出來的**（座標全是明確的 `set_pos` 數值），
+不是量出來的。要在真機上確認，請**用手轉編碼器走一遍那兩頁**。

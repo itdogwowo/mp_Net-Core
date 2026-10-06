@@ -16,6 +16,12 @@ except Exception as _e:
     print("[page] remote import skip:", _e)
     remote = None
 try:
+    # ESP-NOW 設定頁（**傳輸層**）：從 remote.py 拆出來的，見 todo/07_now_setting_ui.md
+    from ui.lvgl.page import now_setting
+except Exception as _e:
+    print("[page] now_setting import skip:", _e)
+    now_setting = None
+try:
     from ui.lvgl.page import control_panel
 except Exception as _e:
     print("[page] control_panel import skip:", _e)
@@ -40,6 +46,7 @@ except Exception as _e:
 # 用 if 守護:頁面 import 失敗時 PAGES 裡不會有它,跳過不報錯。
 _PAGES_MOD = [
     ("remote", remote),
+    ("now_setting", now_setting),
     ("control_panel", control_panel),
     ("pca9685", pca9685),
     ("settings", settings),

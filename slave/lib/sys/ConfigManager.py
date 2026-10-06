@@ -579,9 +579,18 @@ class ConfigManager:
     #     - **可讀**：一份 JSON 看完，不必拼 key。
     #     清單規模小（數十筆），整包的絕對成本可忽略。
     #
-    #   ★ 只有 remote 需要持久化：local 的明細來自 /pixel/modes/*.json，
-    #     每次開機必被 PixelTask 重載覆蓋 → 存了也是白存（還會與檔案不同步）。
-    #     所以 set_local_modes() 只標 source，並**刪掉** @mode.list。
+    #   ★ **local 也要落地**（2026-10 使用者定案，改掉了原本的設計）。
+    #     原本的理由是「local 的明細來自 /pixel/modes/*.json，每次開機必被
+    #     PixelTask 重載覆蓋 → 存了也是白存」，聽起來對，但漏了一件事：
+    #     **PixelTask 不一定會跑**。`Core_Manager.py` 把它的 layer 設成 -1
+    #     就是關掉它（`task_manager._task_eligible_for_boot()` 對 layer == -1
+    #     無條件回 False，這是有意的「這層不開機」開關）。
+    #     PixelTask 不跑 → 沒人呼叫 set_local_modes() → DB 裡如果是舊的或
+    #     假的值，就**永遠不會被修正**。
+    #     現在的語意是「DB 要是一份跨開機都成立的清單」：
+    #       ① 有 pixel → 載入後**覆蓋** DB（set_local_modes）
+    #       ② 沒 pixel → DB 是唯一來源，開機由 load_modes() 灌進快取
+    #     兩邊都寫，才是「不管 pixel 跑不跑，問 0x3101 都有答案」。
     #
     #   落盤時機：節流（_mode_save_min_ms，沿用 PeerRegistry 的做法）——
     #     逐一取細節期間最多每 2 秒寫一次；最後一筆由 flush_modes() 補寫
@@ -654,12 +663,16 @@ class ConfigManager:
 
     # ── 寫入來源①：本機 PixelTask（開機覆蓋一次）──────────────
     def set_local_modes(self, modes):
-        """本機 PixelTask 載入模式後呼叫：source=local，覆蓋記憶體清單。
+        """本機 PixelTask 載入模式後呼叫：source=local，**覆蓋 DB 並落盤**。
 
         `modes` = {id: mode_dict}（PixelTask._init_modes 的產物）。
-        ★ 不把清單寫進 btree —— 事實來源是 /pixel/modes/*.json，每次開機都會
-          重載；寫進去只會多一份會不同步的副本。
-        ★ 會刪掉舊的 @mode.list（來源切換 → 舊清單失效）。
+
+        ★ 把清單寫進 btree（**與舊版相反**）。舊版刻意不寫，理由是
+          「事實來源是 /pixel/modes/*.json，寫進去只會多一份會不同步的副本」。
+          問題是那前提只在「PixelTask 一定會跑」時成立 —— 而它是可以被
+          關掉的（`layer=-1`）。關掉之後 DB 就成了**唯一**的來源，
+          那時候「不寫」等於「讓錯的舊值留在那裡沒人管」。
+        ★ 也會覆蓋舊的 @mode.list（來源切換 → 舊清單失效）。
         """
         try:
             ids = sorted(int(k) for k in (modes or {}).keys())
@@ -731,8 +744,9 @@ class ConfigManager:
     def load_modes(self):
         """開機從 btree 載入模式表（load_setup 尾端呼叫）。
 
-        只有 remote 的清單在 btree；local 的那份會在 PixelTask 啟動時覆蓋。
-        所以開機後 UI 可能先看到「上次的 remote 清單」，等 PixelTask 起來才換掉。
+        `@mode.list` 兩種來源都會在（remote 查到的、以及本機 PixelTask 存的）。
+        開機後 UI 可能先看到「上次那份」，等 PixelTask 起來才被 /pixel/modes/*.json
+        換掉 —— **PixelTask 被關掉時就不會換**，那份就是最終答案（刻意的）。
         """
         raw = self.kv_get("mode.list", None) or []
         lst = []

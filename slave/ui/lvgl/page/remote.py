@@ -4,8 +4,18 @@
 #
 # 版面：
 #   左欄 節點清單（可捲）—— 「選中 = 操作對象」
-#   右欄 身份（cID/MAC/目標）+ 模式表（source / 前幾筆）
-#   底列 [掃描][綁定][解除][取得清單][取得細節] + Wi-Fi / ESP-NOW 開關
+#   右欄 身份（cID/MAC/目標）+ 模式表（source / 前幾筆）+ 選中節點細節
+#   底列 [掃描][綁定][解除][取得清單][取得細節]
+#
+# ★ 2026-10（使用者定案）：**晶片開關已從本頁移除**。
+#   本頁是**應用層**（我要操作誰、播什麼），開關是**傳輸層**（射頻怎麼出去），
+#   兩層的數量限制與持久化位置都不同，混在一頁會讓「這清單在限制什麼」說不清：
+#     Wi-Fi 開關    → `settings.py`（系統設定）已經有一顆，本頁那份是**重複的**
+#     ESP-NOW 開關  → 搬到新頁 `now_setting.py`（傳輸層設定）
+#   舊版把兩顆開關擺在 (10,224) / (168,224)、標籤擺在 x=34 / 192 ——
+#   但 `mk_switch` 是 **44×24**，所以標籤正好**壓在開關上面**；
+#   而且 y=224+24=248 早就超出 240 高的螢幕，下緣被切掉。
+#   移除後底列空出來的 42px 還給了左欄清單與 c3 面板。
 #
 # 資料全部來自既有狀態（**本頁不自己維護任何狀態**）：
 #   bus.shared["peers"]       ← PeerRegistry.snapshot()（第一個消費者）
@@ -35,7 +45,8 @@
 import lvgl as lv
 from ui.lvgl.registry import register
 from ui.lvgl import ui_common as u
-from ui.lvgl.nav import Nav, ITEM_LIST, ITEM_BUTTON, ITEM_SWITCH
+# 本頁已無開關 → 不需要 ITEM_SWITCH。
+from ui.lvgl.nav import Nav, ITEM_LIST, ITEM_BUTTON
 
 REFRESH_EVERY = 10       # 每 N 幀刷新一次顯示（run % N）
 SCAN_SPREAD_MS = 500     # 掃描的抖動視窗（0 = 不抖動）。見 _do_scan
@@ -47,7 +58,6 @@ _peer_list = None
 _peer_btns = []
 _peer_rows = []          # PeerRegistry.snapshot() 的內容（選中索引對應）
 _sel = 0                 # 選中的節點索引
-_wifi_sw = _now_sw = None
 _lb = {}                 # 顯示用 label 快取
 _last = {}               # 內容比對（避免每幀 set_text）
 _btn_bind = None
@@ -305,34 +315,6 @@ def _do_fetch_details():
     print("[remote] 取得細節 {}/{}".format(ok, len(ids)))
 
 
-def _toggle_wifi():
-    on = not u.sw_get(_wifi_sw)
-    u.sw_set(_wifi_sw, on)
-    _exec(0x1008, {"wifi_enable": 1 if on else 0})
-    print("[remote] Wi-Fi →", "ON" if on else "OFF")
-
-
-def _toggle_now():
-    """ESP-NOW 開關 → `0x1301 NOW_INIT{action}`（0=查詢 1=開 2=關）。
-
-    與 Wi-Fi 開關（0x1008）刻意長得不一樣，因為底層是兩件事：
-      Wi-Fi  : enable 只是一個**授權旗標**，實際連線由 NetworkManager 非同步做
-      ESP-NOW: 開/關是**立即的射頻動作**（NowBus.init / deinit），成敗當下就知道
-
-    ⚠️ 這裡**必須明確**送 action=1／2：`0x1301` 不給參數（或送 0）是**查詢**，
-    不會開啟 ESP-NOW（欄位型別的原生預設值就是 0）。
-
-    開不起來最常見的原因不是指令失敗，而是 `Network.ESP_now.enable = 0`
-    —— 那是授權，`on_now_init` 會拒絕在未授權時偷偷開（見 now_actions）。
-    所以這裡要把開關撥回去，不要讓 UI 顯示一個騙人的 ON。
-    """
-    want = not u.sw_get(_now_sw)
-    u.sw_set(_now_sw, want)
-    _exec(0x1301, {"action": 1 if want else 2})
-    print("[remote] ESP-NOW →", "ON" if want else "OFF")
-    _sync_now_switch()          # 以實際狀態回寫開關（可能與剛才撥的不同）
-
-
 # ══════════════════════════════════════════════════════════════════
 #  建立畫面
 # ══════════════════════════════════════════════════════════════════
@@ -352,7 +334,7 @@ def _panel(parent, x, y, w, h):
           desc="配對·節點·模式", order=0, accent=0x188038)
 def build():
     global scr, _peer_list, _peer_btns, _peer_rows, _sel
-    global _wifi_sw, _now_sw, _btn_bind, _lb, _last
+    global _btn_bind, _lb, _last
     nav.reset()
     _sel = 0
     _lb = {}
@@ -365,8 +347,9 @@ def build():
     u.mk_label(scr, "遙控器", 8, 5, u.TEXT, u.ZH)
 
     # ── 左欄：節點清單（選中 = 操作對象）──
+    #   h 從 168 → 180：晶片開關搬走後，底列讓出來的空間還給清單。
     lx, lw = 4, 124
-    _peer_list, _peer_btns = u.mk_list(scr, lx, 24, lw, 168, ["(尚無節點)"],
+    _peer_list, _peer_btns = u.mk_list(scr, lx, 24, lw, 180, ["(尚無節點)"],
                                        font=u.F_NUM_S)
     nav.add(_peer_list, ITEM_LIST, on_change=_on_list_move)
 
@@ -386,13 +369,17 @@ def build():
         _lb["m%d" % i] = u.mk_label(c2, "", 6, 18 + i * 13, u.TEXT2, u.F_NUM_S)
 
     # ── 右欄中：選中節點的細節 ──
-    c3 = _panel(scr, rx, 150, rw, 42)
+    #   h 從 42 → 58：容得下「最後 N ms 前」這種有單位、有標籤的完整句子。
+    c3 = _panel(scr, rx, 150, rw, 58)
     _lb["sel"] = u.mk_label(c3, "—", 6, 3, u.TEXT, u.F_NUM_S)
     _lb["sel2"] = u.mk_label(c3, "選一個節點", 6, 22, u.TEXT3, u.F_NUM_S)
+    _lb["sel3"] = u.mk_label(c3, "—", 6, 38, u.TEXT3, u.F_NUM_S)
 
     # ── 底列：動作按鈕（5 顆）──
+    #   y 從 198 → 210：晶片開關（原本 224 起、還被切掉 8px）移除後往下挪，
+    #   與加高後的左欄清單（24..204）留 6px 間距。
     bw, gap, bx = 60, 3, 4
-    y = 198
+    y = 210
     b1 = u.mk_btn(scr, "掃描", bx, y, bw, 22, "primary")
     nav.add(b1, ITEM_BUTTON, on_change=_do_scan)
     _btn_bind = u.mk_btn(scr, "綁定", bx + (bw + gap), y, bw, 22, "secondary")
@@ -404,13 +391,9 @@ def build():
     b5 = u.mk_btn(scr, "取細節", bx + 4 * (bw + gap), y, bw, 22, "secondary")
     nav.add(b5, ITEM_BUTTON, on_change=_do_fetch_details)
 
-    # ── 最底：晶片開關 ──
-    _wifi_sw = u.mk_switch(scr, 10, 224, on=False)
-    nav.add(_wifi_sw, ITEM_SWITCH, on_change=_toggle_wifi)
-    u.mk_label(scr, "Wi-Fi", 34, 226, u.TEXT2, u.ZH)
-    _now_sw = u.mk_switch(scr, 168, 224, on=False)
-    nav.add(_now_sw, ITEM_SWITCH, on_change=_toggle_now)
-    u.mk_label(scr, "ESP-NOW", 192, 226, u.TEXT2, u.ZH)
+    # ★ 這裡原本有兩顆晶片開關（Wi-Fi / ESP-NOW）。
+    #   已移除：Wi-Fi 那份與 `settings.py` 重複；ESP-NOW 搬到 `now_setting.py`。
+    #   原因與當年的排版 bug 記在本檔開頭的檔頭註解。
 
     u.fade_in(_peer_list, dy=5, time_ms=280, delay_ms=40)
     u.fade_in(c1, dy=5, time_ms=280, delay_ms=120)
@@ -501,11 +484,19 @@ def _refresh_info():
         ch = now._channel() if now is not None else None
     except Exception:
         ch = None
+    #   ★ 晶片狀態放這一行（本頁只顯示、不控制）：`ch6` = ESP-NOW 開著且在 ch6。
+    #     關掉時顯示 `ESP-NOW OFF`（開關在 now_setting.py；Wi-Fi 在 settings.py）。
     _set("cid", "cID {}  {}".format(
         "0x{:04X}".format(int(cid) & 0xFFFF) if cid is not None else "—",
-        "ch{}".format(ch) if ch is not None else "no-now"))
-    _set("mac", "MAC {} {}".format(mac or "—",
-                                   "Wi-Fi" if u.sw_get(_wifi_sw) else ""))
+        "ch{}".format(ch) if (_now_is_on() and ch is not None) else "ESP-NOW OFF"))
+    # ★ Wi-Fi 是否啟用：本頁**只讀不寫**（開關已搬到 settings.py）。
+    #   來源與 settings.py 相同 —— bus.shared["Network"]["wifi"]["enable"]。
+    try:
+        wifi_on = bool(int(((b.shared.get("Network") or {}).get("wifi") or {})
+                           .get("enable", 0)))
+    except Exception:
+        wifi_on = False
+    _set("mac", "MAC {}  {}".format(mac or "—", "Wi-Fi ON" if wifi_on else "Wi-Fi OFF"))
     # 目標：目前 active 的那一筆（targets 是清單；master_cid 是「我的上級」，不同事）
     tgts = node.get("targets") or []
     act = None
@@ -521,18 +512,28 @@ def _refresh_info():
     else:
         _set("dst", "目標 未綁定")
     # 選中節點
+    #   ★ `age_ms` = 「距離最後一次收到它的時間」，不是延遲、也不是剩餘時間。
+    #     舊版把裸數字直接印成 `12345ms`，沒有主詞也沒有方向 —— 看的人無從判斷
+    #     那是「多久沒聽到」還是「回應多快」。現在拆成三行、每行都有標籤：
+    #       sel  : 0x0002  test-peer      ← cID + slave_id
+    #       sel2 : 最後 1234ms 前  ●在線   ← 時間 + 在線判準（RECENT_MS）
+    #       sel3 : 總線 now                ← 從哪條管子聽到的
     p = _selected()
     if p is None:
         _set("sel", "—")
         _set("sel2", "選一個節點")
+        _set("sel3", "—")
     else:
         age = p.get("age_ms")
-        _set("sel", "{} {}".format(
+        _set("sel", "{}  {}".format(
             "0x{:04X}".format(int(p["cid"]) & 0xFFFF) if p.get("cid") is not None else "-----",
-            (p.get("slave_id") or "")[-6:]))
-        _set("sel2", "{}  {}".format(
-            "{}ms".format(age) if age is not None else "未見過",
-            ",".join(p.get("ifaces") or []) or "-"))
+            (p.get("slave_id") or "")[-8:]))
+        if age is None:
+            _set("sel2", "最後 從未聽過")
+        else:
+            _set("sel2", "最後 {}ms 前  {}".format(
+                int(age), "●在線" if int(age) < RECENT_MS else "○不在線"))
+        _set("sel3", "總線 {}".format(",".join(p.get("ifaces") or []) or "-"))
     # 模式表
     tbl = b.shared.get("mode_table") or {}
     src = tbl.get("source") or "—"
@@ -544,38 +545,24 @@ def _refresh_info():
             _set("m%d" % i, "{} {}".format(e.get("hex", ""), e.get("name", "")))
         else:
             _set("m%d" % i, "")
-
-    # 晶片開關：UI 只是顯示器，狀態來源是 config / 服務 → 單向同步
-    #   （不這樣做的話，頁面會顯示「上次點擊的狀態」而不是實際狀態）
-    try:
-        w = bool(int(((b.shared.get("Network") or {}).get("wifi") or {}).get("enable", 0)))
-        if u.sw_get(_wifi_sw) != w:
-            u.sw_set(_wifi_sw, w)
-    except Exception:
-        pass
-    _sync_now_switch()
+    # ★ 晶片開關的單向同步（wifi enable / NowBus.connected）已隨開關一起移除。
+    #   那兩顆開關現在住在 `settings.py`（Wi-Fi）與 `now_setting.py`（ESP-NOW），
+    #   同步邏輯跟著開關走 —— 留在這裡只會是沒有人呼叫的死碼。
 
 
-def _sync_now_switch():
-    """把 ESP-NOW 開關拉回**實際**狀態（單向：服務 → UI）。
+def _now_is_on():
+    """ESP-NOW 現在是不是真的開著（給頁面顯示用；**開關本身在 `now_setting.py`**）。
 
     ★ 判準是 `connected`，不是「服務存不存在」。
       `0x1301 NOW_INIT{action:2}` 關掉之後，`NowBus` 服務**仍然在 bus 上**
       （刻意的，見 now_actions.on_now_init）—— 只把 `connected` 變 False。
-      所以用 `now is not None` 判斷的話，關掉之後開關會彈回 ON。
+      所以用 `now is not None` 判斷的話，關掉之後會誤報成 ON。
     """
-    b = _kv()
-    now = b.get_service("NowBus")
+    now = _kv().get_service("NowBus")
     try:
-        on = bool(now is not None and now.connected)
+        return bool(now is not None and now.connected)
     except Exception:
-        on = False
-    try:
-        if u.sw_get(_now_sw) != on:
-            u.sw_set(_now_sw, on)
-    except Exception:
-        pass
-    return on
+        return False
 
 
 # ══════════════════════════════════════════════════════════════════
