@@ -114,19 +114,75 @@ def on_exit():    return nav.exit()   # True=消耗(編輯中先退編輯)；Fal
 
 ## 6. 字型生成（補缺字）
 
-中文字體 `ui/lvgl/src/zh_hant_16.bin` 是 `lv_font_conv` 產生的 binfont（--no-compress）。頁面新中文字顯示成方塊 = 字集不足。
+中文字體 `slave/ui/lvgl/src/zh_hant_16.bin` 是 `lv_font_conv` 產生的 binfont（`--no-compress`）。
+它是**子集**字型，而且這顆的 `fallback = None`（實測）—— **不在子集裡的字不會退到別的字型，
+就是畫不出來**（空白／方塊）。UI 新增中文卻忘了重跑生成 = 靜默的視覺缺陷。
+
+### 6.1 一行做完
 
 ```bash
-# 掃整個 ui/lvgl/ 目錄所有 .py 的非 ASCII 字 + 符號 → 重新生成
-npx lv_font_conv --font "/Library/Fonts/Arial Unicode.ttf" --size 16 \
-  --format bin --bpp 4 -r "0x20-0x7F,<所有碼點>" --no-compress \
-  -o ui/lvgl/src/zh_hant_16.bin
+python -B temp/gen_font.py            # 只算，不寫檔（先看數字）
+python -B temp/gen_font.py --write    # 真的產生
+python -B temp/font_audit.py          # 上板驗證：還有沒有缺字
 ```
 
-- **掃整個目錄**（不手列 SRC），否則漏檔 → 缺字。
-- 多收無害（註釋字也收），漏收才變方塊。
-- 符號要補：`▲▼◀▶▽△↕↑↓→←°℃·±×÷—…（）` 等。
-- 用 `lvgl/ui_common.py` 的 `init_fonts()` 讀 `/ui/lvgl/src/zh_hant_16.bin`。
+`gen_font.py` 會：掃 `slave/**/*.py` 的**字串常量** → 過濾出 TTF 真的有的碼點 →
+呼叫 `lv_font_conv`（走 npx 快取，離線可跑）→ 跟舊檔比對 `glyf` 前段確認來源 TTF 一致。
+
+### 6.2 手動版（參數要對）
+
+```bash
+LVFC=~/.npm/_npx/*/node_modules/.bin/lv_font_conv
+"$LVFC" --font "/Library/Fonts/Arial Unicode.ttf" --size 16 \
+  --format bin --bpp 4 --no-compress \
+  -r "0x20-0x7E,<所有碼點>" \
+  -o slave/ui/lvgl/src/zh_hant_16.bin        # ★ 路徑含 slave/，舊版文件漏了
+```
+
+- **掃整個 `slave/`**（不手列檔案），否則漏檔 → 缺字。多收無害，漏收才變方塊。
+- 符號要補：`▲▼◀▶▽△↕↑↓→←°℃·±×÷—…（）`。
+
+### 6.3 ⚠️ 四個會讓人做出錯誤結論的坑（都踩過）
+
+1. **`lv_font_conv` 遇到一個字型沒有的碼點就整個中止**，不會跳過：
+   ```
+   Font "..." doesn't have any characters included in range 0x2139-0x2139
+   ```
+   → 必須先讀來源 TTF 的 cmap，只把**它真的有的**碼點餵進去。
+
+2. **`ast.Constant` 連 docstring 一起抓** —— 而 docstring 不會被顯示。
+   把註解裡的 `⚠️` 當成缺字去補，字型會白胖一圈。
+   只算「真的會被畫出來的字串」（`font_audit.py` 的 `literals_only()`）。
+
+3. **私用區 `0xE000–0xF8FF` 不是中文字型的事** —— 那是 `icons_16.bin`（icon 字型）的
+   地盤，`mk_icon()` 會明確 `set_style_text_font(icon_font)`。
+   把它們算成缺字永遠補不完。
+
+4. **驗證的 oracle 一定要先拿對照組驗過**。`font.get_glyph_width(ch)` 在這塊固件上
+   **對每個字都丟 `TypeError`**（它是 unbound 風格，簽名不同），而我的結果解析器
+   又只認 `MISSING` 不看 `ERRORS` → 印出「640 個字全部都有」。
+   **實際上 203 個沒有。** 正確形式是：
+   ```python
+   d = lv.font_glyph_dsc_t()
+   ok = f.get_glyph_dsc(f, d, codepoint, 0)   # 要自己把 font 傳進去
+   ```
+   驗 oracle 用的對照組：陽性 `A`／`1`／空白，陰性 U+E000／U+10FFFD／emoji。
+   陰性若回 True，這個 oracle 就不能用。
+
+### 6.4 為什麼不能「反正掃註解也收」
+
+會爆。2026-10 實測：`slave/` 全部 `.py` 的**字串常量**就有 1166 個非 ASCII 碼點，
+字型從 73716 B 長到 136616 B（+85%）。再收註解只會更大，而畫面上一個字都不會多。
+
+### 6.5 動態文字（掃不到的那種）
+
+`@mode.*` 的模式名稱、節點名稱這類**執行期才从 JSON 進來**的字，靜態掃描看不到。
+真的要支援就必須：
+- 收一整段常用字（Big5 一級字 5401 字 ≈ 690 KB），或
+- 改文案讓它只用 ASCII，或
+- 換一顆有 `fallback` 的字型（LVGL 支援 `--lv-fallback`）。
+
+目前**沒有做**，所以模式名稱請用英文/數字。
 
 ---
 
@@ -148,6 +204,9 @@ control_panel 頁與 `tasks/action_task_1.py` 共享 mode byte：
 5. **MicroPython `json.dumps` 不吃 kwargs**：`ensure_ascii`/`indent` 在板上會 `TypeError`，用無 kwargs 版本 + 自製縮排。
 6. **page import 容錯**：`page/__init__.py` 每個 import 包 try/except + `if pid in PAGES` 守護，單頁刪除/壞檔不拖垮其他頁。
 7. **字型缺字**：新中文字 → 重跑字型生成（§6），方塊字消失。
+   2026-10 實測：UI 用到的 640 個非 ASCII 字裡 **203 個沒有 glyph**
+   （連「遙」都沒有 —— 遙控器一直顯示成「⬜控器」）。
+   修完之後**要跑 `temp/font_audit.py` 驗**，不要憑感覺。
 8. **encoder 是硬體周邊**：不能放 PIN 段，獨立 `enc_drv`。
 
 ---

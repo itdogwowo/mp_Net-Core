@@ -1662,3 +1662,112 @@ test_proto_hotpath.py     9 PASS
 
 所以 §35.4 與這一節的結論是**算出來的**（座標全是明確的 `set_pos` 數值），
 不是量出來的。要在真機上確認，請**用手轉編碼器走一遍那兩頁**。
+
+---
+
+## 36) 修好文字殘缺：字型子集少了 203 個字（2026-10）
+
+使用者回報「有部份文字是沒有對應表的」。查下去發現不是「部份」——是**三成**。
+
+### 36.1 症狀與數字
+
+`slave/ui/lvgl/src/zh_hant_16.bin` 是 `lv_font_conv` 產生的**子集**字型。
+這顆的 `fallback = None`（實測），所以不在子集裡的字**不會退到別的字型**，
+就是畫不出來。
+
+```
+UI 用到的非 ASCII 字        640 個
+其中字型裡沒有 glyph        203 個   ← 32%
+```
+
+連「**遙**」都沒有。也就是說 `remote.py` 的標題「遙控器」一直是「⬜控器」。
+其他像 了 人 我 你 但 很 想 真 多 心 短 私 種 端 筆 開 關… 也都不在。
+
+### 36.2 ★ 最值錢的部分：我第一次的稽核給了**完全相反**的答案
+
+先寫了 `font_audit.py`：掃 UI 原始碼的字元 → 上板問每個字有沒有 glyph。
+第一次跑出來：
+
+```
+FONT struct lv_font_t
+CHECKED 640
+MISSING 0
+### ✅ 沒有缺字
+```
+
+看起來是好消息。**實際上 203 個字一個都沒量到。** 兩個錯誤疊在一起：
+
+1. **oracle 壞了**：`font.get_glyph_width(ch)` 在這塊固件上對**每一個**字元
+   都丟 `TypeError`（它不是 `f.get_glyph_width(ch)` 這種綁定形式）。
+   正確形式是 **unbound 風格、要自己把 font 傳進去**：
+   ```python
+   d = lv.font_glyph_dsc_t()
+   ok = f.get_glyph_dsc(f, d, codepoint, 0)    # -> True/False
+   ```
+2. **結果解析器把證據吃掉了**：查詢失敗的字元被丟進 `bad` 清單，
+   程式也印了 `ERRC`，但我的**解析器只認 `MISSING`，沒印 `ERRC`**
+   → 畫面上只剩「MISSING 0」。
+
+→ **教訓：新增一個判斷依據時，先拿已知的陽性與陰性對照組驗它。**
+修好之後的對照組（`temp/font_oracle_check.py`）：
+
+```
+陽性  A / 1 / 空白 / 之        -> True
+陰性  U+E000 / U+10FFFD / emoji -> False     ← 陰性若回 True，oracle 就不能用
+```
+
+### 36.3 修法
+
+字型要覆蓋的是「UI 真的會畫出來的字」，不是「原始碼裡所有的中文字」。
+`temp/gen_font.py`：
+
+1. AST 掃 `slave/**/*.py` 的**字串常量**，排除 docstring 與控制字元、
+   排除私用區（那是 `icons_16.bin` 的地盤）。
+2. **先讀來源 TTF 的 cmap**（環境沒有 fontTools，自己解格式 4/12），
+   只把 TTF 真的有的碼點餵給 `lv_font_conv`
+   —— 它只要遇到一個沒有的碼點就**整個中止**，不會跳過。
+3. 產生，並跟舊檔比對 `glyf` 前 512 B。
+
+```
+舊檔   73716 B
+新檔  136616 B  (+62900, +85%)
+glyf 前 512B 相同: True  → 來源 TTF 一致，字形不會變
+```
+
+★ **`glyf` 前段相同這件事很重要**：它證明來源就是同一支 Arial Unicode，
+所以這次只增加覆蓋率、**整個 UI 的字形外觀不變**。重生成字型最怕的就是
+「補了字但全部的字都換了長相」，這個檢查把那個風險變成可驗證的。
+
+### 36.4 驗證
+
+```
+【部署前】CHECKED 640  MISSING 203  ERRORS 0
+【部署後】CHECKED 174  MISSING   0  ERRORS 0     ← 174 = 排除 docstring/PUA 後真正的顯示字集
+開機     [font] read 136616 bytes / loaded from buffer OK
+         [app] build_all: 7 screen(s) pre-built
+```
+
+剩下的 32 個「缺字」全是**假陽性**，已在稽核工具裡過濾掉：
+`U+000A`（換行不是 glyph）、`U+26A0 ⚠`（只出現在 docstring/註解）、
+以及 36 個 `0xE000–0xF8FF` 私用區碼點（那是 `icons_16.bin` 的 icon 字型，
+`mk_icon()` 會明確 `set_style_text_font(icon_font)`）。
+
+### 36.5 沒解决的：動態文字
+
+`@mode.*` 的模式名稱、節點名稱是**執行期才從 JSON 進來**的，靜態掃描看不到。
+要支援得收一整段常用字（Big5 一級字 5401 字 ≈ 690 KB）、或規定模式名稱用 ASCII、
+或換一顆帶 `fallback` 的字型（`lv_font_conv --lv-fallback`）。
+**目前沒做**，所以模式名稱請用英文/數字。
+
+### 36.6 其他副本
+
+`find . -name zh_hant_16.bin` 另外找到三份，**都是未追蹤的本地副本**（不在版控內），
+仍是舊的 73716 B：`temp/rc/`、`ports/P4/ESP32-P4-ETH/temp/`、`ports/P4/ESP32-P4-ETH_mp3/ui/`。
+最後那個是 P4 port 真正在用的 UI，要一起換的話把新檔複製過去即可
+（新檔是舊檔的**超集**，P4 的頁面是 S3 的子集，格式相同）。
+
+### 36.7 文件
+
+`doc/02_guides/06_lvgl_ui.md` §6 整節改寫。舊版有三個問題：
+`-o ui/lvgl/src/...` **路徑漏了 `slave/`**、「多收無害（註釋字也收）」**會多胖 85%**、
+而且完全沒有「怎麼驗」。新版補上 §6.3 的四個坑與 §6.5 的動態文字限制。
