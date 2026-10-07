@@ -34,7 +34,8 @@
     ]},
     {"cmd": "0x100D", "name": "IDENTIFY_REQ", "payload": [
       {"name": "reply_cid", "type": "u16"},
-      {"name": "timeout_ms", "type": "u16"}
+      {"name": "timeout_ms", "type": "u16"},
+      {"name": "force", "type": "u8"}
     ]},
     {"cmd": "0x100E", "name": "IDENTIFY_RSP", "payload": [
       {"name": "cid", "type": "u16"},

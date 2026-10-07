@@ -161,6 +161,63 @@ def on_identify_rsp(ctx, args):
         print("[Net] peers learn failed: {}".format(e))
 
 
+# ══════════════════════════════════════════════════════════════════
+#  0x100D 點名的**回覆狀態**（2026-10 使用者定案）
+# ══════════════════════════════════════════════════════════════════
+#  `0x100D` 不是一個指令，是**兩種模式**，用 `reply_cid` 區分，行為完全不同：
+#
+#    reply_cid = 具體 cid  →  **定向點名**：對方指名要我 → **每次都回**
+#                              （回覆是單播，只吵到問的那一個人）
+#    reply_cid = 0xFFFF    →  **廣播回覆**：回信寄給射程內**所有**人
+#                              → 同一個問的人**只回第一次**
+#
+#  為什麼「廣播回覆」要節流：
+#    它是全專案唯一會讓「射頻上每一台同時回話」的指令。第一次是必要的
+#    （不自我介紹就沒人知道我），但同一個人再問一次**不會得到新資訊** ——
+#    只是把同一次碰撞再付一次代價。
+#
+#  ★★ 狀態的鍵是**問的人的射頻 MAC**（`ctx["_src_mac"]`），不是一個 bool。
+#     用 bool 的話會出現這個症狀：
+#       「第一台遙控器掃過之後，第二台比較晚開機的遙控器**永遠收不到回覆**」
+#     —— 也就是「我開機不等於他開機」。
+#     換一個人問 = 一個沒見過的人 → **一定要回**。
+#
+#  ★ 想強制重新自我介紹：`0x100D{reply_cid=0xFFFF, force=1}`
+#    （`force` 是 2026-10 追加的欄位；舊解碼器讀不到就當 0 → 向後相容）
+#
+#  ★ 狀態只活在這一次開機（module 級 dict）。重開機 = 重新自我介紹一次，
+#    這是對的：對端那時候也可能換過人。
+_FF_REPLIED = {}        # 問的人的 MAC(hex) -> 最後一次回覆的 ticks_ms
+_FF_KEEP = 4            # 只記最近 4 個問的人（不讓它無限長）
+
+
+def _ff_already(mac):
+    """這個問的人是不是已經收過我的廣播回覆了（＝這次不要再回）。"""
+    k = _mac_hex(mac)
+    return bool(k) and k in _FF_REPLIED
+
+
+def _ff_mark(mac):
+    k = _mac_hex(mac)
+    if not k:
+        return
+    _FF_REPLIED[k] = time.ticks_ms()
+    while len(_FF_REPLIED) > _FF_KEEP:
+        oldest = None
+        for key in _FF_REPLIED:
+            if oldest is None or _FF_REPLIED[key] < _FF_REPLIED[oldest]:
+                oldest = key
+        if oldest is None:
+            break
+        del _FF_REPLIED[oldest]
+
+
+def _ff_forget(mac):
+    k = _mac_hex(mac)
+    if k:
+        _FF_REPLIED.pop(k, None)
+
+
 def on_identify_req(ctx, args):
     """0x100D IDENTIFY_REQ —— **點名**。帶 reply_cid 指定回信寄哪, 回應 cid+slave_id+IP。
 
@@ -201,6 +258,21 @@ def on_identify_req(ctx, args):
     """
     reply_cid = args.get("reply_cid", 0xFFFF) & 0xFFFF
     spread = args.get("timeout_ms", 0) & 0xFFFF
+    force = args.get("force", 0)
+    src = ctx.get("_src_mac") if isinstance(ctx, dict) else None
+
+    # ── 兩種模式的状态判斷（見檔頭那一段）──
+    if reply_cid == 0xFFFF:
+        # 廣播回覆：同一個問的人只回第一次
+        if force:
+            _ff_forget(src)          # 強制重新自我介紹
+        elif _ff_already(src):
+            print("[Net] 0x100D 廣播回覆：{} 已問過 → 不重複回".format(
+                _mac_hex(src) or "?"))
+            return
+        _ff_mark(src)
+    # reply_cid 是具體 cid → 定向點名，每次都回（不進狀態機）
+
     delay = _spread(spread)
     if spread:
         # 掃描不是熱路徑，這一行是**真機驗證用**的：看得出抽到幾毫秒、
