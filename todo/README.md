@@ -22,6 +22,7 @@
 | [06_router_local_paths.md](06_router_local_paths.md) | Router 的兩個本機來源（`self` / `vbus`）—— 「絕對內部執行」怎麼走 | ✅ **已決：不改 Router**，分流在產生者側（`exec_cmd` ↔ `vbus.inject`）；待辦全部結案（`router_selftest` 75/75）|
 | [07_now_setting_ui.md](07_now_setting_ui.md) | **ESP-NOW 設定 ＋ 遙控器設定 兩頁 UI** —— 傳輸層 vs 應用層、兩個清單的鍵與上限、FF 互斥、加密（6 格 / 共用金鑰）| 🟢 **兩頁已完成並上板**（`build_all: 7 screen(s)`；掃描／套用／清除真機跑過）。§6 的陷阱已增到 9 條 |
 | [08_lvgl_reinit.md](08_lvgl_reinit.md) | **LVGL 軟重開機後重新初始化** —— 真根因是 C 層 root pointer 跨 soft reboot 存活；用 `lvgl_init` 的 soft-reboot 復原（硬重置）| 🟢 **已修好並真機驗收通過**（軟重開機 → 守門 → 硬重置 → UI 自己回來；防無窮重置也驗過）。根治的 C 改法見該檔 §4 |
+| [09_ui_readability.md](09_ui_readability.md) | **交接：UI 可讀性 ＋ 節點狀態 ＋ 發現流程** —— 方格（`F_NUM_*` 是純拉丁）、行高 19px、顏色＝關係狀態、週期公告關閉、`0x100D` 狀態機 | ✅ **已 commit 並 push**；⚠️ 「叫了不應顯示紅色」尚未看到畫面證據、`doc/02_guides/06_lvgl_ui.md` 未提交（另一個 session 的編輯）|
 | `_template.md` | 新清單範本 | — |
 
 > ⚠️ **開發這幾條流程時務必 hard reset**，不要用 Ctrl-D／`mpremote` 預設的軟重開機 ——
