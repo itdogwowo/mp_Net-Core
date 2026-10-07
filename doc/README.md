@@ -49,6 +49,7 @@
 | [15_schedule.md](02_guides/15_schedule.md) | 定時指令排程（schedule 任務）：vBus 注入原理 / 排程檔格式 |
 | [16_signal_router.md](02_guides/16_signal_router.md) | **訊號 Router**：頻道間互相轉送（ESP-NOW ↔ UART ↔ 網路）/ 路由表 `in`→`out` / `self` 保留字 / 循環問題與已否決方案 / 分期施工 |
 | [17_timer.md](02_guides/17_timer.md) | **Timer 計時器**：絕對時間週期表 / `poll()`+`done()` 用法 / 三個邊界語意 / 適用範圍（幀驅動的東西別用）/ bus_speed 遷移案例 |
+| [18_node_discovery.md](02_guides/18_node_discovery.md) | **節點發現流程（教學）**：為什麼 ESP-NOW 不能逐位址掃 / 四個指令的角色 / 身分≠方向 / `0x100D` 的兩種模式與回覆狀態機 / 抖動 / UI 顏色 / **壞掉時三層怎麼查** / 除錯方法論（oracle 要先驗、`try/except` 的安靜錯值）|
 
 ## 03_notes — 筆記
 
