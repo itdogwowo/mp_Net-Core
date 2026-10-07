@@ -42,6 +42,7 @@
 #     ② 對外發出 → 產生幀（含 addr）→ `vbus.inject(frame)` → Router 決定走哪條管子
 #   舊版直接 `now.add_peer(mac)` / `now.write_to(mac, frame)` / `now.broadcast(frame)`
 #   —— 那是把 ESP-NOW 的實作細節寫進 UI，換一條管子就不能用（已移除）。
+import time
 import lvgl as lv
 from ui.lvgl.registry import register
 from ui.lvgl import ui_common as u
@@ -55,6 +56,9 @@ SCAN_SPREAD_MS = 500     # 掃描的抖動視窗（0 = 不抖動）。見 _do_sc
 #   留著是因為 _peer_label 的除錯輸出還會參考，而且門檻值本身沒變。
 RECENT_MS = 10000        # 多久內聽到算「剛見過」（除錯 / 未來用）
 STALE_MS = 60000         # 多久沒聽到算「很久」（除錯 / 未來用）
+_scan_at = 0              # 最後一次按「掃描」的 ticks_ms（0 = 還沒掃過）
+                         # ★ 這是「紅色」的判準：掃描過了卻沒回話 = 叫了不應
+
 SEL_BG = 0xD2E3FC        # 選中列的底色（淺藍）—— 刻意不用 PRIMARY 的深藍，
                          # 否則狀態色（綠/黃/紅）在上面讀不出來
 BULLET = "\u25CF"        # ● —— ★ 這個字元**必須在字型子集裡**
@@ -184,9 +188,14 @@ def _do_scan():
       **`0` 或缺席 = 不抖動**（舊對端的行為）→ 追加欄位，向後相容。
       真的被撞掉的節點：**再按一次掃描**即可（不做自動重試）。
     """
+    global _scan_at
     b = _kv()
     ok = _tx(0x100D, {"reply_cid": int(getattr(b, "cid", 0xFFFF)) & 0xFFFF,
                       "timeout_ms": SCAN_SPREAD_MS})
+    if ok:
+        # ★ 記下「我什麼時候問的」——清單的紅色靠它判斷「叫了不應」。
+        #   沒送出去就不記，否則會把全部節點誤標成紅。
+        _scan_at = time.ticks_ms()
     print("[remote] 掃描 →", ok)
 
 
@@ -214,7 +223,12 @@ def _do_bind():
         return
     cid = p.get("cid")
     if cid is None:
-        print("[remote] 該節點沒有 cid（等 identify_rsp 補上）")
+        # ★ 舊版這裡**靜默 return** —— 畫面上完全沒反應，看起來像「綁定沒用」。
+        #   會走到這裡通常是：這筆是從 0x1002 公告學到的（公告不帶 cid），
+        #   而掃描的回覆（0x100E）還沒到，或那台根本沒回。
+        #   → 明確告訴使用者「先掃描」，而且清單會是紅的。
+        print("[remote] 綁定失敗：{} 還沒有 cid —— 先按「掃描」讓它回 0x100E"
+              .format((p.get("slave_id") or "")[-6:] or "?"))
         return
     # ① 方向：告訴對方「你的 master 是我」
     my_cid = int(getattr(b, "cid", 0xFFFF)) & 0xFFFF
@@ -469,10 +483,19 @@ def _row_color(r):
     兩個都是使用者自己造成的動作。
     """
     if _is_target(r):
-        return u.SUCCESS
-    if r.get("age_ms") is not None:
-        return u.WARNING
-    return u.TEXT3
+        return u.SUCCESS                     # 綠：我認的目標
+    age = r.get("age_ms")
+    if not _scan_at:
+        # 還沒按過掃描 → 我還沒問過，不知道它在不在
+        return u.WARNING if age is not None else u.TEXT3
+    # ★ 掃描過了：看它有沒有在**這一次**掃描之後回話。
+    #   `age_ms` = 距離上次收到它的毫秒數；`since` = 距離我按下掃描的毫秒數。
+    #   回話發生在掃描之後 → age < since。
+    #   （`age_ms` 本身是「黏」的 —— 一旦見過就永遠有值，所以不能只看它有沒有值。）
+    since = time.ticks_diff(time.ticks_ms(), _scan_at)
+    if age is not None and age <= since:
+        return u.WARNING                     # 琥珀：這次掃到了
+    return u.DANGER                          # ★ 紅：叫了，它不應
 
 
 def _peer_label(r):
