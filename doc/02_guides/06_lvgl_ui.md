@@ -158,7 +158,14 @@ LVFC=~/.npm/_npx/*/node_modules/.bin/lv_font_conv
    地盤，`mk_icon()` 會明確 `set_style_text_font(icon_font)`。
    把它們算成缺字永遠補不完。
 
-4. **驗證的 oracle 一定要先拿對照組驗過**。`font.get_glyph_width(ch)` 在這塊固件上
+4. **★ 補字型時只驗 `u.ZH` 是不夠的 —— `F_NUM_*` 是純拉丁字型**。
+   `F_NUM_S/M/L/XL` 都是 **Montserrat**（沒有中文）。拿它畫中文 → 每個字一個方格。
+   2026-10 就是這樣：字型子集補完、`u.ZH` 稽核 0 缺字，畫面上還是一堆方格，
+   因為那些字**在 ZH 裡有、在 Montserrat 裡沒有**。
+   → 會出現中文的標籤一律用 `u.ZH`（ZH 同時涵蓋 ASCII）。
+   ⚠️ **不要**想用 `f.fallback = ZH` 一次解決：實測寫下去**板子會直接卡死**
+   （開機停在 `[font] loaded from buffer OK` 之後）。見 changelog §38.1。
+5. **驗證的 oracle 一定要先拿對照組驗過**。`font.get_glyph_width(ch)` 在這塊固件上
    **對每個字都丟 `TypeError`**（它是 unbound 風格，簽名不同），而我的結果解析器
    又只認 `MISSING` 不看 `ERRORS` → 印出「640 個字全部都有」。
    **實際上 203 個沒有。** 正確形式是：
