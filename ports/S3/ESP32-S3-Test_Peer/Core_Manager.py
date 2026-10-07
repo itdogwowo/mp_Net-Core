@@ -55,7 +55,23 @@ from tasks.bus_decode import BusDecodeTask
 from tasks.log_task import LogTask
 
 ANNOUNCE_CMD = 0x1002
-ANNOUNCE_EVERY_MS = 10000      # 週期性公告（0 = 只廣播一次）
+# ══════════════════════════════════════════════════════════════════
+#  公告週期（使用者 2026-10 定案：**關掉週期，改成手動**）
+# ══════════════════════════════════════════════════════════════════
+#   0 = **只在開機廣播一次**（自我介紹），之後完全不主動發訊。
+#       需要知道誰在線時，由遙控器**手動按「掃描」**（廣播 0x100D）。
+#
+#  為什麼關掉週期：
+#    · 10 秒一次 = 射頻上永遠有訊號。使用者要的是「我有需要才掃」。
+#    · 週期公告唯一的好處是「讓遙控器不用掃就看得到我」，但代價是持續佔用
+#      空中時間；而 0x100D 已經能做到同一件事，而且是**由問的人發起**。
+#    · 開機那次要留著 —— ESP-NOW 的 MAC 無法枚舉，「被發現」只能靠對方
+#      主動送上門（或對方廣播掃描）。
+#
+#  ⚠️ 舊版的判斷式有 bug：`ticks_diff(now, last) < ANNOUNCE_EVERY_MS`
+#     在 ANNOUNCE_EVERY_MS = 0 時恆為 False → **每一圈都廣播**（比 10 秒更糟）。
+#     所以「0 = 只廣播一次」的註解和程式碼是相反的。下面 loop() 已修正。
+ANNOUNCE_EVERY_MS = 0
 
 # ── 假模式池 ──────────────────────────────────────────────────────────
 #   16-bit id = (mode_type << 8) | mode_id —— 與 modes/*.json 的 id 同慣例。
@@ -97,7 +113,13 @@ class AnnounceTask(Task):
         if now_bus is None:
             return                      # ESP-NOW 還沒起來，下一圈再試
         now = time.ticks_ms()
-        if self._last and time.ticks_diff(now, self._last) < ANNOUNCE_EVERY_MS:
+        if ANNOUNCE_EVERY_MS > 0:
+            # 週期模式：距上次不足 ANNONCE_EVERY_MS 就跳過
+            if self._last and time.ticks_diff(now, self._last) < ANNOUNCE_EVERY_MS:
+                return
+        elif self._last:
+            # ★ 0 = **只廣播一次**。舊版沒處理這一支，`diff < 0` 恆為 False
+            #   → 每一圈都發，射頻上比 10 秒一次還吵。
             return
         self._last = now
         try:
@@ -116,8 +138,9 @@ class AnnounceTask(Task):
                 len(FAKE_MODES), ok))
             if not self._ready:
                 self._ready = True
-                get_log().info("[Peer] 公告已開始（每 {}ms 一次）；"
-                               "遙控器應開始看得到本機".format(ANNOUNCE_EVERY_MS))
+                get_log().info("[Peer] 公告完成（%s）；遙控器按「掃描」可隨時再找到本機"
+                               % ("每 %dms 一次" % ANNOUNCE_EVERY_MS
+                                  if ANNOUNCE_EVERY_MS > 0 else "只此一次，之後不主動發訊"))
         except Exception as e:
             get_log().error("[Peer] 公告失敗: {}".format(e))
 

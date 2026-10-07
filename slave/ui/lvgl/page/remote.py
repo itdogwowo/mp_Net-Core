@@ -52,6 +52,8 @@ REFRESH_EVERY = 10       # 每 N 幀刷新一次顯示（run % N）
 SCAN_SPREAD_MS = 500     # 掃描的抖動視窗（0 = 不抖動）。見 _do_scan
 RECENT_MS = 10000        # 多久內聽到算「綠」（10s）
 STALE_MS = 60000         # 超過這個算「紅」（60s）；中間是「黃」
+SEL_BG = 0xD2E3FC        # 選中列的底色（淺藍）—— 刻意不用 PRIMARY 的深藍，
+                         # 否則狀態色（綠/黃/紅）在上面讀不出來
 BULLET = "\u25CF"        # ● —— ★ 這個字元**必須在字型子集裡**
                          #   （見 temp/gen_font.py 的 EXTRA 與 guide §6）
 MODE_ROWS = 4            # 模式表顯示幾筆（行距 19 = u.ZH 行高）
@@ -499,9 +501,11 @@ def _sync_list():
         age = (r or {}).get("age_ms")
         sel = (i == _sel)
         try:
-            b.set_style_bg_color(u.C(u.PRIMARY if sel else u.BG), 0)
-            b.set_style_text_color(
-                u.C(0xFFFFFF if sel else _age_color(age)), 0)
+            # ★★ 文字色**永遠**是狀態色（綠/黃/紅），選中只用**底色**標。
+            #   舊版選中時把文字改成白色 → 使用者回報「藍底灰字，看不出狀態」。
+            #   改成淺藍底之後，三個狀態色在底色上都還讀得出來。
+            b.set_style_bg_color(u.C(SEL_BG if sel else u.BG), 0)
+            b.set_style_text_color(u.C(_age_color(age)), 0)
         except Exception:
             pass
 
