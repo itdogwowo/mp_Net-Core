@@ -54,7 +54,7 @@ RECENT_MS = 10000        # 多久內聽到算「綠」（10s）
 STALE_MS = 60000         # 超過這個算「紅」（60s）；中間是「黃」
 BULLET = "\u25CF"        # ● —— ★ 這個字元**必須在字型子集裡**
                          #   （見 temp/gen_font.py 的 EXTRA 與 guide §6）
-MODE_ROWS = 6            # 模式表顯示幾筆（c3 縮成一行之後從 3 變成 6）
+MODE_ROWS = 4            # 模式表顯示幾筆（行距 19 = u.ZH 行高）
 
 nav = Nav()
 scr = None
@@ -356,36 +356,37 @@ def build():
     #     理由：右邊那格一次只能講**一個**節點，清單有兩台以上就看不到了；
     #     而且那格很貴（要吃掉模式表的空間）。
     lx, lw = 4, 124
-    _peer_list, _peer_btns = u.mk_list(scr, lx, 24, lw, 182, ["(尚無節點)"],
+    _peer_list, _peer_btns = u.mk_list(scr, lx, 24, lw, 184, ["(尚無節點)"],
                                        font=u.ZH)
     nav.add(_peer_list, ITEM_LIST, on_change=_on_list_move)
 
     # ── 右欄上：身份 ──
+    #   ★★ 行高**實測**：`u.ZH` = **19px**、`F_NUM_S` = 16px。
+    #      （不是「中文字 16px 寬」那個數字 —— 那是字寬，行高是 19。）
+    #      上一版把標籤從 F_NUM_S 換成 u.ZH 卻沒改行距（還是 y=45、面板 h=58），
+    #      於是「目標」那一行底端 45+19=64 > 58 → **下緣被框架切掉**（使用者回報）。
+    #   ★ 現在把「目標」搬到標題列（同一行右半），省下一整行 19px。
     rx = lx + lw + 6
     rw = u.W - 4 - rx
-    c1 = _panel(scr, rx, 24, rw, 58)
-    u.mk_label(c1, "身份", 6, 3, u.TEXT3, u.ZH)
-    # ★ cid/mac 內容是純 ASCII，但**初始字是「—」**（破折號）——
-    #   Montserrat 不保證有；用 u.ZH 一次涵蓋 ASCII 與中文，少一個地雷。
-    _lb["cid"] = u.mk_label(c1, "—", 6, 18, u.TEXT, u.ZH)
-    _lb["mac"] = u.mk_label(c1, "—", 6, 32, u.TEXT2, u.ZH)
-    #   ★ 這一行有中文（「目標」「未綁定」）→ **不能用 F_NUM_S**
-    #     （Montserrat 是純拉丁字型，中文會變空格子）。
-    _lb["dst"] = u.mk_label(c1, "—", 6, 45, u.PRIMARY, u.ZH)
+    c1 = _panel(scr, rx, 24, rw, 56)
+    u.mk_label(c1, "身份", 6, 2, u.TEXT3, u.ZH)          # 2..21
+    _lb["dst"] = u.mk_label(c1, "—", 44, 2, u.PRIMARY, u.ZH)
+    _lb["cid"] = u.mk_label(c1, "—", 6, 22, u.TEXT, u.F_NUM_S)   # 22..38
+    _lb["mac"] = u.mk_label(c1, "—", 6, 38, u.TEXT2, u.F_NUM_S)  # 38..54 ≤ 56 ✓
 
     # ── 右欄中：選中節點（一行）──
-    #   ★ 從 3 行縮成 1 行：在線狀態搬去左欄之後，這裡只剩「我選了誰」。
-    #     讓出來的高度全部給下面的模式表（3 筆 → 6 筆）。
-    c3 = _panel(scr, rx, 88, rw, 22)
-    _lb["sel"] = u.mk_label(c3, "選一個節點", 6, 3, u.TEXT3, u.ZH)
+    #   ★ 用 u.ZH：沒選取時顯示「選一個節點」，那是中文。
+    #     1 行 19px + 邊距 → h=22。
+    c3 = _panel(scr, rx, 86, rw, 22)
+    _lb["sel"] = u.mk_label(c3, "選一個節點", 6, 2, u.TEXT3, u.ZH)
 
     # ── 右欄下：模式表 ──
-    #   h 58 → 90、列距 13 → 12：可顯示 3 筆 → **6 筆**。
-    #   模式名稱可能是中文（從 /pixel/modes/*.json 來）→ 用 u.ZH。
-    c2 = _panel(scr, rx, 116, rw, 90)
+    #   行距 **19**（= u.ZH 行高）。4 列：19 / 38 / 57 / 76，最後一列底 95 ≤ 96 ✓
+    #   （想在這裡塞更多列，就得把中文字型換成 12px 版本 —— 見 guide §6）
+    c2 = _panel(scr, rx, 114, rw, 96)
     _lb["msrc"] = u.mk_label(c2, "模式 —", 6, 2, u.TEXT3, u.ZH)
-    for i in range(6):
-        _lb["m%d" % i] = u.mk_label(c2, "", 6, 18 + i * 12, u.TEXT2, u.ZH)
+    for i in range(4):
+        _lb["m%d" % i] = u.mk_label(c2, "", 6, 19 + i * 19, u.TEXT2, u.ZH)
 
     # ── 底列：動作按鈕（5 顆）──
     #   y 從 198 → 210：晶片開關（原本 224 起、還被切掉 8px）移除後往下挪，
@@ -553,8 +554,11 @@ def _refresh_info():
             break
     if act is None and tgts:
         act = tgts[0]
+    #   ★ 這一行現在住在 c1 的**標題列右半**（x=44，跟「身份」同一行）。
+    #     空間只有 182-44 = 138px ≈ 17 個半形字，所以刻意精簡：
+    #     「目標 0x0001 1/1」= 2 中文(32) + 11 半形(88) = 120 ✓
     if act is not None:
-        _set("dst", "目標 0x{:04X} ({}/{})".format(
+        _set("dst", "目標 0x{:04X} {}/{}".format(
             int(act.get("cid") or 0) & 0xFFFF, tgts.index(act) + 1, len(tgts)))
     else:
         _set("dst", "目標 未綁定")
@@ -563,14 +567,21 @@ def _refresh_info():
     #     清單有兩台以上就看不到其他人的狀態；而且它吃掉模式表的空間。
     #     現在狀態改用**左欄每一行的顏色**表示（見 _age_color / _sync_list），
     #     這裡只回答「我選了誰」。
+    #   ★ 使用者要的是「**ID ＋ address ＋ 連接方法**都要看得到」。
+    #     c3 只有 182px 寬、一行，所以精簡成 3 欄：
+    #       0x0002  2C65B8  NOW-Bus
+    #       └ cid   └ address(後 6 碼)  └ 走哪條管子
+    #     全形中文會把寬度吃光 → 這一行刻意**全用 ASCII**（含「未選取」也一樣），
+    #     這樣用 u.ZH 或 F_NUM_S 都不會出現方格。
     p = _selected()
     if p is None:
-        _set("sel", "選一個節點")
+        _set("sel", "-- 未選取 --")
     else:
+        ifc = (p.get("ifaces") or []) or ["-"]
         _set("sel", "{}  {}  {}".format(
             "0x{:04X}".format(int(p["cid"]) & 0xFFFF) if p.get("cid") is not None else "-----",
-            (p.get("name") or "").strip() or (p.get("slave_id") or "")[-8:],
-            ",".join(p.get("ifaces") or []) or "-"))
+            (p.get("slave_id") or "")[-6:] or "------",
+            str(ifc[0])[:8]))
     # 模式表
     tbl = b.shared.get("mode_table") or {}
     src = tbl.get("source") or "—"
