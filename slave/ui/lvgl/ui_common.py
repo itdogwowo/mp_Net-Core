@@ -138,6 +138,38 @@ F_NUM_S = font("font_montserrat_12", "font_montserrat_10")
 F_NUM_XL = font("font_montserrat_28", "font_montserrat_26", "font_montserrat_24",
                 "font_montserrat_22", "font_montserrat_20")
 
+
+def set_num_fallback():
+    """把中文字型接到所有 Montserrat 字型的 `fallback` 上。
+
+    ══════════════════════════════════════════════════════════════════
+    ★ 為什麼需要（2026-10 使用者回報「還是有很多方格」）
+    ══════════════════════════════════════════════════════════════════
+    Montserrat 是**純拉丁**字型，沒有中文。而頁面裡有十幾處拿
+    `F_NUM_S` / `F_NUM_M` 去畫**含中文的字串**（例如 `"選一個節點"`、
+    `"目標 0x0001"`、`"總線 NOW-Bus"`）→ 每個中文字都是一個空格子。
+
+    上一輪補字型子集時只驗了 `u.ZH`（中文字型），所以沒抓到這一類：
+    那些字**在 ZH 裡有、在 Montserrat 裡沒有**。
+
+    兩層防護：
+      ① 這裡把 ZH 設成所有數字字型的 fallback
+         （新程式碼就算忘了換字型也不會變方格）
+      ② 已知會畫中文的地方**直接改用 `u.ZH`**（不依賴 fallback 行為）
+
+    ★ `fallback` 是 LVGL 的 `lv_font_t.fallback`。這個 binding 不一定開放
+      寫入，所以整段包 try/except —— 失敗就靠 ② 那層。
+    """
+    # ══════════════════════════════════════════════════════════════════
+    # ⚠️ 不要呼叫這個函式（2026-10 實測）
+    # ══════════════════════════════════════════════════════════════════
+    # 把 `f.fallback = ZH` 寫下去之後，**開機會停在下一行**：
+    #   [font] loaded from buffer OK      ← 最後一行
+    #   （沒有 build_all、沒有 _setup done、Boot complete 永遠不出現）
+    # 這個 binding 沒有開放寫 `lv_font_t.fallback`，寫下去會讓 LVGL 卡死。
+    # 中文一律改用 `u.ZH` 直接指定；這支留著是為了記錄「試過了、不行」。
+    return False
+
 # ====== 基礎 builder ======
 
 def C(hexval):

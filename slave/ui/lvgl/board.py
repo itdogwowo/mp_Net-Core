@@ -96,6 +96,11 @@ def _setup():
     plat = lvgl_init.get_platform()
     ui_common.init(plat)        # 注入 W/H
     ui_common.init_fonts()
+    # ★ 這裡**刻意不呼叫** `ui_common.set_num_fallback()`。
+    #   實測（2026-10）：把 `lv_font_t.fallback` 寫成 ZH 之後，
+    #   開機**就停在下一行**（`[font] loaded from buffer OK` 之後沒有任何輸出，
+    #   Boot complete 永遠不出現）—— 這個 binding 不支援寫那個欄位。
+    #   中文改用「直接指定 u.ZH」處理，見 ui_common.set_num_fallback 的說明。
 
     # 註冊所有頁面 → 預建所有 screen
     try:

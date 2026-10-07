@@ -452,8 +452,10 @@ def _fill(lst, labels):
     for txt in labels:
         try:
             btn = lst.add_text(txt)
-            if u.F_NUM_S:
-                btn.set_style_text_font(u.F_NUM_S, 0)
+            # ★ 用 u.ZH 而不是 F_NUM_S：這張表有中文（「FF  廣播  ←預設」），
+            #   而 Montserrat 是純拉丁字型 → 中文會變空格子。
+            if u.ZH:
+                btn.set_style_text_font(u.ZH, 0)
             out.append(btn)
         except Exception:
             continue
@@ -498,7 +500,9 @@ def build():
     u.mk_label(c_ch, "頻道", 6, 4, u.TEXT3, u.ZH)
     b_l = u.mk_btn(c_ch, "<", 6, 22, 26, 20, "secondary")
     nav.add(b_l, ITEM_BUTTON, on_change=lambda: _ch_step(-1))
-    _lb["ch"] = u.mk_label(c_ch, "ch—", 36, 24, u.TEXT, u.F_NUM_S)
+    # ★ 用 u.ZH：內容含破折號「—」，Montserrat 不一定有；而且 ch— 會顯示
+    #   在還沒同步到頻道之前。u.ZH 同時涵蓋 ASCII 與中文。
+    _lb["ch"] = u.mk_label(c_ch, "ch—", 36, 24, u.TEXT, u.ZH)
     b_r = u.mk_btn(c_ch, ">", 72, 22, 26, 20, "secondary")
     nav.add(b_r, ITEM_BUTTON, on_change=lambda: _ch_step(1))
 
@@ -513,13 +517,13 @@ def build():
     u.mk_label(scr, "可選", 6, 72, u.TEXT3, u.ZH)
     _lb["optn"] = u.mk_label(scr, "(0)", 40, 72, u.TEXT2, u.ZH)
     _opt_list, _opt_btns = u.mk_list(scr, 4, 88, 124, 114, ["(按掃描)"],
-                                     font=u.F_NUM_S)
+                                     font=u.ZH)
     nav.add(_opt_list, ITEM_LIST, on_change=_on_opt_move)
 
     u.mk_label(scr, "已選", 134, 72, u.TEXT3, u.ZH)
     _lb["seln"] = u.mk_label(scr, "(0/19)", 168, 72, u.TEXT2, u.ZH)
     _sel_list, _sel_btns = u.mk_list(scr, 132, 88, 184, 114, ["FF  廣播"],
-                                     font=u.F_NUM_S)
+                                     font=u.ZH)
     nav.add(_sel_list, ITEM_LIST, on_change=_on_sel_move)
 
     # ── 底列：5 顆按鈕（60*5 + 3*4 = 312）──

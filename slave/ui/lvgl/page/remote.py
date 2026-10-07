@@ -50,7 +50,11 @@ from ui.lvgl.nav import Nav, ITEM_LIST, ITEM_BUTTON
 
 REFRESH_EVERY = 10       # 每 N 幀刷新一次顯示（run % N）
 SCAN_SPREAD_MS = 500     # 掃描的抖動視窗（0 = 不抖動）。見 _do_scan
-RECENT_MS = 10000        # 多久內見過算「在線」（只是顯示標記，不代表協定上的在線）
+RECENT_MS = 10000        # 多久內聽到算「綠」（10s）
+STALE_MS = 60000         # 超過這個算「紅」（60s）；中間是「黃」
+BULLET = "\u25CF"        # ● —— ★ 這個字元**必須在字型子集裡**
+                         #   （見 temp/gen_font.py 的 EXTRA 與 guide §6）
+MODE_ROWS = 6            # 模式表顯示幾筆（c3 縮成一行之後從 3 變成 6）
 
 nav = Nav()
 scr = None
@@ -347,10 +351,13 @@ def build():
     u.mk_label(scr, "遙控器", 8, 5, u.TEXT, u.ZH)
 
     # ── 左欄：節點清單（選中 = 操作對象）──
-    #   h 從 168 → 180：晶片開關搬走後，底列讓出來的空間還給清單。
+    #   ★ 2026-10（使用者定案）：「在線/離線」不再用右邊的文字講，
+    #     改成**這一欄每一行自己的顏色**（綠=剛聽到 / 黃=有點久 / 紅=很久沒聽到）。
+    #     理由：右邊那格一次只能講**一個**節點，清單有兩台以上就看不到了；
+    #     而且那格很貴（要吃掉模式表的空間）。
     lx, lw = 4, 124
-    _peer_list, _peer_btns = u.mk_list(scr, lx, 24, lw, 180, ["(尚無節點)"],
-                                       font=u.F_NUM_S)
+    _peer_list, _peer_btns = u.mk_list(scr, lx, 24, lw, 182, ["(尚無節點)"],
+                                       font=u.ZH)
     nav.add(_peer_list, ITEM_LIST, on_change=_on_list_move)
 
     # ── 右欄上：身份 ──
@@ -358,28 +365,33 @@ def build():
     rw = u.W - 4 - rx
     c1 = _panel(scr, rx, 24, rw, 58)
     u.mk_label(c1, "身份", 6, 3, u.TEXT3, u.ZH)
-    _lb["cid"] = u.mk_label(c1, "—", 6, 18, u.TEXT, u.F_NUM_S)
-    _lb["mac"] = u.mk_label(c1, "—", 6, 32, u.TEXT2, u.F_NUM_S)
-    _lb["dst"] = u.mk_label(c1, "—", 6, 45, u.PRIMARY, u.F_NUM_S)
+    # ★ cid/mac 內容是純 ASCII，但**初始字是「—」**（破折號）——
+    #   Montserrat 不保證有；用 u.ZH 一次涵蓋 ASCII 與中文，少一個地雷。
+    _lb["cid"] = u.mk_label(c1, "—", 6, 18, u.TEXT, u.ZH)
+    _lb["mac"] = u.mk_label(c1, "—", 6, 32, u.TEXT2, u.ZH)
+    #   ★ 這一行有中文（「目標」「未綁定」）→ **不能用 F_NUM_S**
+    #     （Montserrat 是純拉丁字型，中文會變空格子）。
+    _lb["dst"] = u.mk_label(c1, "—", 6, 45, u.PRIMARY, u.ZH)
+
+    # ── 右欄中：選中節點（一行）──
+    #   ★ 從 3 行縮成 1 行：在線狀態搬去左欄之後，這裡只剩「我選了誰」。
+    #     讓出來的高度全部給下面的模式表（3 筆 → 6 筆）。
+    c3 = _panel(scr, rx, 88, rw, 22)
+    _lb["sel"] = u.mk_label(c3, "選一個節點", 6, 3, u.TEXT3, u.ZH)
 
     # ── 右欄下：模式表 ──
-    c2 = _panel(scr, rx, 88, rw, 58)
-    _lb["msrc"] = u.mk_label(c2, "模式 —", 6, 3, u.TEXT3, u.ZH)
-    for i in range(3):
-        _lb["m%d" % i] = u.mk_label(c2, "", 6, 18 + i * 13, u.TEXT2, u.F_NUM_S)
-
-    # ── 右欄中：選中節點的細節 ──
-    #   h 從 42 → 58：容得下「最後 N ms 前」這種有單位、有標籤的完整句子。
-    c3 = _panel(scr, rx, 150, rw, 58)
-    _lb["sel"] = u.mk_label(c3, "—", 6, 3, u.TEXT, u.F_NUM_S)
-    _lb["sel2"] = u.mk_label(c3, "選一個節點", 6, 22, u.TEXT3, u.F_NUM_S)
-    _lb["sel3"] = u.mk_label(c3, "—", 6, 38, u.TEXT3, u.F_NUM_S)
+    #   h 58 → 90、列距 13 → 12：可顯示 3 筆 → **6 筆**。
+    #   模式名稱可能是中文（從 /pixel/modes/*.json 來）→ 用 u.ZH。
+    c2 = _panel(scr, rx, 116, rw, 90)
+    _lb["msrc"] = u.mk_label(c2, "模式 —", 6, 2, u.TEXT3, u.ZH)
+    for i in range(6):
+        _lb["m%d" % i] = u.mk_label(c2, "", 6, 18 + i * 12, u.TEXT2, u.ZH)
 
     # ── 底列：動作按鈕（5 顆）──
     #   y 從 198 → 210：晶片開關（原本 224 起、還被切掉 8px）移除後往下挪，
-    #   與加高後的左欄清單（24..204）留 6px 間距。
+    #   清單 24..206、c2 到 206 → 按鈕下移到 212（212+22=234 ≤ 240）。
     bw, gap, bx = 60, 3, 4
-    y = 210
+    y = 212
     b1 = u.mk_btn(scr, "掃描", bx, y, bw, 22, "primary")
     nav.add(b1, ITEM_BUTTON, on_change=_do_scan)
     _btn_bind = u.mk_btn(scr, "綁定", bx + (bw + gap), y, bw, 22, "secondary")
@@ -408,14 +420,32 @@ def build():
 # ══════════════════════════════════════════════════════════════════
 #  刷新
 # ══════════════════════════════════════════════════════════════════
+def _age_color(age):
+    """「距離上次收到它多久」→ 顏色（使用者定案的綠／黃／紅）。
+
+    ★ 這是**射頻有沒有聽到它**，不是協定上的在線 —— 對端關機、跑掉、換頻道
+      都會讓它變紅。名字刻意叫 age 而不是 online，免得被當成權威狀態。
+    """
+    if age is None:
+        return u.TEXT3          # 從沒聽過 → 灰（不是紅：沒見過 ≠ 離線）
+    if age < RECENT_MS:
+        return u.SUCCESS        # 綠
+    if age < STALE_MS:
+        return u.WARNING        # 黃
+    return u.DANGER             # 紅
+
+
 def _peer_label(r):
-    """節點清單的一行。`*` = 最近見過（字型沒有 ●○，用 ASCII 免得變方塊）。"""
-    age = r.get("age_ms")
-    mark = "*" if (age is not None and age < RECENT_MS) else " "
+    """節點清單的一行：`● 0x0002 test-peer`。
+
+    ★ `●` 只在**重新生成過的字型**裡有（見 doc/02_guides/06_lvgl_ui.md §6 與
+      `temp/gen_font.py` 的 EXTRA）。舊字型沒有 ● → 會變空格子，
+      所以那時候這裡用的是 ASCII 的 `*`。換回 `●` 時務必確認字型已經重生成。
+    """
     cid = r.get("cid")
     cs = "0x{:04X}".format(int(cid) & 0xFFFF) if cid is not None else "-----"
     nm = (r.get("name") or "").strip() or (r.get("slave_id") or "")[-6:]
-    return "{} {} {}".format(mark, cs, nm)
+    return "{} {} {}".format(BULLET, cs, nm)
 
 
 def _refresh_peers(force=False):
@@ -432,6 +462,7 @@ def _refresh_peers(force=False):
     labels = [_peer_label(r) for r in rows] or ["(尚無節點)"]
     if not force and labels == _last.get("peers"):
         _peer_rows = rows
+        _sync_list()            # ★ 文字沒變不代表顏色沒變（age 一直在跑）
         return
     _last["peers"] = labels
     _peer_rows = rows
@@ -443,8 +474,8 @@ def _refresh_peers(force=False):
     for txt in labels:
         try:
             btn = _peer_list.add_text(txt)
-            if u.F_NUM_S:
-                btn.set_style_text_font(u.F_NUM_S, 0)
+            if u.ZH:
+                btn.set_style_text_font(u.ZH, 0)
             _peer_btns.append(btn)
         except Exception:
             continue
@@ -453,8 +484,25 @@ def _refresh_peers(force=False):
 
 
 def _sync_list():
-    if _peer_btns:
-        u.list_select(_peer_btns, _sel, color=u.PRIMARY)
+    """每一行的顏色 = 「多久沒聽到它」。選中那一行再用底色標。
+
+    ★ 不用 `u.list_select()`：它會**同時**設底色與文字色，會把狀態色蓋掉。
+      這裡拆開 —— 底色管「選中」，文字色管「在線狀態」，兩件事互不干擾。
+
+    ★ 一定要**每次都做**（不能只在文字變了才做）：`age_ms` 一直在跑，
+      文字不變但顏色要從綠變黃再變紅。
+    """
+    n = len(_peer_btns)
+    for i, b in enumerate(_peer_btns):
+        r = _peer_rows[i] if i < n and i < len(_peer_rows) else None
+        age = (r or {}).get("age_ms")
+        sel = (i == _sel)
+        try:
+            b.set_style_bg_color(u.C(u.PRIMARY if sel else u.BG), 0)
+            b.set_style_text_color(
+                u.C(0xFFFFFF if sel else _age_color(age)), 0)
+        except Exception:
+            pass
 
 
 def _set(key, txt, color=None):
@@ -489,14 +537,13 @@ def _refresh_info():
     _set("cid", "cID {}  {}".format(
         "0x{:04X}".format(int(cid) & 0xFFFF) if cid is not None else "—",
         "ch{}".format(ch) if (_now_is_on() and ch is not None) else "ESP-NOW OFF"))
-    # ★ Wi-Fi 是否啟用：本頁**只讀不寫**（開關已搬到 settings.py）。
-    #   來源與 settings.py 相同 —— bus.shared["Network"]["wifi"]["enable"]。
-    try:
-        wifi_on = bool(int(((b.shared.get("Network") or {}).get("wifi") or {})
-                           .get("enable", 0)))
-    except Exception:
-        wifi_on = False
-    _set("mac", "MAC {}  {}".format(mac or "—", "Wi-Fi ON" if wifi_on else "Wi-Fi OFF"))
+    # ★ Wi-Fi 狀態**不再顯示在本頁**（2026-10 使用者定案）。
+    #   兩個理由：
+    #     ① 它是**傳輸層**的事，本頁是應用層（傳輸層設定在 settings.py /
+    #        now_setting.py）。上一輪把開關搬走時漏了這個唯讀指示。
+    #     ② 它讓這一行變成 `MAC 24EC4A2C65B8  Wi-Fi OFF`（27 字 ≈ 189px），
+    #        而 c1 面板只有 182px → **超出框架**（使用者回報）。
+    _set("mac", "MAC {}".format(mac or "—"))
     # 目標：目前 active 的那一筆（targets 是清單；master_cid 是「我的上級」，不同事）
     tgts = node.get("targets") or []
     act = None
@@ -511,35 +558,27 @@ def _refresh_info():
             int(act.get("cid") or 0) & 0xFFFF, tgts.index(act) + 1, len(tgts)))
     else:
         _set("dst", "目標 未綁定")
-    # 選中節點
-    #   ★ `age_ms` = 「距離最後一次收到它的時間」，不是延遲、也不是剩餘時間。
-    #     舊版把裸數字直接印成 `12345ms`，沒有主詞也沒有方向 —— 看的人無從判斷
-    #     那是「多久沒聽到」還是「回應多快」。現在拆成三行、每行都有標籤：
-    #       sel  : 0x0002  test-peer      ← cID + slave_id
-    #       sel2 : 最後 1234ms 前  ●在線   ← 時間 + 在線判準（RECENT_MS）
-    #       sel3 : 總線 now                ← 從哪條管子聽到的
+    # 選中節點 —— **只剩一行**（2026-10 使用者定案）。
+    #   ★ 舊版把「最後 Nms 前 ●在線」寫在這裡，但那一格一次只能講一個節點，
+    #     清單有兩台以上就看不到其他人的狀態；而且它吃掉模式表的空間。
+    #     現在狀態改用**左欄每一行的顏色**表示（見 _age_color / _sync_list），
+    #     這裡只回答「我選了誰」。
     p = _selected()
     if p is None:
-        _set("sel", "—")
-        _set("sel2", "選一個節點")
-        _set("sel3", "—")
+        _set("sel", "選一個節點")
     else:
-        age = p.get("age_ms")
-        _set("sel", "{}  {}".format(
+        _set("sel", "{}  {}  {}".format(
             "0x{:04X}".format(int(p["cid"]) & 0xFFFF) if p.get("cid") is not None else "-----",
-            (p.get("slave_id") or "")[-8:]))
-        if age is None:
-            _set("sel2", "最後 從未聽過")
-        else:
-            _set("sel2", "最後 {}ms 前  {}".format(
-                int(age), "●在線" if int(age) < RECENT_MS else "○不在線"))
-        _set("sel3", "總線 {}".format(",".join(p.get("ifaces") or []) or "-"))
+            (p.get("name") or "").strip() or (p.get("slave_id") or "")[-8:],
+            ",".join(p.get("ifaces") or []) or "-"))
     # 模式表
     tbl = b.shared.get("mode_table") or {}
     src = tbl.get("source") or "—"
     ents = tbl.get("entries") or []
     _set("msrc", "模式 {} ({})".format(src, len(ents)))
-    for i in range(3):
+    #   3 筆 → **6 筆**（2026-10 使用者定案）：c3 從 3 行縮成 1 行之後，
+    #   讓出來的高度全部給這裡。
+    for i in range(MODE_ROWS):
         if i < len(ents):
             e = ents[i]
             _set("m%d" % i, "{} {}".format(e.get("hex", ""), e.get("name", "")))
