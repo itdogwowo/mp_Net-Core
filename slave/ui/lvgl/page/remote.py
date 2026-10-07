@@ -50,8 +50,11 @@ from ui.lvgl.nav import Nav, ITEM_LIST, ITEM_BUTTON
 
 REFRESH_EVERY = 10       # 每 N 幀刷新一次顯示（run % N）
 SCAN_SPREAD_MS = 500     # 掃描的抖動視窗（0 = 不抖動）。見 _do_scan
-RECENT_MS = 10000        # 多久內聽到算「綠」（10s）
-STALE_MS = 60000         # 超過這個算「紅」（60s）；中間是「黃」
+# ★ RECENT_MS / STALE_MS 已**不再用來上色**（2026-10：時間衰減的顯示
+#   結構不適合這裡，改成看「關係狀態」，見 _row_color）。
+#   留著是因為 _peer_label 的除錯輸出還會參考，而且門檻值本身沒變。
+RECENT_MS = 10000        # 多久內聽到算「剛見過」（除錯 / 未來用）
+STALE_MS = 60000         # 多久沒聽到算「很久」（除錯 / 未來用）
 SEL_BG = 0xD2E3FC        # 選中列的底色（淺藍）—— 刻意不用 PRIMARY 的深藍，
                          # 否則狀態色（綠/黃/紅）在上面讀不出來
 BULLET = "\u25CF"        # ● —— ★ 這個字元**必須在字型子集裡**
@@ -423,19 +426,53 @@ def build():
 # ══════════════════════════════════════════════════════════════════
 #  刷新
 # ══════════════════════════════════════════════════════════════════
-def _age_color(age):
-    """「距離上次收到它多久」→ 顏色（使用者定案的綠／黃／紅）。
+def _is_target(r):
+    """這一筆是不是我認的目標（在 `@node.targets` 裡）。"""
+    node = _kv().shared.get("node") or {}
+    cid = r.get("cid")
+    sid = (r.get("slave_id") or "").upper()
+    for t in (node.get("targets") or []):
+        tc = t.get("cid")
+        if cid is not None and tc is not None:
+            try:
+                if int(tc) == int(cid):
+                    return True
+            except Exception:
+                pass
+        if sid and str(t.get("slave_id") or "").upper() == sid:
+            return True
+    return False
 
-    ★ 這是**射頻有沒有聽到它**，不是協定上的在線 —— 對端關機、跑掉、換頻道
-      都會讓它變紅。名字刻意叫 age 而不是 online，免得被當成權威狀態。
+
+def _row_color(r):
+    """列的顏色 = **關係狀態**，不是時間。
+
+    ══════════════════════════════════════════════════════════════════
+    ★ 使用者 2026-10 定案：舊版拿 `age_ms` 做綠→黃→紅的**時間衰減**，
+      那個結構不適合表達這裡要講的事。
+    ══════════════════════════════════════════════════════════════════
+    為什麼時間衰減不對：
+      「掃描成功」建立的是一個**關係**（我知道你是誰、你在哪個 MAC），
+      那個關係不會因為 10 秒過去就失效。用 age 上色會變成
+      「按掃描 → 綠 → 幾秒後自己變琥珀 → 再變紅」，
+      看的人只會困惑：我又沒做什麼，它為什麼變了？
+      （而且對端只是**沒有再講話**，不代表它離線。）
+
+    所以改成問「**我跟它是什麼關係**」——三個狀態都是**穩定**的，
+    只在使用者真的改變關係時才變：
+
+        綠   SUCCESS  = 我認的目標（在 @node.targets 裡）
+        琥珀 WARNING  = 這次開機見過它，但還沒綁
+        灰   TEXT3    = 只有歷史記錄（從 DB 還原），這次開機還沒見到
+
+    變色的時機因此只有兩個：**掃描到它**（灰→琥珀）、**綁定它**（琥珀→綠）。
+    兩個都是使用者自己造成的動作。
     """
-    if age is None:
-        return u.TEXT3          # 從沒聽過 → 灰（不是紅：沒見過 ≠ 離線）
-    if age < RECENT_MS:
-        return u.SUCCESS        # 綠
-    if age < STALE_MS:
-        return u.WARNING        # 黃
-    return u.DANGER             # 紅
+    if _is_target(r):
+        return u.SUCCESS
+    if r.get("age_ms") is not None:
+        return u.WARNING
+    return u.TEXT3
 
 
 def _peer_label(r):
@@ -505,7 +542,7 @@ def _sync_list():
             #   舊版選中時把文字改成白色 → 使用者回報「藍底灰字，看不出狀態」。
             #   改成淺藍底之後，三個狀態色在底色上都還讀得出來。
             b.set_style_bg_color(u.C(SEL_BG if sel else u.BG), 0)
-            b.set_style_text_color(u.C(_age_color(age)), 0)
+            b.set_style_text_color(u.C(_row_color(r or {})), 0)
         except Exception:
             pass
 
@@ -569,7 +606,7 @@ def _refresh_info():
     # 選中節點 —— **只剩一行**（2026-10 使用者定案）。
     #   ★ 舊版把「最後 Nms 前 ●在線」寫在這裡，但那一格一次只能講一個節點，
     #     清單有兩台以上就看不到其他人的狀態；而且它吃掉模式表的空間。
-    #     現在狀態改用**左欄每一行的顏色**表示（見 _age_color / _sync_list），
+    #     現在狀態改用**左欄每一行的顏色**表示（見 _row_color / _sync_list），
     #     這裡只回答「我選了誰」。
     #   ★ 使用者要的是「**ID ＋ address ＋ 連接方法**都要看得到」。
     #     c3 只有 182px 寬、一行，所以精簡成 3 欄：
