@@ -1,6 +1,6 @@
 # LVGL UI 最新使用指南（2026-08 驗證版）
 
-> **用途**：`slave new/` 的 LVGL 本地 UI 層（`ui/lvgl/` + `ui_test_tool.py`）使用指南——架構、啟動方式、螢幕方向、config 設定、字型生成、導覽框架、踩坑記錄。
+> **用途**：`slave/` 的 LVGL 本地 UI 層（`ui/lvgl/` + `ui_test_tool.py`）使用指南——架構、啟動方式、螢幕方向、config 設定、字型生成、導覽框架、踩坑記錄。
 > **分類**：使用教學（02_guides）
 > **最後更新**：2026-08-18
 > **舊參考**：`mp_LVGL/ui/`（設計稿來源，只參考 UI 層面，內部數據機制不照抄）
@@ -10,7 +10,7 @@
 ## 1. 檔案對應
 
 ```
-slave new/
+slave/
 ├── ui/lvgl/
 │   ├── lvgl_init.py     # LVGL display 一次初始化 + bus reuse（對齊 i80_drv/tft_drv）
 │   ├── ui_common.py     # palette / 字型 / widget builder + mk_list/mk_led/mk_arc 等 helper
@@ -55,7 +55,7 @@ slave new/
 
 ## 3. 架構原則
 
-### 分層（對齊 slave new driver → bus → 應用）
+### 分層（對齊 slave driver → bus → 應用）
 - **硬體一律由 driver 初始化**，UI 只從 bus 取用，不自己 `machine.Encoder()`/`Pin()`。
   - encoder → `driver/enc_drv.py`（`bus.get_service("enc_list")`）
   - 確認鍵/離開鍵 → `driver/pin_drv.py`（`bus.get_service("pin_by_label")["encC"/"btn"]`）

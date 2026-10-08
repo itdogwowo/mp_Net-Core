@@ -3,7 +3,7 @@
 > **用途**：`slave/` 與 Server / PC 工具之間的二進位封包協議完整說明，包含封包格式、CRC、schema 驅動 payload、傳輸層與完整指令集。
 > **對象**：任何要新增指令、解析封包、寫 PC/Server 端對接工具的人。
 > **分類**：協議層（01_protocol）
-> **最後更新**：2026-08-19
+> **最後更新**：2026-10（補 `0x32xx` audio 域；更正域數與指令總數）
 > **實作來源**：`slave/lib/sys/proto.py`（唯一真相，以此文件描述為準）
 > **相關文件**：完整指令索引見 `02_command_index.md`；性能基準見 `08_performance_benchmark.md`
 
@@ -90,7 +90,7 @@ pkt = Proto.pack(0x1002, payload_bytes, addr=0xFFFF)
 `StreamParser` 處理 TCP/WS 的黏包與拆包：
 
 ```python
-parser = StreamParser(max_len=base_size * 2)   # app.py 預設 max_len = Buffer.size * 2
+parser = StreamParser(max_len=MAX_PAYLOAD)   # app.py / web_ui.py 都用 MAX_PAYLOAD（=8192）
 
 parser.feed(data)                    # 收進內部緩衝（viper 加速 append/compact）
 for ver, addr, cmd, payload in parser.pop():   # 生成器，撈出所有完整封包
@@ -105,7 +105,10 @@ for ver, addr, cmd, payload in parser.pop():   # 生成器，撈出所有完整�
 4. **驗 CRC32**：通過才 `yield`，失敗 → 前移 1 byte（視為錯位資料）。
 5. **max_len 保護**：避免誤同步讀到超大 LEN 造成記憶體溢出。
 
-`max_len` 由 `app.create_parser()` 設定，基礎為 `config.json` 的 `Buffer.size`（預設 16384）的 2 倍。
+`max_len` 由 `app.create_parser()` 設定為 **`MAX_PAYLOAD`（8192）**。
+
+> ⚠️ 舊版本曾用 `config.json` 的 `Buffer.size` × 2，**該 key 已不存在**，
+> 且 `Buffer.size`×2（16384×2）是現在實際值的 4 倍。以 `proto.py` 的 `MAX_PAYLOAD` 為準。
 
 ### 零拷貝快路徑：`pop_frame`（性能優化後）
 
@@ -285,21 +288,27 @@ self.learn_peer(peer)              # add_peer(mac) → 通道建立
 
 ## 6) 完整指令集
 
-指令碼分配（依 `slave/schema/` 實際內容）：
+指令碼分配（依 `slave/schema/` 實際內容；**12 個域、112 條指令**）：
 
 ```
 0x10xx — sys         系統發現/控制/任務管理/定址/遠端更新
-0x11xx — status      狀態查詢/配置更新
+0x11xx — status      狀態與設定（取 / 設 / 存）
 0x12xx — heartbeat   心跳
 0x13xx — now         ESP-NOW
 0x14xx — hw          硬體控制 + 臨時提速
 0x15xx — waiting_to_trash  待清理功能
+0x16xx — （已移除）  原 Router 執行期指令，職責併入 0x11xx + config
 0x18xx — bench       性能測試（通用接收吞吐）
 0x20xx — file        檔案傳輸/查詢
 0x22xx — ota         韌體 OTA（合作方合同）
 0x30xx — stream      pixel 串流
-0x31xx — pixel      模式播放（LED/SERVO 模式清單、播放控制）
+0x31xx — pixel      模式播放（LED/SERVO）
+0x32xx — audio       音訊播放（WAV 串流，dj_task）
 ```
+
+> - `0x16xx` 已於 2026-09 移除，編號保留不再使用（歷史說明見 `02_command_index.md` §7）。
+> - `0x32xx` 音訊域的完整指令表見 `02_command_index.md` §13；設計定案見
+>   `03_notes/13_audio_wav_stream_plan.md`、使用說明見 `02_guides/13_audio_wav_module.md`。
 
 > 各域詳細指令表已收錄在 `02_command_index.md`，本文件不再重複列出，直接前往查詢。
 
@@ -332,8 +341,8 @@ app.handle_stream(parser, pkt, transport_name="Test", send_func=print)
 | Header | 2+1+2+2+2 = 9B（不含 CRC） | 2+1+2+2+2 = **9B** |
 | CRC | CRC16-CCITT-FALSE，2B | **CRC32（binascii.crc32），4B** |
 | CRC 範圍 | VER..DATA | **VER..DATA（buffer[2:9+LEN]）** |
-| 指令域 | 0x10xx sys / 0x11xx status / 0x12xx heartbeat+fs / 0x20xx file / 0x30xx stream | 0x10xx sys / 0x11xx status / 0x12xx heartbeat / 0x13xx now / 0x14xx hw / 0x15xx wtt / 0x18xx bench / 0x20xx file / 0x22xx ota / 0x30xx stream / 0x31xx pixel |
-| Payload 類型 | 同 | 同（u8/u16/u32/i16/i32/str_u16len/bytes_fixed/bytes_rest） |
+| 指令域 | 0x10xx sys / 0x11xx status / 0x12xx heartbeat+fs / 0x20xx file / 0x30xx stream | 0x10xx sys / 0x11xx status / 0x12xx heartbeat / 0x13xx now / 0x14xx hw / 0x15xx wtt / 0x18xx bench / 0x20xx file / 0x22xx ota / 0x30xx stream / 0x31xx pixel / **0x32xx audio**（共 12 域；`0x16xx` 已移除） |
+| Payload 類型 | 同 | 同（**schema 實際只用 6 種**：u8/u16/u32/str_u16len/bytes_fixed/bytes_rest。`i16/i32` 只有 `SchemaCodec.encode` 支援，schema JSON 沒有對應 type code，見 §4.1 註記） |
 
 > `mp_Net-Light` 的 `ADD_NEW_CMD_FLOW.md` / `RUN_NETWORK_SERVER.md` 描述的組包/解析流程與本專案相同，只差 VER/CRC 常數。對接工具請以 `slave/lib/sys/proto.py` 為準。
 

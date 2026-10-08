@@ -63,11 +63,16 @@ free_dma(buf, is_dma)           # is_dma=False → no-op,bytearray 交給 GC
 - `is_dma` 旗標必須記住並帶進 `free_dma`，否則 DMA buffer 漏記憶體（heap_caps 不受 GC 管理）。
 - **禁止**在其他檔案直接 `import heap_caps`。歷史教訓：四個檔案各寫一份 try/except 樣板，全收斂到這裡了。
 
-**唯一例外** — framebuffer 用「PSRAM-first」策略，走 `tasks/jpeg_player_task.py` 自己的 `_alloc_fb()`：
+**唯一例外** — framebuffer 用「PSRAM-first」策略，走 framebuffer 自己的 `_alloc_fb()`：
 
 ```python
 # 優先序: CAP_SPIRAM (大但慢) → CAP_DMA → bytearray
 ```
+
+> ⚠️ **2026-10 更正**：本節舊版把這個例外綁在 `tasks/jpeg_player_task.py`，**該任務已刪除**
+> （見 `slave/tasks/lvgl_task.py:13`「jpeg 播放器已移除」；`0x31xx` 域已改由 pixel 模式播放使用）。
+> 「framebuffer 走 PSRAM-first、獨立於 `alloc_dma`」這個**原則仍然成立**，但不要再去找那個檔案。
+> 本文件其他位置只要提到 `jpeg_player_task.py` / `media_source.py` / `pack_source.py`，同屬已移除的舊內容。
 
 framebuffer 需要的是一次性大塊、慢速 OK，與 ring 的「內部 SRAM、快速、跨 core 一致」需求不同，所以獨立。**除非你在做 framebuffer，否則一律走 `alloc_dma`。**
 

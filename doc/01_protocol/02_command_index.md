@@ -2,9 +2,9 @@
 
 > **用途**：單一查詢表，收錄本專案全部指令域的完整指令定義。對接/新增指令前先查這裡。
 > **分類**：協議層（01_protocol）
-> **最後更新**：2026-09（移除 0x16xx router；0x11xx 改為狀態與設定）
+> **最後更新**：2026-10（補列 `0x32xx` audio 域；更正域數 11 → 12；移除 0x16xx router；0x11xx 改為狀態與設定）
 > **權威來源**：`slave/schema/*.json`；本文件是整理後的說明，衝突以 schema 為準。
-> **指令碼分配**：
+> **指令碼分配**（**12 個域、112 條指令**）：
 
 ```
 0x10xx — sys         系統發現/控制/任務管理/定址/遠端更新
@@ -19,6 +19,7 @@
 0x22xx — ota         韌體 OTA（合作方合同）
 0x30xx — stream      pixel 串流
 0x31xx — pixel      模式播放（LED/SERVO）
+0x32xx — audio       音訊播放（WAV 串流，dj_task）
 ```
 
 ---
@@ -267,6 +268,9 @@
 
 > 合作方合同（fastLED master_timer_slave 整合），**不動、不增減、不實作、不用**。
 > 完整設計見 `03_ota_protocol.md`。
+>
+> 🚫 **SCHEMA ONLY — 以下 21 條全部沒有 handler**（`slave/` 無任何 partition OTA 程式碼）。
+> 下表的方向欄是**設計意圖**，不是「現在可用」。照著送會完全沒有回應。
 
 | CMD | NAME | 方向 | Payload 摘要 |
 |---:|---|---|---|
@@ -300,7 +304,7 @@
 |-----|------|------|---------|------|
 | 0x3001 | STREAM_INFO | MCU → Server | `total_blocks(u32)` `frames_per_block(u32)` `fps(u8)` | 串流資訊 |
 | 0x3002 | STREAM_STOP | Server → MCU | (空) | 停止串流 |
-| 0x3003 | STREAM_FRAME | Server → MCU | `pixel_data(bytes_rest)` | Direct Mode 直接推幀（注意：schema JSON 未定義，由 action 直接註冊） |
+| 0x3003 | STREAM_FRAME | Server → MCU | `pixel_data(bytes_rest)` | Direct Mode 直接推幀（`stream.json` 有定義，`stream_actions.py` 直接註冊） |
 | 0x3004 | STREAM_SEEK | Server → MCU | `target_block(u32)` `target_frame(u32)` | 跳轉 |
 | 0x3005 | STREAM_PAUSE | Server → MCU | `pause(u8)` | 暫停/恢復 |
 | 0x3008 | STREAM_READY_ACK | MCU → Server | `block_id(u32)` | 準備完成 |
@@ -319,12 +323,12 @@
 
 | CMD | 名稱 | 方向 | Payload | 說明 |
 |-----|------|------|---------|------|
-| 0x3101 | MODE_LIST_QUERY | Master → MCU | `mode_type(u8)` | 查模式清單（0=全部、1=LED、2=SERVO） |
+| 0x3101 | MODE_LIST_QUERY | Master → MCU | `mode_type(u8)` | 查模式清單（0=全部、1=LED、2=SERVO、**3=AUDIO**） |
 | 0x3102 | MODE_LIST_RSP | MCU → Master | `mode_type(u8)` `count(u8)` `entries(bytes_rest)` | 清單（mode_type 回音 query；entries 每筆 = 內部 16-bit 模式 id，u16 LE，見 04_pixel_protocol §2.2） |
-| 0x3103 | MODE_GET | Master → MCU | (空) | 查目前狀態 |
-| 0x3104 | MODE_GET_RSP | MCU → Master | `mode_type(u8)` `mode_id(u8)` `elapsed_ms(u32)` `total_ms(u32)` `running(u8)` | 目前狀態 |
-| 0x3105 | MODE_SET | Master → MCU | `mode_type(u8)` `mode_id(u8)` `start_delay_ms(u16)` `brightness(u8)` | 切換模式（brightness 0–30，0xFF=不設置） |
-| 0x3106 | MODE_STOP | Master → MCU | `action(u8)` | 停止（0=暫停、1=全關閉） |
+| 0x3103 | ~~MODE_GET~~ | — | (空) | 🚫 **未實作**：schema 有定義，但**無 handler、也未由任何任務發出** |
+| 0x3104 | ~~MODE_GET_RSP~~ | — | — | 🚫 **未實作**：同上。⚠️ 這兩條是取代對方 `STATUS_QUERY/STATUS_REPORT` 的目標，對接前要先補 |
+| 0x3105 | MODE_SET | Master → MCU | `mode_type(u8)` `mode_id(u8)` `start_delay_ms(u16)` `brightness(u8)` | 切換模式（`brightness` **0–255**；**255 = 不改**，其餘照設。**0 是合法值 = 最暗/關**） |
+| 0x3106 | MODE_STOP | Master → MCU | `action(u8)` | 停止（0=暫停、1=全關閉）。**不回 ACK** |
 | 0x3107 | MODE_DETAIL_QUERY | Master → MCU | `mode_type(u8)` `mode_id(u8)` | 查單一模式細節 |
 | 0x3108 | MODE_DETAIL_RSP | MCU → Master | `mode_type(u8)` `mode_id(u8)` `total_ms(u32)` `name(str_u16len)` | 模式細節（含名稱 UTF-8） |
 

@@ -277,11 +277,20 @@ _UART_BRIGHTNESS_MAX = 31
 
 ## 9. 合併建議事項（待決策）
 
+> ⚠️ **本節為 2026-08 當時的建議，部分已於 2026-09 定案。** 現況對照見下方各項註記；
+> 定案後的正式合約是 `05_integration_overview.md`（OTA／SYNC／PIXEL 三組）。
+
 1. **統一 5-byte UART 的 mode byte**：bit6/bit7 語義衝突，需先拍板採用哪套定義（§5.1）。
-2. **新增 Master 轉譯層指令**：對方 Master↔Slave 的 `MODE_SET/MODE_NEXT/MODE_STOP/STORY_SET/POWER_OFF/POWER_ON/AUDIO_LEVEL/TIME_SYNC/INFO:*/LC:` 這批，需在 NC4 指令集新開一組（如 `0x16xx`）或直接吃對方文字指令。
+2. **新增 Master 轉譯層指令**：對方 Master↔Slave 的 `MODE_SET/MODE_NEXT/MODE_STOP/STORY_SET/POWER_OFF/POWER_ON/AUDIO_LEVEL/TIME_SYNC/INFO:*/LC:` 這批，需在 NC4 指令集新開一組或直接吃對方文字指令。
+   > **已定案**：實際做法是**併入既有域**，沒有另開新群。這裡原本舉例的 `0x16xx`
+   > 後來被用作 Router 執行期指令，且該群**已於 2026-09 整組移除**，編號不再使用。
 3. **補亮度換算**：加 `slot 0–31 → 實際 1–190` 換算，並統一本專案內部 31 vs 36 的混亂（§5.2）。
+   > **已定案**：新整合 `MODE_SET.brightness` 統一為 `0–30`（`0xFF`=不設置），舊 WTT 0–36 棄用。
 4. **補同步參數**：`0x1501` 加 `loop/storySet/startTime`（§5.3）。
+   > **已定案**：不走 `0x1501`，改用 `0x3105 MODE_SET`（含 `start_delay_ms`）。
+   > 注意 `0x100C TIME_OFFSET_APPLY` **目前只有 schema、尚未實作**。
 5. **補狀態機**：`0x1502` / STATUS 加 `RUNNING/COMPLETED/IDLE/DEV` 語義（§3 狀態表）。
+   > 狀態收斂為 `0x3104 MODE_GET_RSP` 的 `running` + `elapsed_ms`/`total_ms`。
 
 ---
 

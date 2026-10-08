@@ -16,7 +16,7 @@
 | 我方新指令 | 取代對方 |
 |---|---|
 | `MODE_LIST_QUERY/RSP` | 無（新增，對方原本沒有模式清單查詢） |
-| `MODE_GET/RSP` | `STATUS_QUERY / STATUS_REPORT`（取回 mode_type、mode_id、時間與運行狀態） |
+| `MODE_GET/RSP` | `STATUS_QUERY / STATUS_REPORT`（取回 mode_type、mode_id、時間與運行狀態）<br>🚫 **尚未實作**——schema 有定義、無 handler 也未發出。對方要遷移前必須先補這一對 |
 | `MODE_SET` | `MODE_SET` + `MODE_NEXT` + `STORY_SET`（`mode_type` 欄位同時選組別） |
 | `MODE_STOP` | `MODE_STOP` + `POWER_OFF`（`action` 欄位區分暫停／全關閉） |
 
@@ -98,7 +98,7 @@ entry (固定 2 bytes, little-endian):
 ```
 
 - Master 拿到任一筆 id，發 `MODE_SET`（0x3105）或 `MODE_DETAIL_QUERY`（0x3107）時拆回 `(mode_type, mode_id) = (id >> 8, id & 0xFF)`。
-- `count` 為 u8，上限 **255**。以 2 bytes/筆計，255 筆 = 511 bytes payload，遠低於 8K 上限，**列表不需分頁**。
+- `count` 為 u8，上限 **255**。以 2 bytes/筆計，255 筆 = **512** bytes payload，遠低於 8K 上限，**列表不需分頁**。
 - 範例（id `0x0105` = LED 組 mode 5）：entries 內 `05 01`（LE）→ Master 拆回 mode_type=1、mode_id=5。
 
 ### 2.3 `MODE_GET`（0x3103）／`MODE_GET_RSP`（0x3104）
@@ -151,9 +151,15 @@ entry (固定 2 bytes, little-endian):
   Slave 收 `MODE_SET` 後經 GlobalMode（gmode）解析：燈效與綁定音軌用**同一個 start_delay_ms** 同步起播
   （音軌的 `start_ms` 平移 delay，相對 PLAY 起播時刻）；純音效模式（mode_type=3）不帶燈效、
   純燈效模式自動停音 —— 模式是原子表演單元。設計詳見 `doc/03_notes/13_audio_wav_stream_plan.md` §6。
-- `brightness`：**亮度設定**（`0`–`30`，`0`=最暗/關、`30`=最亮）；`0xFF`（255）= **不設置**（保留目前亮度，0 是合法值，不能用 0 當「不改」）。
+- `brightness`：**亮度設定**（**`0`–`254`**，`0`=最暗/關、`254`=接近最亮）；**`255` = 不設置**（保留目前亮度）。
+  ⚠️ **`0` 是合法值，不能用 0 當「不改」**——所以「不改」用 `255`。
+  （實作：`pixel_actions.py` 只在 `brightness != 255` 時才呼叫 `set_brightness()`；
+  `PixelController.set_brightness` 夾在 `0`–`255`，APA102 亮度頭取 `>>3`。）
+  > 本行先前寫「`0`–`30`、`0xFF`=不設置」，範圍錯誤且與實作相反（實作曾把 `0` 當成 falsy 換成最亮，已修正）。
 - 收到 `MODE_SET` 即離開 DEV、離開省電、解除暫停；若在暫停中則**重頭開始**播放新模式。
-- Slave 執行後回 `MODE_GET_RSP` 作為 ACK。
+- **`MODE_SET` 不回 ACK**（不送 `MODE_GET_RSP`）。Master 若要確認結果，需另外查詢。
+  > 本行先前寫「回 `MODE_GET_RSP` 作為 ACK」，但 `on_mode_set` 只寫 gmode / `bus.shared` 並印 log，
+  > 且 `0x3104 MODE_GET_RSP` **本身尚未實作**。
 
 ### 2.5 `MODE_STOP`（0x3106）
 
@@ -221,7 +227,7 @@ Master                            Slave
   │     mode_type (0=全部/1=LED/2=SERVO)
   ├───────────────────────────────>│
   │  2. MODE_LIST_RSP   (0x3102)   │  ← 回音 mode_type + 攞晒 ID + total_ms
-  │     mode_type + count + N 筆 6B entry │
+  │     mode_type + count + N 筆 2B entry │
   │<───────────────────────────────┤
   │  3. MODE_DETAIL_QUERY (0x3107)  │  對「自己要用」嘅模式逐個問
   │     mode_type, mode_id         │
@@ -241,8 +247,8 @@ Master                            Slave
 | 限制 | 數值 | 計法 |
 |---|---|---|
 | `count` 上限 | **255 筆** | u8 極限 |
-| list payload | 1532 bytes（mode_type 1B + count 1B + 255 筆 × 6B） | 遠低於 8K |
-| 8K payload 可容 | 1365 筆（6B/筆） | 實際用唔到，count 先爆 |
+| list payload | 512 bytes（mode_type 1B + count 1B + 255 筆 × 2B） | 遠低於 8K |
+| 8K payload 可容 | 4095 筆（2B/筆） | 實際用唔到，count（u8）先爆 |
 | name 上限 | 65535 bytes（u16 len） | 實際受 8K payload 約束 |
 
 **結論：** 列表唔需要分頁；樽頸係 `count:u8`（255）。若模式總數超過 255，可按組別（`mode_type`）分開查詢；只有當**單一組**都會超過 255 時，先需要升級 `count` 型別（目前無此需求）。
@@ -251,7 +257,7 @@ Master                            Slave
 
 | 情況 | 行為 |
 |---|---|
-| `MODE_LIST_QUERY.mode_type` 唔合法（3–255） | Slave 回 `MODE_LIST_RSP`：`mode_type` 回音=0、`count=0`（空列表） |
+| `MODE_LIST_QUERY.mode_type` 唔合法（**4–255**；3=AUDIO 合法） | Slave 回 `MODE_LIST_RSP`：`mode_type` **回音 query 值**、`count=0`（空列表） |
 | `MODE_DETAIL_QUERY` 嘅 `(mode_type, mode_id)` 唔喺清單內 | Slave 回 `mode_type=0, mode_id=0, name 空`（或忽略, 待決） |
 | Slave 收唔到 / Master 等唔到回覆 | Master 視為 UNKNOWN（`mode_type=0, mode_id=0`），保留上次有效狀態 |
 | `name_len=0` | 空名, 合法（例如機械模式無名） |
@@ -307,7 +313,7 @@ Master 定期(約 1Hz，異常時 5Hz) round-robin 對每顆 Slave:
 |---|---|---|---|
 | 1 | 播完（COMPLETED）如何表達 | 草案：`running=0` + `elapsed>=total` 由 Master 輪詢推得 | 對方原「全部 slave 播完 → 提早跳段」機制退化成輪詢式 |
 | 2 | `mode_type=2+` 是否留給 COMPLETED 等 | 目前 SERVO=2 已用；3+ 保留 | 若要「播完當下主動通知」，需新值或新指令 |
-| 3 | 亮度（brightness）走哪條通道 | ✅ 已併入 `MODE_SET.brightness`（`0`–`30`，`0xFF`=不設置） | 對方 `BRIGHTNESS` 併入 MODE_SET；舊 WTT 亮度（0–36）棄用 |
+| 3 | 亮度（brightness）走哪條通道 | ✅ 已併入 `MODE_SET.brightness`（`0`–`254`，`255`=不設置） | 對方 `BRIGHTNESS` 併入 MODE_SET；舊 WTT 亮度（0–36）棄用 |
 | 4 | 暫停後續播 | 目前一律重頭開始 | 若要續播，`MODE_SET` 需加 `resume_from_ms` 欄位 |
 
 ---
@@ -324,7 +330,7 @@ Master 定期(約 1Hz，異常時 5Hz) round-robin 對每顆 Slave:
 | `MODE_GET_RSP.running` | `enableRunStory`（＋暫停旗標，若實作暫停） |
 | `MODE_GET_RSP.mode_type=0, mode_id=1` | `isInDevMode` |
 | `MODE_SET.mode_type` | 取代 `STORY_SET`（`set_type`） |
-| `MODE_SET.brightness` | 對方 `BRIGHTNESS`（`0x04`），範圍 1–190 映射到 0–30；`0xFF`=不設置 |
+| `MODE_SET.brightness` | 對方 `BRIGHTNESS`（`0x04`），範圍 1–190 需映射到 0–254；`255`=不設置 |
 | `MODE_DETAIL_RSP` | `storyModes`／`servoStoryModes` 的 `STORY_MODE_ENTRY(fn, name, seconds)`（name 由 list 移到 detail） |
 | `MODE_STOP action=1` 等價行為 | 現有 `Power: off` 處理（停 story + 清燈 + `isPowerSaveMode`） |
 | `start_delay_ms` | 現有 `scheduledLocalStartMs` 機制（改以「收到後 N ms」計算，取代 masterStart+offset） |
@@ -338,7 +344,8 @@ Master 定期(約 1Hz，異常時 5Hz) round-robin 對每顆 Slave:
 1. ✅ `slave/schema/pixel.json` 已建立（0x3101~0x3108，含 `mode_type`）。
 2. ✅ `slave/schema/sys.json` 已併入時鐘同步（0x100A~0x100C）。
 3. 新增 `slave/action/pixel_actions.py`：
-   - 註冊 `MODE_LIST_QUERY / MODE_GET / MODE_SET / MODE_STOP / MODE_DETAIL_QUERY` 五個 handler。
+   - 註冊 `MODE_LIST_QUERY / MODE_LIST_RSP / MODE_SET / MODE_STOP / MODE_DETAIL_QUERY / MODE_DETAIL_RSP` **六個** handler。
+     **`MODE_GET / MODE_GET_RSP` 尚未實作、不在其中**（見 §2.4 註記與 `02_command_index.md`）。
    - 串接現有播放控制（WTT／PixelController／story 排程）作為真實模式執行體。
 4. `slave/action/sys_actions.py` 加入 `TIME_SYNC / TIME_SYNC_RSP / TIME_OFFSET_APPLY`（選用）。
 5. `slave/action/registry.py` 加入 `pixel_actions.register(app)`。

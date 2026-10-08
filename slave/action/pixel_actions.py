@@ -73,11 +73,17 @@ def on_mode_set(ctx, args):
     mode_type = args.get("mode_type", 0)
     mode_id = args.get("mode_id", 0)
     start_delay_ms = args.get("start_delay_ms", 0) or 0
-    # 🔧 亮度: 有輸入用輸入, 沒輸入/0 預設 255 (全亮)。套用到渲染核心 (APA102 亮度頭)。
-    brightness = args.get("brightness") or 255
-    st = bus.get_service("st_pixel")
-    if st is not None and hasattr(st, "set_brightness"):
-        st.set_brightness(brightness)
+    # 亮度 0-255：255 = 不改（沿用全域 u8 約定，見 waiting_to_trash_actions._NO_CHANGE）；
+    # 0 是合法值（= 最暗/關，APA102 亮度頭 >>3 後為 0）。
+    # ⚠️ 不可寫 `args.get("brightness") or 255` —— 那會把「要求全暗」的 0 換成「最亮」。
+    _bri = args.get("brightness")
+    if _bri is None:
+        _bri = 255
+    brightness = max(0, min(255, int(_bri)))
+    if brightness != 255:
+        st_bri = bus.get_service("st_pixel")
+        if st_bri is not None and hasattr(st_bri, "set_brightness"):
+            st_bri.set_brightness(brightness)
     # 停用串流供給鏈 (stream_active) 與渲染旗標, 避免與本地 show 衝突
     bus.shared.update({
         "stream_active": False,

@@ -343,13 +343,21 @@ lbl.set_text(str(self._t.remaining_ms() // 1000))   # 本期已過幾秒
 
 ## 8. 驗證狀態
 
+⚠️ **本節數字目前無法複核，請勿引用。**
+
 | 測試 | 項數 | 環境 | 結果 |
 |---|---:|---|---|
 | `test/timer/test_timer.py` | 27 | CPython + 虛擬時鐘 | 全 PASS |
 | `test/timer/test_bus_speed_migration.py` | 15 | CPython + 虛擬時鐘 + 假 UART | 全 PASS |
 | `test/timer/test_timer_device.py` | **40** | **ESP32-C3 + ESP32-S3 真機** | 兩板皆全 PASS |
 
-> `test/` 在 `.gitignore` 內（本機測試工具，不進版控）。
+> 🚫 **`test/timer/` 目錄在 repo 內不存在**（`test/` 下只有 `audio buffer husb238 motor pixel
+> protocol sd sys tft thread ui`），`test/timer*` 檔案全樹搜尋亦無。
+> 因此上表 82 項的 PASS 紀錄**目前沒有可重跑的依據**。
+> 本節內容為當時執行結果的記載；若要把它當成模組正確性的證據，**請先補回測試檔**。
+>
+> 附註：`test/` 在 `.gitignore` 內，但**已有 59 個檔案在版控中**（ignore 只對未追蹤檔案生效），
+> 所以「測試不進版控」這個說法不完全成立——`test/timer/` 是**根本沒被提交**，不是被 ignore 掉。
 
 ### 加速技巧研究（實機驗證）
 

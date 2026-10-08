@@ -4,7 +4,7 @@
 > **分類**：筆記（03_notes）
 > **狀態**：規劃中（尚未實作）
 > **最後更新**：2026-09-15
-> **相關文件**：[多級緩衝架構](02_buffer_architecture.md)、[核心實例](09_cores.md)、[NC4 協議](../01_protocol/01_nc4_protocol.md)、[完整指令索引](../01_protocol/02_command_index.md)、[檔案更新流程](../02_guides/10_file_update.md)、[上傳 WDT 診斷](12_upload_wdt_diagnosis.md)
+> **相關文件**：[多級緩衝架構](02_buffer_architecture.md)、[核心實例](../02_guides/09_cores.md)、[NC4 協議](../01_protocol/01_nc4_protocol.md)、[完整指令索引](../01_protocol/02_command_index.md)、[檔案更新流程](../02_guides/10_file_update.md)、[上傳 WDT 診斷](12_upload_wdt_diagnosis.md)
 > **對照實作**：`tools/PC/NetBusMaster.py`（PC 端主控，9,800 行／398KB）——**不是要移植的程式碼，是行為規格書**
 
 ---

@@ -1,6 +1,6 @@
 # TFT + lcd_bus 最新使用指南（2026-08 驗證版）
 
-> **用途**：`slave new/` 的 Python 層（bus_adapter / TFT.py / jpeg_player_task）使用指南——顯示 API 選擇、decode/DMA 重疊手法、測試工具。
+> **用途**：`slave/` 的 Python 層（bus_adapter / TFT.py / jpeg_player_task）使用指南——顯示 API 選擇、decode/DMA 重疊手法、測試工具。
 > **分類**：使用教學（02_guides）
 > **最後更新**：2026-08-18
 > **對應 firmware**：最新（`mp_Make-Tools` build，含 lcd_bus 效能修復）
@@ -11,7 +11,7 @@
 ## 1. 架構總覽
 
 ```
-MicroPython 層（slave new/）
+MicroPython 層（slave/）
   jpeg_player_task / tft_dma_bench / tft_pipeline_visual
         │  lcd.set_window / show_async / present / write_data_async
         ▼
@@ -147,7 +147,7 @@ for i in range(total):
 
 ## 6. TFT Chunked Write Session API（補充）
 
-`slave new/lib/hw/TFT.py` 基類新增的 chunked 寫入會話，用於需要精確控制「分塊傳輸 + 進度查詢」的場景（`begin_write` / `write_pixels` / `write_pixels_nonblock` / `end_write`）。
+`slave/lib/hw/TFT.py` 基類新增的 chunked 寫入會話，用於需要精確控制「分塊傳輸 + 進度查詢」的場景（`begin_write` / `write_pixels` / `write_pixels_nonblock` / `end_write`）。
 
 ### 原理
 
@@ -190,7 +190,7 @@ lcd.end_write()
 
 ---
 
-## 7. 測試工具（slave new/）
+## 7. 測試工具（slave/）
 
 | 工具 | 用途 |
 |---|---|

@@ -97,8 +97,10 @@
   "id": 1,
   "name": "demo1",
   "index": 1,            // 大隊列排序備援：先比 index 再比 id，越少越前（list 順序為主）
-  "play_count": 1,       // 0=永遠跳過; 1..N=只在前 N 輪出現; -1=常駐每輪
-  "play_interval": 1,    // 每隔 N 輪出現一次（1=每輪）
+  "play_loop": -1,       // 總共出現幾次循環：0=不播; N=最多 N 次; -1=常駐每輪（預設 -1）
+  "play_count": 1,       // 同一個 loop 中連播幾次：0/缺省→1; -1=無限連播
+  "play_interval": 0,    // 相隔多少個循環播一次：0=每個循環都播; 1=隔 1 循環（=每 2 循環一次）
+  "maxF": 0,             // 每次播放最大幀數；0=不限制
   "mapping": "gundam",   // 選用：預設 mapping（id 或 name）；可省略
   "map": [
     { "group": "1.1", "effect": 1, "write": "rgb" },
@@ -106,6 +108,10 @@
   ]
 }
 ```
+
+> ⚠️ **本節曾寫錯欄位名與語意**（舊版寫成 `play_count` = 出現輪數、`play_interval` = 每 N 輪）。
+> 2026-10 已依 `slave/tasks/pixel_task.py:296-302, 478-492` 更正。
+> **「出現幾輪」是 `play_loop`，不是 `play_count`。** 現有 mode 檔（`demo_eyes.json`、`motor_sine.json`）都用 `play_loop` + `maxF`。
 
 - **group 複合引用**：`mapping.group`，兩邊各可用 id 或 name（`gundam.motors` / `1.motors` / `gundam.1` / `1.1`）；無點號時以頂層 `mapping` 為預設。
 - effect 同用 id 或 name 引用。
@@ -136,13 +142,14 @@
 - 例外：**下一個要播的 mode 與剛播完的是同一個**（如播放清單連續放同一 mode）→ 重用現有
   generator（`restart()` + 重置 done），不釋放不重建，避免重複播放時「剷除 → 重建」造成卡頓。
   若 generator 不支援 `restart()`（原生 generator 物件）→ 自動回退剷除重建。
-- 每輪依播放參數決定該 mode 是否出現：
-  - `play_count==0` → 永遠跳過
-  - `play_count>0` 且 `pass > play_count` → 這輪起消失（開頭段）
-  - `(pass-1) % play_interval != 0` → 這輪跳過（週期性）
-  - 其餘（含 `play_count=-1` 常駐）→ 播放
-- 例：`[intro(count=1), A(-1), B(-1)]` → 第 1 輪 intro+A+B，第 2 輪起 A+B 循環。
-- 例：`ticker(count=1, interval=5)` → 第 1、6、11…輪才出現。
+- 每輪依播放參數決定該 mode 是否出現（`_should_play`，`pixel_task.py:478-492`）：
+  - `play_loop==0` → 永遠跳過
+  - `(pass-1) % (play_interval+1) != 0` → 這輪跳過（週期性）
+  - `play_loop>0` 且已出現次數 ≥ `play_loop` → 不再出現
+  - 其餘（含 `play_loop=-1` 常駐）→ 播放
+- `play_count` 是**同一次 loop 內連播幾次**，不影響「哪幾輪出現」。
+- 例：`[intro(play_loop=1), A(-1), B(-1)]` → 第 1 輪 intro+A+B，第 2 輪起 A+B 循環。
+- 例：`ticker(play_loop=1, play_interval=4)` → 第 1、6、11…輪才出現。
 
 ---
 

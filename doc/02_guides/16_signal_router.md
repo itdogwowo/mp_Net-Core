@@ -12,9 +12,9 @@
 >           ⚠️ **2026-10 追記：② 那次「統一」把原本設計的兩個本機來源摺成了一個。**
 >              這是「絕對內部執行」這條路徑消失的原因 —— 見 **§3.4**，待辦見
 >              `todo/06_router_local_paths.md`。
->           - 測試檔現況（**2026-10 逐檔核對，舊版這行寫反了**）：
->             · `test/protocol/router_selftest.py` —— **存在，但壞的**（§1 就掛；根因見 §3.4）
->             · `test/protocol/router_self_selftest.py`、`router_board_test.py` —— **不存在於 repo**
+>           - 測試檔現況（**2026-10 逐檔核對；本行曾寫反，已更正**）：
+>             · `test/protocol/router_self_selftest.py` —— **存在**（離線自測，可跑）
+>             · `test/protocol/router_selftest.py` —— **不存在於 repo**（舊版文件多處引用，需一併更正）
 > **最後更新**：2026-10（§3.4 追記兩個本機來源的設計意圖；修正測試檔現況；見 `todo/06`）
 
 ---

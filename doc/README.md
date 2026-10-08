@@ -1,7 +1,7 @@
 # mp_Net-Core 文件索引
 
 > **用途**：全部文件的單一入口。文件依主題分成三個分類，從這裡找你要的。
-> **最後整理**：2026-08-21
+> **最後整理**：2026-10（補齊 `03_notes` 索引；更正 `02_guides` 檔名筆誤）
 > **歸檔**：舊版原始文件（改版前）保留在 `_archive/`，內容以分類目錄下的新版為準。
 
 ## 三個分類怎麼選
@@ -12,6 +12,8 @@
 | **02_guides** 使用教學 | 要在 slave 上寫功能 / 用模組的人 | 各模組 API、怎麼接、怎麼跑、踩坑 |
 | **03_notes** 筆記 | 維護者 / 想了解設計脈絡的人 | 調查記錄、架構筆記、計劃、變更紀錄 |
 
+**數量**：`01_protocol` 9 份、`02_guides` 18 份、`03_notes` 20 份。
+
 ---
 
 ## 01_protocol — 協議層
@@ -19,10 +21,10 @@
 | 文件 | 內容 |
 |---|---|
 | [01_nc4_protocol.md](01_protocol/01_nc4_protocol.md) | **NC4 封包協議（唯一真相）**：封包格式 / CRC32 / schema payload / 傳輸層 / 定址模型 |
-| [02_command_index.md](01_protocol/02_command_index.md) | **完整指令索引**：全部指令域（0x10xx~0x32xx）的指令表總收錄 |
+| [02_command_index.md](01_protocol/02_command_index.md) | **完整指令索引**：12 個指令域、112 條指令（`0x10xx`~`0x32xx`）總收錄 |
 | [03_ota_protocol.md](01_protocol/03_ota_protocol.md) | OTA 0x22xx 設計：零常數約定 / 指令定義 / 長度限制 / 推薦流程 |
 | [04_pixel_protocol.md](01_protocol/04_pixel_protocol.md) | Pixel 0x31xx：mode_type 語義 / byte 佔位 / 行為約定 / 時鐘同步 |
-| [05_integration_overview.md](01_protocol/05_integration_overview.md) | 協議整合總規格（與 master_timer_slave 統一合約） |
+| [05_integration_overview.md](01_protocol/05_integration_overview.md) | 協議整合總規格（與 master_timer_slave 的三組整合指令統一合約） |
 | [06_migration_guide.md](01_protocol/06_migration_guide.md) | 對方指令遷移對照（人讀版：每條舊指令變成什麼） |
 | [07_merge_comparison.md](01_protocol/07_merge_comparison.md) | 兩套系統全景比對（含對方 RS485 catalog 留存） |
 | [08_performance_benchmark.md](01_protocol/08_performance_benchmark.md) | 網路 + 協議性能基準（甜蜜點 / 瓶頸 / 修改方法） |
@@ -58,14 +60,30 @@
 | [01_changelog.md](03_notes/01_changelog.md) | 更新紀錄：遠端更新鏈路 / 臨時提速 / lib 三級分類 / 解碼性能 |
 | [02_buffer_architecture.md](03_notes/02_buffer_architecture.md) | 多級緩衝架構（L0~L5：分配 / Ring / 傳輸 / 協議 / 應用 / 輸出） |
 | [03_ota_design_reference.md](03_notes/03_ota_design_reference.md) | ESP-IDF partition OTA 機制參考（寫入 / 確認 / 回退） |
-| [04_rs485_de_timing.md](03_notes/04_rs485_de_timing.md) | RS485 DE 使能時序：20ms 調查 + 交接（20ms→1ms + rs485_hd） |
-| [05_psram_zero_block_plan.md](03_notes/05_psram_zero_block_plan.md) | PSRAM framebuffer 零阻塞直送計劃（方案 A / B） |
-| [06_raw_sd_plan.md](03_notes/06_raw_sd_plan.md) | Raw SD 繞過 FAT 兩階段計劃（Python 層 + Async C module） |
+| [04_rs485_de_timing.md](03_notes/04_rs485_de_timing.md) | RS485 半雙工 DE 使能時序：20ms 調查 + 交接（20ms→1ms + rs485_hd） |
+| [05_psram_zero_block_plan.md](03_notes/05_psram_zero_block_plan.md) | **PLAN**｜PSRAM framebuffer 零阻塞直送計劃（方案 A / B） |
+| [06_raw_sd_plan.md](03_notes/06_raw_sd_plan.md) | **PLAN**｜Raw SD 繞過 FAT 兩階段計劃（Python 層 + Async C module） |
 | [07_pixel_test_results.md](03_notes/07_pixel_test_results.md) | pixel 測試結果：準確度 / 性能基準 / 未來方向 |
-| [17_tx_render_center_plan.md](03_notes/17_tx_render_center_plan.md) | **統一渲染輸出中心（TxCenter）**：問題與目標（為什麼要把所有匯流排的發射集中到單一模組；做法待設計） |
+| [08_night_test_results.md](03_notes/08_night_test_results.md) | NC4 + File + SPEED 一晚自動化測試結果（2026-08-22 夜） |
+| [09_upload_performance_diagnosis.md](03_notes/09_upload_performance_diagnosis.md) | 上傳效能診斷：為什麼停在 70KB/s |
+| [10_upload_performance_changes.md](03_notes/10_upload_performance_changes.md) | 上傳效能改動清單與回滾指南 |
+| [11_firmware_update_fix.md](03_notes/11_firmware_update_fix.md) | 固件更新「無限還原／永遠顯示需要更新」修復 + 真機驗證 |
+| [12_upload_wdt_diagnosis.md](03_notes/12_upload_wdt_diagnosis.md) | 上傳大檔「驗證時重啟」追查 + 分批驗證／動態離線判斷改動 |
+| [13_audio_wav_stream_plan.md](03_notes/13_audio_wav_stream_plan.md) | **定案**｜音訊（WAV）串流播放模組計劃（`0x32xx` 設計來源） |
+| [14_audio_p4_ptr16_bug.md](03_notes/14_audio_p4_ptr16_bug.md) | P4（RISC-V）viper `ptr16` 讀 PCM 當無號數 → 拆聲爆音（已修） |
+| [15_audio_p4_block_vs_irq_espnow.md](03_notes/15_audio_p4_block_vs_irq_espnow.md) | P4 + 外接 C6 音訊播放「加速」調查 + ESP-NOW 不可用 |
+| [16_pixel_panel_temp_hacks.md](03_notes/16_pixel_panel_temp_hacks.md) | Pixel 控制面板臨時改動清單（**架構待重整**） |
+| [17_esp_stream_controller.md](03_notes/17_esp_stream_controller.md) | ESP Stream Controller 設計（板子自己當主控） |
+| [17_tx_render_center_plan.md](03_notes/17_tx_render_center_plan.md) | **PLAN**｜統一渲染輸出中心（TxCenter）：為什麼要把所有匯流排的發射集中到單一模組；**做法待設計** |
+| [18_pixel_panel_control_path.md](03_notes/18_pixel_panel_control_path.md) | 面板裝置的 pixel 控制路徑（現況盤點 + 設計草案） |
 | [19_remote_control_plan.md](03_notes/19_remote_control_plan.md) | **遙控器強化計劃（配對 / 綁定 / 晶片開關）**：架構共識（配對=建立通道、方向=指令確認）、零件盤點、P0~P7 分階段、關鍵踩坑、環境備忘。**自足文件，可單獨接手** |
+| [20_soft_reboot_residue.md](03_notes/20_soft_reboot_residue.md) | Soft reboot 的資源殘留：哪些會漏、哪些會自己回來 |
 
-> ⚠️ 本表目前只列到 07（＋17、19）；`03_notes/` 實際已有 08~18（audio 系列、upload/WDT 診斷、panel 相關等），索引待補。
+> 📌 **`03_notes/` 有兩份編號同為 17**（`17_esp_stream_controller.md` 與 `17_tx_render_center_plan.md`），
+> 是歷史遺留；兩份都是獨立主題，**請以完整檔名區分**，不要只寫「17」。
+>
+> 📌 **標 `PLAN`／`待設計`／`架構待重整` 者為計劃或未定案文件**，不是現況描述。
+> 要了解「現在怎麼運作」請看 `01_protocol/` 與 `02_guides/`。
 
 ---
 

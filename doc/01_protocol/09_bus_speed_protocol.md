@@ -52,7 +52,7 @@ IDLE ── SPEED_SET 切速 ──▶ SYNCING ── SPEED_COMMIT ──▶ COM
 |---|---|---|---|
 | `STATE_IDLE` | 0 | 一般速度 | 無 |
 | `STATE_SYNCING` | 1 | 已切速、待 COMMIT | **計時中**（`timeout_at`） |
-| `STATE_COMMITTED` | 2 | 已鎖定新速 | 已取消（`timeout_at=0`） |
+| `STATE_COMMITTED` | 2 | 已鎖定新速 | **另有 idle 計時**（見下方 ⚠️） |
 
 - `bus_speed_set()`：`bus_type != 7`（非 UART）或找不到 UART → 回 `ok=0`（not supported / 找不到）。
 - `bus_speed_commit()`：狀態不是 SYNCING、或 bus_type/bus_id 不符 → 回 `ok=0`。
@@ -109,20 +109,27 @@ slave 行為（`on_speed_set` → `bus_speed_set`）：
 
 ### Step 2 — 同步點：雙方切速
 
-- **slave**：`on_speed_set` 內回 ACK 之前就已 `uart.init()` 切速（同 handler 內，見 `bus_speed_set` 第 73 行）。
+- **slave**：`on_speed_set` **先回 ACK，才在同一 handler 內切速**——實際順序是
+  `bus_speed_set()`（只記錄狀態，**不切速**）→ 送出 `0x1404 SPEED_ACK` → `bus_speed_apply()` 才做 `uart.init()`。
+  依據：`hw_actions.py:95-103`、`bus_speed.py:116, 171`。
 - **master**：收到 `SPEED_ACK` 後**立即**把對應 UART 的 baud 切到 `target_speed`（921600）。
 
-> 這個「送出 ACK 即切速」的設計讓雙方幾乎同時換速。master 端收到 ACK 之後的一切通訊都必須用新速。
+> 這個「送出 ACK 後立刻切速」的設計讓雙方幾乎同時換速。master 端收到 ACK 之後的一切通訊都必須用新速。
+>
+> ⚠️ **由此產生一個重要後果**：ACK 是在切速**之前**送出的，所以
+> **ACK 一定是 `ok=1`** —— 即使接下來 `uart.init()` 失敗也一樣（失敗只會觸發 `_revert()`，
+> 回傳值被丟棄）。**master 無法從 ACK 得知切速失敗**，只會發現新速下沒有回應。
+> 詳見 §4 失敗處理表的註記。
 
 ### Step 3 — 敲門驗證（確認新速通）
 
 切速後 master 用**既有指令**敲門，確認新速下雙向都通：
 
-- `STATUS_GET`（0x1101 `{query_type:0}`）→ 等 `STATUS_RSP`（0x1102）
+- `STATUS_GET`（0x1101 `{keys:""}` = 全部）→ 等 `STATUS_RSP`（0x1102）
 - 或 `IDENTIFY_REQ`（0x100D `{reply_cid:...}`）→ 等 `IDENTIFY_RSP`（0x100E）
 
 ```
-M→S  STATUS_GET {query_type:0}
+M→S  STATUS_GET {keys:""}       ← 舊欄位 query_type 已移除，見 02_command_index §2
 S→M  STATUS_RSP {status_json:...}      ← 收到 = 新速雙向通
 ```
 
@@ -136,7 +143,14 @@ S→M  STATUS_RSP {status_json:...}      ← 收到 = 新速雙向通
 M→S  SPEED_COMMIT {bus_type:7, bus_id:0}
 ```
 
-slave 行為（`bus_speed_commit`）：狀態 → `COMMITTED`、`timeout_at=0`（不再回滾）。此後新速持續有效，直到 `SPEED_REVERT`。
+slave 行為（`bus_speed_commit`）：狀態 → `COMMITTED`。
+**⚠️ 但 COMMITTED 並非永久鎖定**：`bus_speed_commit` 會**再開一個 idle 計時器**
+（`_t_idle`，長度 = 同一個 `timeout_ms`），`bus_speed_poll()` 在它到期時會呼叫 `_revert()`
+（`bus_speed.py:233-235`、`191-194`）。**所以新速下只要靜默超過 `timeout_ms`，就會自動掉回舊速。**
+
+> 含意：`timeout_ms` **同時是 SYNCING 的保險、也是 COMMITTED 的 idle 上限**。
+> 長檔案傳輸若有超過 `timeout_ms` 的空檔，**會中途被切回 115200**。
+> 要維持新速請調大 `timeout_ms`，或在傳輸期間保持流量。
 
 ### Step 5 — 傳輸（全程新速）
 
@@ -150,7 +164,7 @@ M→S  FILE_CHUNK {file_id, offset, data}
 M→S  FILE_END {file_id}
 ```
 
-> 傳輸期間 slave 維持 `COMMITTED`，不會回滾。`CircuitTask.loop` 照跑（`bus_speed_poll()` 對 COMMITTED 不做任何事）。
+> 傳輸期間 slave 維持 `COMMITTED`。`CircuitTask.loop` 照跑（`bus_speed_poll()` 在 COMMITTED 下**只在 idle 計時到期時**動作）。
 
 ### Step 6 — SPEED_REVERT（還原）
 
@@ -179,7 +193,7 @@ S→M  SPEED_STATUS {state:0, cur_speed:115200, ...}
 |---|---|---|
 | SPEED_SET 的 bus_type ≠ 7 | 回 `SPEED_ACK {ok:0}`（not supported） | 確認 bus_type 用 `hw_manager.HW.UART=7` |
 | SPEED_SET 找不到 UART（bus_id 超界） | 回 `SPEED_ACK {ok:0}` | 確認 bus_id 是 `uart_list` 索引（config `UART.list` 順序） |
-| `uart.init()` 切速失敗（如 baud 不支援） | 回 `SPEED_ACK {ok:0, cur_speed:舊速, target_speed:目標}`，不切速 | 換一組 baud |
+| `uart.init()` 切速失敗（如 baud 不支援） | **ACK 已經先送出去了（一定 ok=1）**，之後只會 `_revert()` 回舊速，master 收不到任何錯誤 | **無法從 ACK 判斷**；只能靠 Step 3 敲門失敗來發現，等 `timeout_ms` 後用舊速 `SPEED_QUERY` 確認 |
 | 切速後敲門失敗（新速不通） | 維持 SYNCING，`timeout_ms` 到 → 自動回滾舊速 → IDLE | **不要重試新速**；等 `timeout_ms` 過去，用舊速 `SPEED_QUERY` 確認 `state=0` 後，換 baud 或檢查接線/極性 |
 | master 忘了 COMMIT（slave 一直 SYNCING） | `timeout_ms` 到 → 自動回滾 | 同上；這是 `timeout_ms` 存在的意義 |
 | 傳輸中想中止 | slave 維持 COMMITTED 直到 REVERT | 發 `SPEED_REVERT` 還原（或重開機；重開機後狀態自然回 IDLE，因為狀態存內存 `bus.shared`） |
@@ -192,7 +206,7 @@ S→M  SPEED_STATUS {state:0, cur_speed:115200, ...}
 
 ## 5. 狀態機與既有任務的互動
 
-- **回滾檢查在 `CircuitTask.loop`**（`slave/tasks/circuit.py:152` `bus_speed.bus_speed_poll()`），每輪都跑，**不依賴收到指令**。這解掉一個死結：若新速下 slave 收不到 master 任何指令，惰性檢查（等指令觸發）永遠不會跑；改成每輪純時間檢查後，即使收不到也會回滾。
+- **回滾檢查在 `CircuitTask.loop`**（`slave/tasks/circuit.py:202` `bus_speed.bus_speed_poll()`），每輪都跑，**不依賴收到指令**。這解掉一個死結：若新速下 slave 收不到 master 任何指令，惰性檢查（等指令觸發）永遠不會跑；改成每輪純時間檢查後，即使收不到也會回滾。
 - **狀態存在 `bus.shared["_bus_speed"]`**（內存 dict），重開機即消失回 IDLE。不需要持久化。
 - 提速只影響**該 UART bus 的 baud**；其他 bus（WiFi/ESP-NOW/SPI）不受影響。
 
@@ -236,7 +250,7 @@ class SpeedUp:
 
     def verify(self):
         """Step 3：敲門（STATUS_GET 0x1101）確認新速雙向通。"""
-        self.m.send_pkt(self.m.selected_targets, 0x1101, {"query_type": 0})
+        self.m.send_pkt(self.m.selected_targets, 0x1101, {"keys": ""})
         rsp = self.m._wait_evt("status_rsp", 1.0)      # 等 0x1102
         return rsp is not None
 

@@ -177,7 +177,9 @@ bench_pipe()        # 驗證不丟數據
 
 ```python
 MAX_PAYLOAD = 8192   # 幀負載上限（純 payload, 不含 header/CRC）
-RX_BUF_SIZE = 4096   # 接收端每次收多少（net_bus + circuit_bus 共用）
+RX_BUF_SIZE = 4115   # 接收端每次收多少（net_bus + circuit_bus 共用）
+                     # = HDR 9 + file_id 2 + offset 4 + data 4096 + CRC 4
+                     #   → 剛好裝得下一個滿載 FILE_CHUNK 幀
 SEND_CAP    = 4096   # socket 每次 send 的分段上限（lwIP 硬約束）
 ```
 
@@ -191,16 +193,21 @@ SEND_CAP    = 4096   # socket 每次 send 的分段上限（lwIP 硬約束）
 
 ### Buffer 區塊的現況（`config.json`）
 
-**`Buffer.size` 已刪除**——它曾是「接收 buffer 大小」的舊來源，現已被 `RX_BUF_SIZE`（4K）硬編碼取代，改了沒用，故移除。
+**`Buffer.size` 已刪除**——它曾是「接收 buffer 大小」的舊來源，現已被 `RX_BUF_SIZE`
+（**4115**，＝一個滿載 FILE_CHUNK 幀：9+2+4+4096+4）硬編碼取代，改了沒用，故移除。
+（舊版本文件寫「4K」，那個大小**裝不下**一個滿載 FILE_CHUNK 幀，正是這個常數要對齊的目標。）
 
 `Buffer` 區塊現在**只剩運行時吞吐旋鈕**（這些跟協議大小無關，仍走 config）：
 
 | 鍵 | 含義 | 預設 |
 |---|---|---|
-| `drop_on_full` | 接收環滿了丟不丟 | 1 |
+| `drop_on_full` | 接收環滿了丟不丟 | 0 |
 | `drain_reads` | 每次 poll 讀幾段 | 1 |
 | `send_retry` | 發送重試次數 | 64 |
-| `net_rx_slots` / `u8_rx_slots` | 接收環 slot 數 | 2（上限 4） |
+| `net_rx_slots` | net 接收環 slot 數 | 2（上限 4） |
+| `u8_rx_slots` | circuit UART 接收環 slot 數 | 2（上限 **16**；`slave/config.json` 實際設 8） |
+| `rx_hub_buffers` | 各 bus rx_hub slot 數 | 16 |
+| `fb_mode` | framebuffer 模式 | `"auto"` |
 | `decode_budget_slots` | 單輪解碼預算 | 32 |
 
 > 要調吞吐，動的是這些旋鈕；要改大小上限，只動 `proto.py` 那三個常量。兩者別混淆。

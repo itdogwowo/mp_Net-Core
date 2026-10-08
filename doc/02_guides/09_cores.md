@@ -10,7 +10,7 @@
 
 | 核心 | 職責 | 整合來源 | 前置條件 |
 |------|------|---------|---------|
-| **Core_LVGL** | LVGL UI 渲染。輸入讀 hw_manager 快照，不碰硬體 → 可跨核心 | `slave new/ui/lvgl/board.py` + `Core1.py` | LCD 在 bus + HwSampleTask 在跑 |
+| **Core_LVGL** | LVGL UI 渲染。輸入讀 hw_manager 快照，不碰硬體 → 可跨核心 | `slave/ui/lvgl/board.py` + `Core1.py` | LCD 在 bus + HwSampleTask 在跑 |
 | **Core_Comm** | 純通訊（網路 + 實體線 + 硬體採樣），無 LCD 依賴 | `slave/main.py` 舊通訊核心 | network/uart/pin 在 bus |
 
 ## 啟動方式
@@ -23,9 +23,9 @@ import Core_LVGL    # 或 Core_Comm
 Core_LVGL.start()   # 進入阻塞主迴圈
 ```
 
-## 與 slave new/ 的關係
+## 與 slave/ 的關係
 
-`slave new/` 是**完整整合版**（Core_Manager 任務模式 + Core0/Core1 核心模式，TaskManager 調度所有任務）。
+`slave/` 是**完整整合版**（Core_Manager 任務模式 + Core0/Core1 核心模式，TaskManager 調度所有任務）。
 `cores/` 是**單一職責的獨立核心範例**，展示如何用最小配置跑某一種功能，方便：
 
 - 單獨測試某個功能（不需起整套 TaskManager）
@@ -37,7 +37,7 @@ Core_LVGL.start()   # 進入阻塞主迴圈
 1. **總線解耦**：核心只讀 bus / bus.shared，不直接碰別的核心的內部狀態
 2. **輸入統一採樣**：hw_manager 快照（`bus.shared["_hw_inputs"]`）由 HwSampleTask 產生，所有核心消費
 3. **LCD 依賴**：Core_LVGL 需要 LCD 在 bus；Core_Comm 無 LCD 依賴
-4. **阻塞主迴圈**：`start()` 會阻塞（對齊 `slave new/Core0.py:worker_start` 風格），適合「一核心一主迴圈」的核心模式
+4. **阻塞主迴圈**：`start()` 會阻塞（對齊 `slave/Core0.py:worker_start` 風格），適合「一核心一主迴圈」的核心模式
 
 ## 相關文件
 

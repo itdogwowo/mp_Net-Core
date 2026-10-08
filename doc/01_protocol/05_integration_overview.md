@@ -2,8 +2,13 @@
 
 > **用途**：兩邊共同閱讀與執行之**統一合約**，涵蓋全部整合指令。
 > **分類**：協議層（01_protocol）
-> **最後更新**：2026-08-18
+> **最後更新**：2026-10
 > **基準**：**mp_Net-Core（本專案）** 之 NC4 封包與 `slave/schema/*.json` 為準，對方（fastLED master_timer_slave）遷就我方實作。
+>
+> ⚠️ **本文件的範圍**：只涵蓋「與對方 RS485 舊指令群對應」的**三組整合指令**（OTA／SYNC／PIXEL）。
+> 它**不是** NC4 的完整指令集——`0x12xx` 心跳、`0x13xx` ESP-NOW、`0x14xx` 硬體、
+> `0x15xx` 待清理、`0x18xx` bench、`0x20xx` 檔案、`0x30xx` 串流、`0x32xx` 音訊
+> **都不在這裡**，請查 `02_command_index.md`（12 個域、112 條指令）。
 >
 > **子文件**（細節定義）：
 > - `03_ota_protocol.md` — OTA 0x22xx 設計與改版理由
@@ -21,7 +26,20 @@
 |---|---|---|---|
 | **OTA** | `0x22xx` | 21 | `0x40/0x41` 子母包 + 內層 `0x01~0x08`（韌體層重寫） |
 | **SYNC** | `0x100A~0x100C`（併入 sys） | 3 | `TIME_SYNC_REQUEST / TIME_SYNC_REPLY / TIME_OFFSET_APPLY`（選用） |
-| **PIXEL** | `0x31xx` | 6 | `MODE_SET / MODE_NEXT / MODE_STOP / POWER_OFF / POWER_ON / STATUS_QUERY / STATUS_REPORT / STORY_SET` |
+| **PIXEL** | `0x31xx` | 8 | `MODE_SET / MODE_NEXT / MODE_STOP / POWER_OFF / POWER_ON / STATUS_QUERY / STATUS_REPORT / STORY_SET` |
+
+> 🚨 **兩項整合目標目前尚未實作，對接前務必先讀**：
+>
+> | 項目 | 現況 | 後果 |
+> |---|---|---|
+> | `0x22xx` **OTA（全部 21 條）** | **只有 schema，沒有一條 handler**（`slave/` 無任何 partition OTA 程式碼） | 照本文件實作 OTA 會**完全收不到回應** |
+> | `0x100C TIME_OFFSET_APPLY` | 只有 schema，未實作 | 同上 |
+> | `0x3103 / 0x3104` **MODE_GET / MODE_GET_RSP** | 只有 schema，**無 handler、也未由任何任務發出** | 見下方 §2 註記——這正是取代對方 `STATUS_QUERY/STATUS_REPORT` 的那一對 |
+>
+> 這三項在 `02_command_index.md` 與 `03_ota_protocol.md` 都有標示，本文件先前漏了。
+>
+> PIXEL 域在整合定案（6 條）之後又長出 `0x3107 / 0x3108 MODE_DETAIL_QUERY/RSP`，
+> 故現為 8 條。實際可用的起步同步手段是 `MODE_SET.start_delay_ms`。
 
 三項共同原則：
 
@@ -77,7 +95,7 @@
 | CMD | NAME | 方向 | Payload |
 |---:|---|---|---|
 | `0x3101` | `MODE_LIST_QUERY` | Master → Slave | `mode_type:u8`（0=全部、1=LED、2=SERVO） |
-| `0x3102` | `MODE_LIST_RSP` | Slave → Master | `mode_type:u8`（回音）, `count:u8`, `entries:bytes_rest`（子格式：mode_type:u8 + mode_id:u8 + total_ms:u32，每筆 6B） |
+| `0x3102` | `MODE_LIST_RSP` | Slave → Master | `mode_type:u8`（回音）, `count:u8`, `entries:bytes_rest`（子格式：**每筆 2B = 內部 16-bit 模式 id，u16 LE**；**沒有 total_ms 欄位**） |
 | `0x3103` | `MODE_GET` | Master → Slave | — |
 | `0x3104` | `MODE_GET_RSP` | Slave → Master | `mode_type:u8`, `mode_id:u8`, `elapsed_ms:u32`, `total_ms:u32`, `running:u8` |
 | `0x3105` | `MODE_SET` | Master → Slave | `mode_type:u8`, `mode_id:u8`, `start_delay_ms:u16`, `brightness:u8` |
@@ -85,7 +103,7 @@
 | `0x3107` | `MODE_DETAIL_QUERY` | Master → Slave | `mode_type:u8`, `mode_id:u8` |
 | `0x3108` | `MODE_DETAIL_RSP` | Slave → Master | `mode_type:u8`, `mode_id:u8`, `total_ms:u32`, `name:str_u16len` |
 
-> `mode_type` 語義：`0`=系統（UNKNOWN/DEV）、`1`=LED 組、`2`=SERVO 組，其餘保留。
+> `mode_type` 語義：`0`=系統（UNKNOWN/DEV）、`1`=LED 組、`2`=SERVO 組、**`3`=AUDIO 組**，其餘保留。
 > 細節見 `04_pixel_protocol.md`。
 
 ---
