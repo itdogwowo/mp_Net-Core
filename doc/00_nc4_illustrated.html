@@ -1616,7 +1616,7 @@ app.<span class="f">handle_stream</span>(parser, pkt, transport_name=<span class
           <span id="simCursor" class="cur">0 / 0</span>
         </div>
       </div>
-      <svg id="topo" viewBox="0 0 1000 520" role="img" aria-label="Master 與兩台 Slave 的匯流排拓撲"></svg>
+      <svg id="topo" viewBox="0 0 1064 520" role="img" aria-label="Master 與兩台 Slave 的匯流排拓撲"></svg>
     </div>
   </div><!-- /simright -->
   </div><!-- /simwork -->
@@ -2392,7 +2392,7 @@ const FIELD_DEFS = [
    ================================================================ */
 (function busSim() {
   const BCAST = 0xFFFF;
-  const SW = 1000, SH = 520;
+  const SW = 1064, SH = 520;
   const TRUNK_X0 = 232, TRUNK_X1 = 700;
 
   const SLAVE_DEFAULTS = { on: false, paused: false, mode: 1, bri: 255 };
@@ -2441,7 +2441,7 @@ const FIELD_DEFS = [
   const TX_COLOR = "var(--c-len)";
   const RX_COLOR = "var(--c-crc)";
   // Master 在左、兩台 Slave 在右（接腳一律朝向中間的匯流排）
-  const MBOARD  = { x: 40,  y: 180, w: 232, h: 132, side: "right" };   // 接腳在右緣 → 指向匯流排
+  const MBOARD  = { x: 148, y: 180, w: 232, h: 132, side: "right" };   // 接腳在右緣 → 指向匯流排（與 Slave 左右等距）
   const SBOARD  = [
     { x: 660, y: 40,  w: 234, h: 116, side: "left"  },   // 0x0001（右上，接腳在左緣）
     { x: 660, y: 320, w: 234, h: 116, side: "left"  }    // 0x0002（右下，接腳在左緣）
@@ -2457,11 +2457,11 @@ const FIELD_DEFS = [
   };
   // 接線端點：用 SPIN 現算（畫圖與熱區共用同一份，不會兩邊不一致）
   const wirePos = k => {
-    if (k === "m-tx") return [MPIN.tx.x - 5, MPIN.tx.y, BUS_X + 5, MPIN.tx.y];
-    if (k === "m-rx") return [MPIN.rx.x - 5, MPIN.rx.y, BUS_X + 5, MPIN.rx.y];
+    if (k === "m-tx") return [MPIN.tx.x - 5, MPIN.tx.y, BUS_X, MPIN.tx.y];
+    if (k === "m-rx") return [MPIN.rx.x - 5, MPIN.rx.y, BUS_X, MPIN.rx.y];
     const i = +k[0], kind = k.endsWith("rx") ? "rx" : "tx";
     const pt = pinAt(i, kind);
-    const bx = SBOARD[i].x > BUS_X ? BUS_X + 5 : BUS_X - 5;   // 板子在右 → 接左邊
+    const bx = BUS_X;                                  // 一律接到匯流排中心
     if (SBOARD[i].side === "left") return [pt.x + 5, pt.y, bx, pt.y];
     return [pt.x - 5, pt.y, bx, pt.y];
   };
@@ -2487,7 +2487,7 @@ const FIELD_DEFS = [
                       nocable: "var(--bad)", collided: "var(--bad)", silent: "var(--fg3)" };
     const RX_LEAD = { run: "✓", dropped: "✗", nopower: "✗", nocable: "✗", collided: "✗", silent: "·" };
 
-    const L = [], busLayer = [];
+    const L = [], busUnder = [], busLayer = [], arrowLayer = [];
     const busColor = paused ? "var(--bad)" : "var(--acc2)";
 
     // 接腳（含「剛剛被波形打到」的放大動畫）
@@ -2594,13 +2594,14 @@ const FIELD_DEFS = [
       L.push(`<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}"
         stroke="${cut ? "var(--bad)" : color}" stroke-width="${hot ? 3.4 : 2.6}"
         stroke-dasharray="${cut ? "6 5" : "0"}" stroke-linecap="round"/>`);
-      // 箭頭：由呼叫端直接指定方向（+1 往右、-1 往左）
-      if (!cut && Math.abs(x2 - x1) > 30 && opt.arrow) {
-        const dd = opt.arrow;
-        const rightEnd = Math.max(x1, x2), leftEnd = Math.min(x1, x2);
-        // TX：箭頭靠匯流排那端；RX：箭頭靠接腳那端
-        const ax = opt.near ? (dd > 0 ? opt.near + 16 : opt.near - 16) : (dd > 0 ? rightEnd - 14 : leftEnd + 14);
-        L.push(`<path d="M${ax} ${y2} l${-7 * dd} -5 l0 10 z" fill="${color}" opacity=".9"/>`);
+      // 箭頭：畫在**匯流排那一端**，收集到 arrowLayer → 最後才輸出（永遠在最上層）
+      if (!cut && opt.arrow) {
+        const dd = opt.arrow;                       // +1 往右、-1 往左
+        const bx = dd > 0 ? Math.max(x1, x2) : Math.min(x1, x2);
+        const ax = bx - dd * 3;      // 箭尖落在匯流排中心線上
+        arrowLayer.push(`<circle cx="${bx}" cy="${y2}" r="4.5" fill="${color}"/>`);
+        arrowLayer.push(`<path d="M${ax} ${y2} l${-11 * dd} -7 l0 14 z"
+          fill="${color}" stroke="var(--bg)" stroke-width="1.2"/>`);
       }
       if (cut) {
         const mx = (x1 + x2) / 2, my = (y1 + y2) / 2;
@@ -2610,21 +2611,21 @@ const FIELD_DEFS = [
     }
     const cutWire = k => cutSet.has(k);
     // Master 在左 → 它的 TX/RX 在線的左端（TX 色在左）；Slave 在右 → RX/TX 在右端
-    wire(MPIN.tx.x, MPIN.tx.y, BUS_X - 5, MPIN.tx.y, TX_COLOR, cutWire("m-tx"), false, { arrow: 1 });   // TX → 匯流排
-    wire(MPIN.rx.x, MPIN.rx.y, BUS_X - 5, MPIN.rx.y, RX_COLOR, cutWire("m-rx"), false, { arrow: -1, near: 272 });  // 匯流排 → RX
+    wire(MPIN.tx.x, MPIN.tx.y, BUS_X, MPIN.tx.y, TX_COLOR, cutWire("m-tx"), false, { arrow: 1 });   // TX → 匯流排
+    wire(MPIN.rx.x, MPIN.rx.y, BUS_X, MPIN.rx.y, RX_COLOR, cutWire("m-rx"), false, { arrow: -1 });  // 匯流排 → RX
     SLAVES.forEach((sl, i) => {
       const sLeft = SBOARD[i].x < BUS_X;             // Slave 在右 → false
       const rx = pinAt(i, "rx"), tx = pinAt(i, "tx");
       const edgeX = sLeft ? rx.x + 5 : rx.x - 5;
       const edgeX2 = sLeft ? tx.x + 5 : tx.x - 5;
       // 顏色用「這塊板子這一端」的接腳：Slave 的 RX 線是粉、TX 線是綠
-      wire(edgeX, rx.y, BUS_X + (sLeft ? 5 : -5), rx.y, RX_COLOR, cutWire(i + "-rx"), false, { arrow: 1, near: 655 });   // 匯流排 → RX
-      wire(edgeX2, tx.y, BUS_X + (sLeft ? 5 : -5), tx.y, TX_COLOR, cutWire(i + "-tx"), false, { arrow: -1 });  // TX → 匯流排
-      L.push(`<circle cx="${BUS_X + (sLeft ? 5 : -5)}" cy="${rx.y}" r="3.5" fill="${cutWire(i + "-rx") ? "var(--bad)" : RX_COLOR}"/>`);
-      L.push(`<circle cx="${BUS_X + (sLeft ? 5 : -5)}" cy="${tx.y}" r="3.5" fill="${cutWire(i + "-tx") ? "var(--bad)" : TX_COLOR}"/>`);
+      wire(edgeX, rx.y, BUS_X, rx.y, RX_COLOR, cutWire(i + "-rx"), false, { arrow: 1 });   // 匯流排 → RX
+      wire(edgeX2, tx.y, BUS_X, tx.y, TX_COLOR, cutWire(i + "-tx"), false, { arrow: -1 });  // TX → 匯流排
+      L.push(`<circle cx="${BUS_X}" cy="${rx.y}" r="3.5" fill="${cutWire(i + "-rx") ? "var(--bad)" : RX_COLOR}"/>`);
+      L.push(`<circle cx="${BUS_X}" cy="${tx.y}" r="3.5" fill="${cutWire(i + "-tx") ? "var(--bad)" : TX_COLOR}"/>`);
     });
-    L.push(`<circle cx="${BUS_X - 5}" cy="${MPIN.tx.y}" r="3.5" fill="${cutWire("m-tx") ? "var(--bad)" : TX_COLOR}"/>`);
-    L.push(`<circle cx="${BUS_X - 5}" cy="${MPIN.rx.y}" r="3.5" fill="${cutWire("m-rx") ? "var(--bad)" : RX_COLOR}"/>`);
+    L.push(`<circle cx="${BUS_X}" cy="${MPIN.tx.y}" r="3.5" fill="${cutWire("m-tx") ? "var(--bad)" : TX_COLOR}"/>`);
+    L.push(`<circle cx="${BUS_X}" cy="${MPIN.rx.y}" r="3.5" fill="${cutWire("m-rx") ? "var(--bad)" : RX_COLOR}"/>`);
 
     // 接腳
     const mEdge = MBOARD.x < BUS_X ? "right" : "left";
@@ -2642,7 +2643,7 @@ const FIELD_DEFS = [
                                              SLAVES.map((_, i) => pinAt(i, "tx").y));
     const BUS_Y0 = Math.min.apply(null, ys) - 30;
     const BUS_Y1 = Math.max.apply(null, ys) + 30;
-    busLayer.push(`<rect x="${BUS_X - 5}" y="${BUS_Y0}" width="10" height="${BUS_Y1 - BUS_Y0}"
+    busUnder.push(`<rect x="${BUS_X - 5}" y="${BUS_Y0}" width="10" height="${BUS_Y1 - BUS_Y0}"
       rx="5" fill="${busColor}" opacity=".9"/>`);
     busLayer.push(`<text x="${BUS_X}" y="${BUS_Y0 - 40}" class="ntiny" text-anchor="middle" fill="var(--acc)" font-weight="700">RS485 兩線匯流排</text>`);
     busLayer.push(`<text x="${BUS_X}" y="${BUS_Y0 - 24}" class="ntiny" text-anchor="middle" fill="${TX_COLOR}">A 線：Master TX ↔ Slave RX</text>`);
@@ -2664,7 +2665,9 @@ const FIELD_DEFS = [
         <g id="static"></g><g id="pkts"></g><g id="fx"></g>`;
     }
     svgEl.setAttribute("viewBox", `0 0 ${SW} ${SH}`);
-    busLayer.forEach(x => L.push(x));
+    busUnder.forEach(x => L.push(x));          // ① 匯流排主線先畫 → 排線蓋在它上面
+    busLayer.forEach(x => L.push(x));          // ② 匯流排說明文字
+    arrowLayer.forEach(x => L.push(x));        // ③ 箭頭最後 → 永遠在最上層
     svgEl.querySelector("#static").innerHTML = L.join("");
     setStage(stageStatus());
 
@@ -2766,20 +2769,31 @@ const FIELD_DEFS = [
       });
 
       const g = S().querySelector("#pkts");
+      /* 包 = 一格一格的方塊（每個方塊代表一個位元組，顏色照欄位）
+         方塊之間留縫，所以看得出來是「一幀資料」而不是一條實心色帶 */
       const mkPkt = (label, k) => {
+        k = k || 1;
+        const N = Math.max(5, Math.min(12, (frame.bytes.length || 12)));
+        const bw = 6 * k, gap = 1.8 * k, bh = 15 * k;
+        const totalW = N * bw + (N - 1) * gap;
         const el = document.createElementNS("http://www.w3.org/2000/svg", "g");
-        const w = 30 * (k || 1), h = 13 * (k || 1);
-        let t = `<rect x="${-w / 2}" y="${-h / 2}" width="${w}" height="${h}" rx="3"
-          fill="${col}" stroke="rgba(0,0,0,.35)" stroke-width=".6" opacity=".95"/>`;
-        for (let i = 0; i < 4; i++)
-          t += `<rect x="${-w / 2 + 2 + i * (w - 4) / 4}" y="${-h / 2 + 2}" width="3" height="${h - 4}"
-            rx="1" fill="${fieldColorOf(i, frame.payload.length)}" opacity=".95"/>`;
-        t += `<path d="M${w / 2 + 7} 0 l-6 -5 l0 10 z" fill="${col}"/>`;
+        let t = "";
+        // 外框（淡淡一圈，表示「這是同一幀」）
+        t += `<rect x="${-4 * k}" y="${-bh / 2 - 4 * k}" width="${totalW + 8 * k}" height="${bh + 8 * k}"
+          rx="${4 * k}" fill="rgba(0,0,0,.25)" stroke="${col}" stroke-width="${1.1 * k}" opacity=".55"/>`;
+        for (let i = 0; i < N; i++) {
+          const fi = Math.round(i * (Math.min(frame.bytes.length, 24) - 1) / (N - 1));
+          t += `<rect x="${i * (bw + gap)}" y="${-bh / 2}" width="${bw}" height="${bh}" rx="${1.6 * k}"
+            fill="${fieldColorOf(fi, frame.payload.length)}" stroke="rgba(0,0,0,.45)" stroke-width=".7"/>`;
+        }
+        // 行進方向箭頭
+        t += `<path d="M${totalW + 9 * k} 0 l${-7 * k} ${-5.5 * k} l0 ${11 * k} z" fill="${col}"/>`;
         if (label) {
-          const tw = Math.max(58, label.length * 7.6 + 12);
-          t += `<rect x="${-tw / 2}" y="${-h / 2 - 22}" width="${tw}" height="17" rx="5"
+          const tw = Math.max(62, label.length * 7.8 + 14);
+          t += `<rect x="${-tw / 2 + totalW / 2}" y="${-bh / 2 - 25 * k}" width="${tw}" height="${17 * k}" rx="5"
             fill="var(--card)" stroke="${col}" stroke-width="1" opacity=".95"/>
-            <text x="0" y="${-h / 2 - 9}" class="ntiny" text-anchor="middle" fill="${col}">${label}</text>`;
+            <text x="${totalW / 2}" y="${-bh / 2 - 13 * k}" class="ntiny" text-anchor="middle"
+              fill="${col}">${label}</text>`;
         }
         el.innerHTML = t;
         el.setAttribute("filter", "url(#pktGlow)");
@@ -3024,6 +3038,8 @@ const FIELD_DEFS = [
     f.from = sl.cid; return f;
   }
 
+  const f0cmd = f => (f && f.cmd) ? f.cmd : 0x100E;
+
   function replyAddr(req) {
     // _reply(addr=None) → bus.master_cid；0x100E 例外，用請求帶的 reply_cid
     return masterCid;
@@ -3230,6 +3246,36 @@ const FIELD_DEFS = [
         0x1018: "WEBUI_RSP", 0x1013: "NET_START_RSP", 0x1102: "STATUS_RSP", 0x1104: "STATUS_ACK"
       };
 
+      /* 0x100D 點名有「抖動視窗」(timeout_ms)：每台抽 [0, timeout_ms] 的隨機延遲才回
+         → 把「同時回」攤成序列，共用媒介上不會硬碰撞。
+         每一台的回覆都是**一次獨立的傳送**（兩個行為、兩個指令），
+         所以這裡每一步只處理一台 → 記錄也會分成兩列。
+         實作：slave/action/net_actions.py on_identify_req（_spread + delay_ms）    */
+      const isScan = def.cmd === 0x100D;
+      const spread = isScan ? (def.fields && def.fields[1] ? def.fields[1][1] : 0) : 0;
+      if (isScan && spread > 0 && frames.length >= 1) {
+        const baseRx = Object.assign({}, reactions);
+        const reps = frames.map((f, idx) => ({
+          f: f, from: f.from,
+          ms: Math.round((spread / (frames.length + 1)) * (idx + 1) * (0.6 + Math.random() * 0.8))
+        })).sort((a, b) => a.ms - b.ms);
+
+        reps.forEach((z, k) => {
+          const rx2 = Object.assign({}, baseRx);
+          rx2[z.from] = { kind: "run", text: "已回覆 0x100E",
+                          why: "抽到延遲 " + z.ms + "ms（視窗 " + spread + "ms）→ 錯開，不撞線" };
+          const others = reps.slice(0, k).map(q => cidHex(q.from)).join("、");
+          rec({ stage: "◂ " + cidHex(z.from) + " 回覆 0x100E（抖動 " + z.ms + "ms）",
+                topo: { act: [z.from], cut: Array.from(cutWireSet), reactions: rx2 },
+                packets: [{ cmd: z.f.cmd || 0x100E, bytes: z.f.bytes, payload: z.f.payload,
+                            dir: "up", from: z.from, delay: z.ms }],
+                log: { dir: "up", cmd: z.f.cmd || 0x100E, cmdName: "IDENTIFY_RSP",
+                       addr: z.f.addr, from: z.from, bytes: z.f.bytes, payload: z.f.payload,
+                       note: "抖動視窗 " + spread + "ms → 這台抽到 " + z.ms + "ms 才回"
+                             + (others ? "（" + others + " 已經回過，兩次是獨立的傳送）" : "") } });
+        });
+        return;
+      }
       if (frames.length >= 2) {
         const ln = frames[0].payload.length;
         const bytes = collide(frames, ln);
@@ -3288,10 +3334,20 @@ const FIELD_DEFS = [
     if (!st) return;
     if (st.apply) { st.apply(); syncLeds(); }
     if (st.packets) {
-      for (const f of st.packets) {
+      // 有 delay 的（例如 0x100D 的抖動回覆）先一起出發，各自到點才發射
+      const delayed = st.packets.filter(f => f.delay);
+      for (const f of st.packets.filter(f => !f.delay)) {
         stats[f.dir === "down" ? "sent" : (f.collide ? "collide" : "replied")]++;
         refreshStats();
         await sendPacket(f);
+      }
+      if (delayed.length) {
+        await Promise.all(delayed.map(f => new Promise(done => {
+          setTimeout(() => {
+            stats.replied++; refreshStats();
+            sendPacket(f).then(done);
+          }, f.delay);
+        })));
       }
     }
     if (st.topo) drawTopo(st.topo);
