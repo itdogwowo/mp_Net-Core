@@ -12,7 +12,7 @@
 | **02_guides** 使用教學 | 要在 slave 上寫功能 / 用模組的人 | 各模組 API、怎麼接、怎麼跑、踩坑 |
 | **03_notes** 筆記 | 維護者 / 想了解設計脈絡的人 | 調查記錄、架構筆記、計劃、變更紀錄 |
 
-**數量**：`01_protocol` 9 份、`02_guides` 18 份、`03_notes` 20 份。
+**數量**：`01_protocol` 9 份、`02_guides` 18 份、`03_notes` 23 份。
 
 ---
 
@@ -78,9 +78,13 @@
 | [18_pixel_panel_control_path.md](03_notes/18_pixel_panel_control_path.md) | 面板裝置的 pixel 控制路徑（現況盤點 + 設計草案） |
 | [19_remote_control_plan.md](03_notes/19_remote_control_plan.md) | **遙控器強化計劃（配對 / 綁定 / 晶片開關）**：架構共識（配對=建立通道、方向=指令確認）、零件盤點、P0~P7 分階段、關鍵踩坑、環境備忘。**自足文件，可單獨接手** |
 | [20_soft_reboot_residue.md](03_notes/20_soft_reboot_residue.md) | Soft reboot 的資源殘留：哪些會漏、哪些會自己回來 |
+| [21_uart_bench_test_plan.md](03_notes/21_uart_bench_test_plan.md) | **測試手冊**｜單線 UART 四指令測試（兩台 S3 · 燈效驗證 · 逐項期待結果） |
+| [21_uart_test_quick.md](03_notes/21_uart_test_quick.md) | **速查卡**｜同一組單線 UART 測試的短版（現場照著打） |
+| [22_nc4_simulator_audit.md](03_notes/22_nc4_simulator_audit.md) | **稽核紀錄**｜`00_nc4_illustrated.html` 匯流排模擬器 vs 協議文件：已修清單、程式端待辦（回覆位址 / MODE_STOP）、協議文件自身矛盾、重跑方式 |
 
-> 📌 **`03_notes/` 有兩份編號同為 17**（`17_esp_stream_controller.md` 與 `17_tx_render_center_plan.md`），
-> 是歷史遺留；兩份都是獨立主題，**請以完整檔名區分**，不要只寫「17」。
+> 📌 **`03_notes/` 有兩組同號**：`17_esp_stream_controller.md` / `17_tx_render_center_plan.md`，
+> 以及 `21_uart_bench_test_plan.md` / `21_uart_test_quick.md`（手冊與速查卡，同一主題）。
+> 都是獨立檔案，**請以完整檔名區分**。
 >
 > 📌 **標 `PLAN`／`待設計`／`架構待重整` 者為計劃或未定案文件**，不是現況描述。
 > 要了解「現在怎麼運作」請看 `01_protocol/` 與 `02_guides/`。

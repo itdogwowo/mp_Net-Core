@@ -562,6 +562,10 @@ body,.card,.pan,.lane,.simstage,.detail,.dom,.tr,.step{
 .tp:disabled{opacity:.35; cursor:not-allowed}
 .tp.wide{padding:6px 11px; font-weight:600}
 .tp.wide.on{background:color-mix(in srgb,var(--ok) 22%,transparent); border-color:var(--ok); color:var(--fg)}
+/* 重設：紅框，和播放控制明顯區隔（避免誤按） */
+.tp.danger{color:var(--bad); border-color:color-mix(in srgb,var(--bad) 45%,transparent); font-weight:600}
+.tp.danger:hover:not(:disabled){color:var(--bad); border-color:var(--bad); background:color-mix(in srgb,var(--bad) 14%,transparent)}
+.tsep{width:1px; height:18px; background:var(--line2); margin:0 3px; flex:none}
 .cur{font-family:var(--mono); font-size:11.5px; color:var(--fg3); min-width:44px; text-align:center}
 .simctl .grp{
   background:var(--card); border:1px solid var(--line);
@@ -581,7 +585,9 @@ body,.card,.pan,.lane,.simstage,.detail,.dom,.tr,.step{
 .cmdbtn:disabled{opacity:.4; cursor:not-allowed}
 .cmdbtn code{font-size:12px; color:var(--acc); background:none; border:0; padding:0}
 .cmdbtn .cm{display:block; font-size:11.5px; color:var(--fg3); margin-top:2px}
-.wirepick{display:flex; gap:5px; flex-wrap:wrap}
+.wirepick{display:flex; flex-direction:column; gap:6px}
+.wirerow{display:flex; gap:5px; align-items:center}
+.wname{flex:none; width:118px; font-family:var(--mono); font-size:12px}
 .wbtn{
   flex:1; min-width:60px; background:var(--card2); border:1px solid var(--line);
   color:var(--fg2); border-radius:7px; padding:6px; cursor:pointer;
@@ -620,6 +626,25 @@ body,.card,.pan,.lane,.simstage,.detail,.dom,.tr,.step{
 
 .simtable{margin-top:18px}
 .simtable table{font-size:13.5px}
+/* 記錄表：**限制高度、框內自己滾**（紀錄只增不減，不這樣會把整頁撐長）。
+   最新的一列在最上面 → 一進來就看到最新；表頭黏在框頂，滾動時仍看得見欄位名。 */
+.logscroll{
+  max-height:min(70vh, 700px); overflow-y:auto; overscroll-behavior:contain;
+  border:1px solid var(--line); border-radius:10px; background:var(--card);
+  margin:10px 0 0; scrollbar-width:thin; scrollbar-color:var(--line2) transparent;
+}
+.logscroll>table{margin:0}
+.logscroll thead th{
+  position:sticky; top:0; z-index:2;
+  background:var(--card2); border-bottom:1px solid var(--line2);
+  box-shadow:0 1px 0 var(--line2);
+}
+.logscroll tbody tr:first-child{background:color-mix(in srgb,var(--acc) 7%,transparent)}
+.logscroll::-webkit-scrollbar{width:9px}
+.logscroll::-webkit-scrollbar-thumb{background:var(--line2); border-radius:5px}
+.logscroll::-webkit-scrollbar-thumb:hover{background:var(--fg3)}
+.logscroll::-webkit-scrollbar-track{background:transparent}
+.logcount-hint{font-size:12.5px; color:var(--fg3)}
 .simtable td code{white-space:normal; word-break:break-all; font-size:12.5px}
 .chip{
   display:inline-block; font-size:11.5px; padding:2px 8px; border-radius:6px;
@@ -1598,12 +1623,100 @@ app.<span class="f">handle_stream</span>(parser, pkt, transport_name=<span class
 
 <!-- ══════════════════════ 匯流排模擬器（分頁 2）══════════════════════ -->
 <section id="sim-section">
-  <div class="ch"><span class="n">SIM</span><h2>匯流排模擬器</h2></div>
+  <!-- ═════════ 01 怎麼用（第一次來先讀這裡） ═════════ -->
+  <div class="ch" id="sim-howto" style="scroll-margin-top:84px">
+    <span class="n">01</span><h2>怎麼用：三個動作就好</h2></div>
   <p class="sub">
-    一台 Master 接在匯流排上，掛著兩台 Slave。按下面的按鈕送指令，
-    上面會畫出封包怎麼走、哪台收到、誰回話、誰撞線；下面會列出<b>實際的位元組</b>。
-    規則是照 <code>slave/action/*.py</code> 的實作寫的，不是示意。
+    這頁是一條<b>共用匯流排</b>的沙盤：一台 Master（面板）掛著兩台 Slave，
+    三台的 cid 互不相同。整頁由上往下分成三區 ——
+    <a href="#sim-howto">01 怎麼用</a>（你正在讀）、
+    <a href="#sim-log">02 指令記錄區</a>（每一次傳輸的位元組）、
+    <a href="#sim-play">03 模擬器</a>（選目標、按指令、看封包怎麼走）。
   </p>
+  <div class="grid g3">
+    <div class="card"><h5><span class="ico">1</span>在 03 選「發送目標」</h5>
+      <p class="muted"><code>FF（廣播）</code>／<code>0x0002</code>／<code>0x0003</code>。
+      這個選擇直接寫進封包幀頭的 <code>ADDR</code>：<b>廣播＝大家都收</b>，
+      <b>單播＝只有那台會處理</b>（其他台位址不符 → 丟棄）。</p></div>
+    <div class="card"><h5><span class="ico">2</span>按一顆指令</h5>
+      <p class="muted">控制盤分成 ①燈效查詢 ②燈效控制 ③系統／身分 ④狀態與設定
+      ⑤線路狀態 ⑥故障模擬 ⑦情境。按下去會<b>自動播放</b>動畫，
+      也可以用 <code>⏮ ◀ ▶</code> 單步前後看。</p></div>
+    <div class="card"><h5><span class="ico">3</span>回頭看結果</h5>
+      <p class="muted">拓撲圖看<b>誰收到、誰回話、誰撞線</b>；
+      <a href="#sim-log">02 指令記錄區</a>留下<b>實際的位元組</b>（欄位已著色）
+      與統計。<b>紀錄只增不減</b> —— 回放不會清掉，按 <code>重設</code>
+      或「清除紀錄」才會歸零。</p></div>
+  </div>
+  <div class="note ok" style="margin-top:16px">
+    <span class="t">兩個小玩法</span>
+    <p><b>點板子</b>＝斷電／通電（不跑的板子收不到也不回）；
+    <b>點任何一條接線</b>＝拔線／接回。想快速看效果，直接用 ⑦ 情境的三顆示範鍵。</p>
+  </div>
+
+  <!-- ═════════ 02 指令記錄區 ═════════ -->
+  <div class="ch" id="sim-log" style="scroll-margin-top:84px">
+    <span class="n">02</span><h2>指令記錄區</h2></div>
+  <p class="sub">
+    <b>每一次線上傳輸都在這裡</b>：送出的封包（Master →）與誰回了什麼（← Slave），
+    逐位元組列出、欄位著色，右欄是一句話說明。
+    <b>只增不減</b>：回放／後退都不會清掉，要歸零請按「清除紀錄」或 <kbd>F5</kbd>。
+    第一次進來會是空的 —— 到下面的 <a href="#sim-play">03 模擬器</a> 按一顆指令就會開始長。
+  </p>
+
+  <!-- ③ 流量記錄 -->
+  <div class="simtable">
+    <div style="display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap; margin:22px 0 4px">
+      <h3 style="margin:0">流量記錄 <span id="logCount" class="muted" style="font-size:12.5px; font-weight:400">0 列</span></h3>
+      <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap">
+        <span class="muted" style="font-size:12.5px">每一列都是真的位元組（欄位已著色）· <b>只增不減</b>：回放／後退不會清掉，按 F5 才歸零<br>
+        <span class="logcount-hint">表格固定高度、<b>框內可滾動</b>（最新的一列在最上面，表頭會黏著）</span></span>
+        <button class="tbtn" id="clearLog" title="清空流量記錄與統計（裝置狀態不變）">清除紀錄</button>
+      </div>
+    </div>
+    <div class="logscroll">
+    <table>
+      <thead><tr>
+        <th style="width:52px">#</th><th style="width:88px">方向</th>
+        <th style="width:104px">指令</th><th>位元組</th><th style="width:130px">說明</th>
+      </tr></thead>
+      <tbody id="simTbody">
+        <tr><td colspan="5" class="muted" style="padding:22px; text-align:center">
+          還沒有流量。到下面的「03 模擬器」按一顆指令，這裡就會開始長。</td></tr>
+      </tbody>
+    </table>
+    </div><!-- /logscroll -->
+  </div>
+
+  <div class="stats" style="margin-top:18px">
+    <div class="stat"><div class="k">Master 發出</div><div class="v" id="simSent">0</div></div>
+    <div class="stat ok"><div class="k">Slave 回覆</div><div class="v" id="simReplied">0</div></div>
+    <div class="stat er"><div class="k">碰撞</div><div class="v" id="simCollide">0</div></div>
+    <div class="stat wn"><div class="k">被丟棄</div><div class="v" id="simDropped">0</div></div>
+  </div>
+
+  <!-- ═════════ 03 模擬器（操作區） ═════════ -->
+  <div class="ch" id="sim-play" style="scroll-margin-top:84px">
+    <span class="n">03</span><h2>模擬器</h2></div>
+  <p class="sub">
+    一台 Master（面板 <code>0x0001</code>）接在匯流排上，掛著兩台 Slave
+    （<code>0x0002</code> 燈條 A、<code>0x0003</code> 燈條 B）—— <b>三台的 cid 互不相同</b>。
+    先在下面選<b>發送目標</b>，再按左邊控制盤的指令；右邊拓撲會畫出封包怎麼走、
+    哪台收到、誰回話、誰撞線（也可以點板子斷電、點線拔線）。
+    規則照 <code>doc/01_protocol/</code> 的協議定義，欄位與
+    <code>slave/schema/*.json</code> 一致。
+  </p>
+
+  <div class="note" style="margin-top:0">
+    <span class="t">三台的位址怎麼分</span>
+    <p><b>Master／面板 = <code>0x0001</code></b>：它自己的 cid，不是任何節點的。
+    節點是 <code>0x0002</code>、<code>0x0003</code>。
+    所以「已配對」時回覆的 <code>ADDR=0x0001</code> <b>不會被任何節點誤收</b> ——
+    這也是為什麼 <code>0x1016 SET_MASTER</code> 帶的是<b>發起方自己的 cid</b>。</p>
+    <p>每一台節點<b>各自</b>記自己的 <code>master_cid</code>（未設 = <code>0xFFFF</code>）：
+    <code>0x1016</code> 只改「收到那一幀的那一台」，其餘節點不受影響 ——
+    在「⑤ 線路狀態」可以一台一台切換看差別。</p>
+  </div>
 
   <div class="targetbar">
     <span class="tl">發送目標</span>
@@ -1617,7 +1730,7 @@ app.<span class="f">handle_stream</span>(parser, pkt, transport_name=<span class
   <div class="simctl">
 
     <details class="grp" open>
-      <summary><span>① 燈效查詢（指定一台）</span><span class="muted">會有回覆</span></summary>
+      <summary><span>① 燈效查詢</span><span class="muted">目標由上方選擇器決定</span></summary>
       <div id="grpQuery"></div>
     </details>
 
@@ -1627,7 +1740,7 @@ app.<span class="f">handle_stream</span>(parser, pkt, transport_name=<span class
     </details>
 
     <details class="grp">
-      <summary><span>③ 系統 / 身分</span><span class="muted">12 條</span></summary>
+      <summary><span>③ 系統 / 身分</span><span class="muted">10 條</span></summary>
       <div id="grpSystem"></div>
     </details>
 
@@ -1637,7 +1750,7 @@ app.<span class="f">handle_stream</span>(parser, pkt, transport_name=<span class
     </details>
 
     <details class="grp">
-      <summary><span>⑤ 線路狀態</span><span class="muted">決定回覆寄到哪</span></summary>
+      <summary><span>⑤ 線路狀態</span><span class="muted">每一台各自的 master_cid</span></summary>
       <div class="wirepick" id="wirePick"></div>
       <div id="wireNote" class="muted" style="font-size:12px; margin-top:10px"></div>
       <div style="margin-top:11px">
@@ -1648,26 +1761,23 @@ app.<span class="f">handle_stream</span>(parser, pkt, transport_name=<span class
 
     <details class="grp">
       <summary><span>⑥ 故障模擬</span><span class="muted">點圖也可以</span></summary>
-      <button class="cmdbtn" id="failOne">拔掉 0x0002 的線<span class="cm">它收不到 → 只有 0x0001 動作</span></button>
-      <button class="cmdbtn" id="failPower">把 0x0002 斷電<span class="cm">板子不跑 → 完全沒反應</span></button>
+      <button class="cmdbtn" id="failOne">拔掉 0x0003 的線<span class="cm">它收不到 → 只有 0x0002 動作</span></button>
+      <button class="cmdbtn" id="failPower">把 0x0003 斷電<span class="cm">板子不跑 → 完全沒反應</span></button>
       <button class="cmdbtn" id="failBusy">佔用匯流排（別人在講話）<span class="cm">你送出的封包會被丟棄</span></button>
       <button class="cmdbtn" id="failFix">全部修好<span class="cm">接回線、通電、匯流排空閒</span></button>
     </details>
 
     <details class="grp">
       <summary><span>⑦ 情境</span><span class="muted">一鍵示範</span></summary>
-      <button class="cmdbtn" id="snNormal">單播查詢（正常）<span class="cm">指定 #1 → 只有 #1 回</span></button>
+      <button class="cmdbtn" id="snNormal">單播查詢（正常）<span class="cm">指定 0x0002 → 只有它回</span></button>
       <button class="cmdbtn" id="snBroadcast">廣播查詢（撞線）<span class="cm">兩台同時回 → 線上打成一團</span></button>
       <button class="cmdbtn" id="snPair">完整流程示範<span class="cm">連送 6 個封包，看收發節奏</span></button>
-      <button class="cmdbtn" id="snReset">重置<span class="cm">清空流量與統計</span></button>
+      <button class="cmdbtn" id="snReset">全部重設<span class="cm">紀錄＋統計＋時間軸＋接線／電源／配對</span></button>
     </details>
 
   </div>
 
-  <div id="simHint" class="muted" style="font-size:13px; margin:-8px 2px 0">
-    提示：直接點板子可以斷電／通電，點任何一條接線可以拔線／接回。
-  </div>
-  </div><!-- /simleft -->
+</div><!-- /simleft -->
 
   <!-- 右：拓撲（黏在旁邊，按按鈕時看得到） -->
   <div class="simright">
@@ -1680,6 +1790,8 @@ app.<span class="f">handle_stream</span>(parser, pkt, transport_name=<span class
           <button class="tp wide on" id="simPlay" title="播放中／暫停">⏸ 播放中</button>
           <button class="tp" id="simNext" title="下一步">▶</button>
           <span id="simCursor" class="cur">0 / 0</span>
+          <span class="tsep"></span>
+          <button class="tp danger" id="simResetAll" title="重設：清空流量紀錄＋統計＋時間軸＋裝置狀態（接線／電源／配對）">⟲ 重設</button>
         </div>
       </div>
       <svg id="topo" viewBox="0 0 1064 520" role="img" aria-label="Master 與兩台 Slave 的匯流排拓撲"></svg>
@@ -1687,46 +1799,31 @@ app.<span class="f">handle_stream</span>(parser, pkt, transport_name=<span class
   </div><!-- /simright -->
   </div><!-- /simwork -->
 
-  <!-- ③ 流量記錄 -->
-  <div class="simtable">
-    <div style="display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap; margin:22px 0 4px">
-      <h3 style="margin:0">流量記錄</h3>
-      <span class="muted" style="font-size:12.5px">每一列都是真的位元組（欄位已著色）</span>
-    </div>
-    <table>
-      <thead><tr>
-        <th style="width:52px">#</th><th style="width:88px">方向</th>
-        <th style="width:104px">指令</th><th>位元組</th><th style="width:130px">說明</th>
-      </tr></thead>
-      <tbody id="simTbody">
-        <tr><td colspan="5" class="muted" style="padding:22px; text-align:center">
-          還沒有流量。按上面的按鈕送一個封包看看。</td></tr>
-      </tbody>
-    </table>
-  </div>
-
-  <div class="stats" style="margin-top:18px">
-    <div class="stat"><div class="k">Master 發出</div><div class="v" id="simSent">0</div></div>
-    <div class="stat ok"><div class="k">Slave 回覆</div><div class="v" id="simReplied">0</div></div>
-    <div class="stat er"><div class="k">碰撞</div><div class="v" id="simCollide">0</div></div>
-    <div class="stat wn"><div class="k">被丟棄</div><div class="v" id="simDropped">0</div></div>
+  <div id="simHint" class="muted" style="font-size:13px; margin:12px 2px 0">
+    提示：直接點板子可以斷電／通電，點任何一條接線可以拔線／接回。
   </div>
 
   <div class="note warn" style="margin-top:20px">
     <span class="t">這個模擬器要你看見的事</span>
     <p><b>① 控制類指令永遠不會有回覆。</b><code>0x3105</code>/<code>0x3106</code> 送出去，
     只能靠「燈變了」和板子的 log 確認 —— 模擬器裡就是看上面的燈。</p>
-    <p><b>② 回覆寄到哪，由線路狀態決定。</b>切到「未配對」時
-    <code>master_cid = 0xFFFF</code>，連<em>查詢的回覆</em>都會變成廣播幀
-    （只有 <code>0x100E</code> 例外，它用請求裡的 <code>reply_cid</code>）。</p>
-    <p><b>③ 廣播查詢一定會撞線。</b>兩台都通過位址過濾、都回話、又沒有抖動錯開 ——
-    線上就是兩份位元組疊在一起。這不是 bug，是「廣播查詢」本來就不該用。</p>
+    <p><b>② 回覆的位址 = 那一台自己的 <code>master_cid</code>。</b>
+    未配對是 <code>0xFFFF</code>，連<em>查詢的回覆</em>都會變成廣播幀
+    （只有 <code>0x100E</code> 例外，它用請求裡的 <code>reply_cid</code>）。
+    配對與否<b>每台各自獨立</b>（見「⑤ 線路狀態」）。</p>
+    <p><b>③ 廣播查詢（<code>0x3101</code>/<code>0x3107</code>）沒有抖動機制 → 必撞。</b>
+    兩台都通過位址過濾、都回話，線上就是兩份位元組疊在一起。
+    這不是 bug，是「廣播查詢」本來就不該用。</p>
+    <p><b>④ 抖動（<code>0x100D</code> 的 <code>timeout_ms</code>）只降低碰撞機率，不保證不撞。</b>
+    每台各自抽 <code>[0, timeout_ms]</code> 的隨機延遲；抽到相同（或差不到一個幀的傳輸時間）時槽
+    還是會撞 —— 多按幾次「點名」就會遇到。視窗開大一點可以再降機率。</p>
   </div>
 </section>
 
   <p class="muted" style="margin-top:34px; font-size:13px">
-    模擬結果依 <code>slave/action/*.py</code> 的實際行為：位址過濾、回覆位址、無 ACK 的指令、
-    廣播查詢撞線。想把原理讀過一遍，切到「圖文導讀」分頁。
+    模擬結果依 <code>doc/01_protocol/</code> 的協議定義：位址過濾、回覆位址（<code>master_cid</code>／
+    <code>reply_cid</code>）、無 ACK 的指令、廣播查詢撞線、抖動視窗。欄位與
+    <code>slave/schema/*.json</code> 一致。想把原理讀過一遍，切到「圖文導讀」分頁。
   </p>
 </div>
 
@@ -2042,8 +2139,8 @@ const FIELD_DEFS = [
   function log(kind, text) {
     const t = new Date().toLocaleTimeString("zh-TW", { hour12: false });
     logs.unshift({ t, kind, text });
-    if (logs.length > 60) logs.pop();
-    simlog.innerHTML = logs.slice(0, 14).map(l =>
+    // 只增不減：保留整場紀錄（.simlog 自己可滾動）
+    simlog.innerHTML = logs.map(l =>
       `<div><span class="tm">${l.t}</span><span class="${l.kind}">${l.text}</span></div>`
     ).join("");
   }
@@ -2449,33 +2546,50 @@ const FIELD_DEFS = [
 
 /* ================================================================
    07 匯流排模擬器
-   —— 規則照 slave/action/*.py 的實作：
+   —— 規則照 doc/01_protocol/ 的協議定義（欄位順序 = slave/schema/*.json）：
+      · 裝置 cid 互不相同：Master 0x0001、節點 0x0002 / 0x0003
       · 位址過濾：只收 0xFFFF 或自己的 cid
-      · 回覆位址：預設 bus.master_cid（未配對 = 0xFFFF）
+      · 回覆位址：那一台自己的 master_cid（未配對 = 0xFFFF）
                   唯一例外是 0x100E，用請求裡的 reply_cid
-      · 0x3105 / 0x3106 完全不回覆
+      · 0x1016 SET_MASTER 只改「收到那一幀的那一台」
+      · 0x3105 / 0x3106 完全不回覆；0x3106 的 action 0=暫停、1=全關
       · 0x3101 / 0x3107 沒有抖動 → 多台同時回 = 撞線
+      · 0x100D 的 timeout_ms 是抖動視窗：各自抽 [0,timeout_ms]，
+        只降低碰撞機率、**不保證不撞**（抽到同時槽就撞）
    ================================================================ */
 (function busSim() {
   const BCAST = 0xFFFF;
+  /* ── 三台裝置的 cid 互不相同（見 §06 定址）─────────────────────────
+       Master／面板      0x0001   ← 全機唯一；它自己的 cid，不是節點的
+       節點「燈條 A」     0x0002
+       節點「燈條 B」     0x0003
+     ★ 每台節點各自記自己的 master_cid（bus.master_cid）：
+       `0x1016 SET_MASTER` 只改「被定址的那一台」，所以三台的狀態不會連動。 */
+  const MASTER_CID = 0x0001;
   const SW = 1064, SH = 520;
   const TRUNK_X0 = 232, TRUNK_X1 = 700;
 
-  const SLAVE_DEFAULTS = { on: false, paused: false, mode: 1, bri: 255 };
+  // bri：可設定範圍 0–254；255 是「不改」（0x3105 的哨兵），不是亮度值
+  const SLAVE_DEFAULTS = { on: false, paused: false, mode: 1, bri: 200,
+                           masterCid: BCAST, wrepl: true, webui: false };
   const SLAVES = [
-    { cid: 0x0001, label: "燈條 A", power: true, mac: [0x24,0x6F,0x28,0xA1,0xB2,0x01], modes: [
+    { cid: 0x0002, label: "燈條 A", power: true, webui: true,
+      mac: [0x24,0x6F,0x28,0xA1,0xB2,0x02], modes: [
         { type: 1, id: 1, name: "demo_eyes",  total: 0 },
         { type: 1, id: 2, name: "wave_loop",  total: 5000 } ] },
-    { cid: 0x0002, label: "燈條 B", power: true, mac: [0x24,0x6F,0x28,0xC3,0xD4,0x02], modes: [
+    { cid: 0x0003, label: "燈條 B", power: true,
+      mac: [0x24,0x6F,0x28,0xC3,0xD4,0x03], modes: [
         { type: 1, id: 1, name: "demo_eyes",  total: 0 },
         { type: 1, id: 3, name: "breath",     total: 3200 } ] }
   ].map(sl => Object.assign({}, SLAVE_DEFAULTS, sl));
 
   let sendTo = null;          // 這次要發給誰：null = 廣播(FF)、數字 = 指定 cid
-  let masterCid = BCAST;      // 就是 bus.master_cid：只有 0x1016 會改
   let masterPower = true;
   const cutWireSet = new Set();     // 被拔掉的線（key 見 WIRE_POS）
   const cidHex = v => "0x" + v.toString(16).padStart(4, "0").toUpperCase();
+  const hex4   = v => v.toString(16).padStart(4, "0").toUpperCase();   // System.cID 的字串格式
+  const macHex = mac => mac.map(b => b.toString(16).padStart(2, "0").toUpperCase()).join("");
+  const randInt = n => Math.floor(Math.random() * n);
   const masterPinsOff = () => !masterPower;
   function note(msg, hint) {
     const el = document.getElementById("simHint");
@@ -2484,7 +2598,6 @@ const FIELD_DEFS = [
   let paused = false;         // 模擬「線路忙 / 有人在講話」
   let busy = false;           // 正在播動畫
   let queue = Promise.resolve();
-  let seqNo = 0;
   // 注意：這要用 let —— 記錄階段會暫時換成假物件，避免「記錄」就把數字加上去
   let stats = { sent: 0, replied: 0, collide: 0, dropped: 0 };
 
@@ -2510,8 +2623,8 @@ const FIELD_DEFS = [
   // Master 在左、兩台 Slave 在右（接腳一律朝向中間的匯流排）
   const MBOARD  = { x: 148, y: 180, w: 232, h: 132, side: "right" };   // 接腳在右緣 → 指向匯流排（與 Slave 左右等距）
   const SBOARD  = [
-    { x: 660, y: 40,  w: 234, h: 116, side: "left"  },   // 0x0001（右上，接腳在左緣）
-    { x: 660, y: 320, w: 234, h: 116, side: "left"  }    // 0x0002（右下，接腳在左緣）
+    { x: 660, y: 40,  w: 234, h: 116, side: "left"  },   // 0x0002（右上，接腳在左緣）
+    { x: 660, y: 320, w: 234, h: 116, side: "left"  }    // 0x0003（右下，接腳在左緣）
   ];
   const MPIN = { tx: { x: MBOARD.x + MBOARD.w, y: MBOARD.y + 46 },   // 接腳在右緣
                  rx: { x: MBOARD.x + MBOARD.w, y: MBOARD.y + 84 } };
@@ -2628,12 +2741,13 @@ const FIELD_DEFS = [
 
     /* ── Master（左側）── */
     const mOff = masterPinsOff();
+    const paired = SLAVES.filter(x => x.masterCid !== BCAST).map(x => cidHex(x.cid));
     const mState = { off: mOff, cls: sendSet.has("master") ? " hot" : (masterRecv ? " act" : (actSet.has("master") ? " act" : "")) };
-    drawBoard(MBOARD, "MCU 0 · MASTER", "PC / USB-UART",
-      mOff ? "（斷電）" : (masterCid === BCAST ? "0xFFFF" : cidHex(masterCid)), mState,
+    drawBoard(MBOARD, "MCU 0 · MASTER／面板", "PC / USB-UART",
+      mOff ? "（斷電）" : cidHex(MASTER_CID), mState,
       { key: "master", reaction: reactOf("master"),
-        line3: masterCid === BCAST ? "未配對 → 回覆變廣播" : "已配對 → 回覆寄這裡",
-        line4: "TX = 送出去　RX = 收回來", line5: "RS485 半雙工 · 115200" });
+        line3: paired.length ? `已配對節點：${paired.join(" ")}` : "沒有任何節點配對",
+        line4: "回覆預設寄 master_cid（未配對＝FF）", line5: "TX = 送出去　RX = 收回來" });
 
     /* ── 兩台 Slave ── */
     SLAVES.forEach((sl, i) => {
@@ -2644,14 +2758,18 @@ const FIELD_DEFS = [
           : sendSet.has(sl.cid) ? " hot"
           : recvSet.has(sl.cid) ? " act"
           : (missSet.has(sl.cid) ? " miss" : (hotSet.has(sl.cid) ? " hot" : (actSet.has(sl.cid) ? " act" : ""))));
-      const st = off ? "斷電" : (sl.on ? `mode ${sl.mode}${sl.paused ? "（暫停）" : ""}` : "熄燈");
+      const st = off ? "斷電"
+        : (sl.paused ? `暫停（模式 ${sl.mode} 保留）` : (sl.on ? `播放 mode ${sl.mode}` : "熄燈"));
+      const pairedTxt = sl.masterCid === BCAST
+        ? "master_cid=FFFF（未配對）→ 回覆變廣播"
+        : `master_cid=${cidHex(sl.masterCid)} → 回覆寄那裡`;
       B.txOff = (B.side === "left" ? 46 : 0);   // 讓開接腳的內縮量
       B.txW = B.w - B.txOff - (B.side === "right" ? 46 : 0);
       drawBoard(B, `MCU ${i + 1} · SLAVE`, sl.label,
         off ? "（斷電）" : cidHex(sl.cid), { off: off, cls: cls },
         { key: sl.cid, reaction: reactOf(sl.cid),
           line3: `燈效：${st}　亮度 ${sl.bri}`,
-          line4: `可播模式 ${sl.modes.map(x => x.id).join(" / ")}`,
+          line4: pairedTxt,
           line5: `mac ${sl.mac.map(b => b.toString(16).padStart(2, "0")).join(":")}` });
     });
 
@@ -2796,8 +2914,9 @@ const FIELD_DEFS = [
     const cut = WIRE_KEYS.filter(k => cutWireSet.has(k)).length;
     if (off.length) parts.push("斷電 " + off.join("/"));
     if (cut) parts.push(`斷線 ${cut} 條`);
-    if (masterCid !== BCAST) parts.push("master=" + cidHex(masterCid));
-    else parts.push("未配對");
+    parts.push(`Master ${cidHex(MASTER_CID)}`);
+    const unpaired = SLAVES.filter(x => x.masterCid === BCAST).map(x => cidHex(x.cid));
+    parts.push(unpaired.length ? `未配對 ${unpaired.join("/")}` : "全部已配對");
     return parts.join(" · ");
   }
 
@@ -2936,24 +3055,34 @@ const FIELD_DEFS = [
     return rows.join("<br>");
   }
 
-  const logEntries = [];
-  // 依「已發生的列」重畫整張流量表（後退重建時用）
-  function renderLog(rows) {
-    const tb = $t("simTbody");
-    seqNo = 0;
-    tb.innerHTML = rows.length ? "" :
-      `<tr><td colspan="5" class="muted" style="padding:22px; text-align:center">還沒有流量。按上面的按鈕送一個封包看看。</td></tr>`;
-    // 最新在最上面 → 反向插入
-    rows.forEach(r => insertRow(r));
+  /* ── 流量記錄：**append-only 的 session 紀錄** ─────────────────────
+     ★ 這是「這條線上發生過的事」，一旦記下就不再移除、不截斷、不因為
+       回放／後退而消失。要清空只有兩個入口：「清除紀錄」與「⑦ 重置」。
+     ★ 時間軸（timeline）只是「這一次指令的動畫腳本」—— 兩者刻意分開：
+       回放只影響動畫與拓撲，紀錄與統計都是整場累計的。               */
+  let sessionLog = [];          // 依時間排序（舊 → 新）
+  function updateLogCount() {
+    const el = $t("logCount");
+    if (el) el.textContent = sessionLog.length ? `${sessionLog.length} 列 · 全部保留` : "0 列";
   }
-  function insertRow(f) {
+  function renderLog() {
     const tb = $t("simTbody");
-    if (seqNo === 0) tb.innerHTML = "";
-    seqNo++;
+    tb.innerHTML = sessionLog.length ? "" :
+      `<tr><td colspan="5" class="muted" style="padding:22px; text-align:center">還沒有流量。到下面的「03 模擬器」按一顆指令，這裡就會開始長。</td></tr>`;
+    // 最新在最上面 → 依時間順序插入（每次都插到最前面）
+    sessionLog.forEach((r, i) => insertRow(r, i + 1));
+    updateLogCount();
+  }
+  function insertRow(f, no) {
+    const tb = $t("simTbody");
+    if (no === 1) tb.innerHTML = "";
+    const n = no || (tb.children.length + 1);
     // 只有「回覆列」有 f.from，Master 發射列沒有 —— 不要無條件讀它
     const dest = f.addr === BCAST ? "廣播" : "0x" + (f.addr || 0).toString(16).padStart(4, "0").toUpperCase();
     const dirCell = f.dir === "up"
-      ? `<span class="chip ${f.collide ? "col" : "yes"}">${f.collide ? "碰撞" : "Slave 回覆"} ← 0x${(f.from || 0).toString(16).padStart(4, "0").toUpperCase()}</span>`
+      ? (f.collide
+          ? `<span class="chip col">碰撞（多台同時回）</span>`
+          : `<span class="chip yes">Slave 回覆 ← 0x${(f.from || 0).toString(16).padStart(4, "0").toUpperCase()}</span>`)
       : (f.cmd
           ? `<span class="chip${f.addr === BCAST ? " ff" : " uni"}">Master → ${dest}</span>`
           : `<span class="chip no">無回應</span>`);
@@ -2963,16 +3092,27 @@ const FIELD_DEFS = [
       : `<span class="muted">—</span><div class="muted" style="font-size:11px">${f.cmdName || ""}</div>`;
     const tr = document.createElement("tr");
     tr.innerHTML = `
-      <td class="muted">${seqNo}</td>
+      <td class="muted">${n}</td>
       <td>${dirCell}</td>
       <td>${cmdCell}</td>
       <td style="font-family:var(--mono); font-size:12.5px; line-height:1.9">${f.bytes.length ? hexSpans(f.bytes, f.payload.length, f.collide) : '<span class="muted">—</span>'}</td>
       <td style="font-size:12px; color:var(--fg2)">${f.note || ""}</td>`;
     tb.insertBefore(tr, tb.firstChild);
-    if (tb.children.length > 40) tb.removeChild(tb.lastChild);
     return tr;
   }
-  function logRow(f) { insertRow(f); }
+  /* 記下一列（append-only）。所有紀錄都留在 sessionLog，永不截斷。 */
+  function appendLog(f) {
+    sessionLog.push(f);
+    insertRow(f, sessionLog.length);
+    updateLogCount();
+  }
+  /* 清空紀錄（只有使用者主動要求時才呼叫） */
+  function clearLog() {
+    sessionLog = [];
+    stats = { sent: 0, replied: 0, collide: 0, dropped: 0 };
+    renderLog();
+    refreshStats();
+  }
 
   function refreshStats() {
     $t("simSent").textContent = stats.sent;
@@ -2981,142 +3121,202 @@ const FIELD_DEFS = [
     $t("simDropped").textContent = stats.dropped;
   }
 
-  /* ---------- 指令表 ---------- */
+  /* ---------- 指令表 ----------
+     addr 一律由上面的「發送目標」選擇器決定（FF / 0x0002 / 0x0003）；
+     每顆按鈕的 fields 依 slave/schema/*.json 的欄位順序排列，
+     回覆內容由這些欄位推導（不再有寫死的 mt/mid/replyCid）。 */
   const QUERIES = [
     { label: "查模式清單", cmd: 0x3101, name: "MODE_LIST_QUERY", note: "撈出可播的燈效 id",
       fields: [["u8", 1]], resp: 0x3102 },
     { label: "查模式細節", cmd: 0x3107, name: "MODE_DETAIL_QUERY", note: "撈出模式名稱",
       fields: [["u8", 1], ["u8", 1]], resp: 0x3108 },
     { label: "點名（找機）", cmd: 0x100D, name: "IDENTIFY_REQ", note: "唯一例外：回覆用 reply_cid",
-      fields: [["u16", 1], ["u16", 50], ["u8", 0]], addr: "broadcast", resp: 0x100E }
+      fields: [["u16", MASTER_CID], ["u16", 50], ["u8", 0]], resp: 0x100E }
   ];
-  /* addr 一律由上面的「發送目標」選擇器決定（FF / 0x0001 / 0x0002），
-     所以這裡不再分「指定版 / 廣播版」，每個指令只有一顆按鈕。
-     onlyBroadcast: 這條只有廣播才有意義（例如點名）。 */
   const CONTROLS = [
     { label: "播放燈效", cmd: 0x3105, name: "MODE_SET", note: "沒有回覆，看燈",
       fields: [["u8", 1], ["u8", 1], ["u16", 0], ["u8", 255]], noReply: true },
-    { label: "停止（全關）", cmd: 0x3106, name: "MODE_STOP", note: "沒有回覆，看燈",
+    { label: "停止（全關）", cmd: 0x3106, name: "MODE_STOP", note: "action=1：停 + 清燈 + 省電",
       fields: [["u8", 1]], noReply: true },
-    { label: "停止（暫停）", cmd: 0x3106, name: "MODE_STOP", note: "action=0 暫停",
-      fields: [["u8", 0]], noReply: true },
-    { label: "記住我（定方向）", cmd: 0x1016, name: "SET_MASTER", note: "改 master_cid，會落盤",
-      fields: [["u16", 1]], resp: null, setsMaster: true },
-    { label: "更改 cID", cmd: 0x1103, name: "STATUS_SET", note: "改 System.cID（persist=0）",
-      fields: [["str_u16len", '{"System.cID":"0003"}'], ["u8", 0]], resp: 0x1104 },
-    { label: "存檔目前 cID", cmd: 0x1103, name: "STATUS_SET", note: "persist=0xFF 只落盤",
-      fields: [["str_u16len", '{"System.cID":"0001"}'], ["u8", 255]], resp: 0x1104 }
+    { label: "停止（暫停）", cmd: 0x3106, name: "MODE_STOP", note: "action=0：保留模式狀態",
+      fields: [["u8", 0]], noReply: true }
   ];
 
   /* ---------- 系統 / 身分指令（③） ---------- */
   const SYSTEM = [
     { label: "問它是誰（點名）", cmd: 0x100D, name: "IDENTIFY_REQ",
-      note: "有抖動視窗，N 台各自延遲回覆（不撞線）",
-      fields: [["u16", 1], ["u16", 50], ["u8", 0]], resp: 0x100E },
+      note: "有抖動視窗：每台各自抽 [0,timeout_ms] 隨機延遲才回",
+      fields: [["u16", MASTER_CID], ["u16", 50], ["u8", 0]], resp: 0x100E },
     { label: "查任務清單", cmd: 0x1005, name: "SYS_TASK_QUERY", note: "回 JSON 清單",
-      fields: [], addr: "either", resp: 0x1006 },
-    { label: "查 IP", cmd: 0x1014, name: "GET_IP", note: "回一張網卡表",
-      fields: [], addr: "either", resp: 0x1015 },
+      fields: [], resp: 0x1006 },
+    { label: "查 IP", cmd: 0x1014, name: "GET_IP", note: "ip=多介面 JSON",
+      fields: [], resp: 0x1015 },
     { label: "查 WebREPL 狀態", cmd: 0x1010, name: "WREPL_CTRL", note: "0=查 1=開 2=關",
-      fields: [["u8", 0]], addr: "either", resp: 0x1011 },
+      fields: [["u8", 0]], resp: 0x1011 },
     { label: "查 WebUI 狀態", cmd: 0x1017, name: "WEBUI_CTRL", note: "0=查 1=開 2=關",
-      fields: [["u8", 0]], addr: "either", resp: 0x1018 },
-    { label: "記住我（定方向）", cmd: 0x1016, name: "SET_MASTER", note: "改 master_cid，會落盤",
-      fields: [["u16", 1]], addr: "broadcast", resp: null, setsMaster: true },
-    { label: "WiFi 開 / 關", cmd: 0x1008, name: "WIFI_CTRL", note: "0=關 1=開",
-      fields: [["u8", 1]], addr: "broadcast", resp: null, noReply: true, onOff: "wifi" },
+      fields: [["u8", 0]], resp: 0x1018 },
+    { label: "記住我（定方向）", cmd: 0x1016, name: "SET_MASTER",
+      note: `只改「收到的那一台」的 master_cid=${cidHex(MASTER_CID)}，會落盤`,
+      fields: [["u16", MASTER_CID]], resp: null, setsMaster: true },
+    { label: "WiFi 開 / 關", cmd: 0x1008, name: "WIFI_CTRL", note: "0=關 1=開 0xFF=不改",
+      fields: [["u8", 1]], resp: null, noReply: true, onOff: "wifi" },
     { label: "系統控制", cmd: 0x1004, name: "SYS_CTRL", note: "wifi + 核心控制",
-      fields: [["u8", 1], ["u8", 1]], addr: "broadcast", resp: null, noReply: true },
+      fields: [["u8", 1], ["u8", 1]], resp: null, noReply: true },
     { label: "重開機", cmd: 0x100F, name: "REBOOT", note: "延遲後重啟（危險）",
-      fields: [["u32", 1000]], addr: "either", resp: null, noReply: true, onOff: "reboot" },
+      fields: [["u32", 1000]], resp: null, noReply: true, onOff: "reboot" },
     { label: "啟動網路介面", cmd: 0x1012, name: "NET_START", note: "0=lan 1=wifi 2=ap 3=espnow",
-      fields: [["u8", 1]], addr: "either", resp: 0x1013 }
+      fields: [["u8", 1]], resp: 0x1013 }
   ];
 
   /* ---------- 狀態與設定（④） ---------- */
   const STATUS = [
-    { label: "查全部狀態", cmd: 0x1101, name: "STATUS_GET", note: "keys 空 = 全部",
-      fields: [["str_u16len", ""]], addr: "either", resp: 0x1102, respKind: "status" },
+    { label: "查全部狀態", cmd: 0x1101, name: "STATUS_GET", note: "keys 空 = 全部（內建＋provider）",
+      fields: [["str_u16len", ""]], resp: 0x1102 },
     { label: "查指定幾個值", cmd: 0x1101, name: "STATUS_GET", note: "逗號分隔的 key",
-      fields: [["str_u16len", "System.cID,System.dual_core_mode"]], addr: "either",
-      resp: 0x1102, respKind: "status" },
+      fields: [["str_u16len", "System.cID,System.dual_core_mode"]], resp: 0x1102 },
     { label: "改設定（只寫快取）", cmd: 0x1103, name: "STATUS_SET", note: "persist=0 不落盤",
-      fields: [["str_u16len", '{"System.cID":"0001"}'], ["u8", 0]], addr: "either", resp: 0x1104 },
+      fields: [["str_u16len", '{"System.cID":"00A1"}'], ["u8", 0]], resp: 0x1104 },
     { label: "改設定（寫快取+落盤）", cmd: 0x1103, name: "STATUS_SET", note: "persist=1 會寫 flash",
-      fields: [["str_u16len", '{"System.cID":"0001"}'], ["u8", 1]], addr: "either", resp: 0x1104 }
+      fields: [["str_u16len", '{"System.cID":"00A1"}'], ["u8", 1]], resp: 0x1104 },
+    { label: "只落盤（不改值）", cmd: 0x1103, name: "STATUS_SET", note: "persist=0xFF",
+      fields: [["str_u16len", '{"System.cID":"00A1"}'], ["u8", 255]], resp: 0x1104 }
   ];
 
-  /* ---------- 回覆內容 ---------- */
+  /* ---------- 回覆內容 ----------
+     通則（protocol 01_nc4_protocol.md §定址模型）：
+       回應的 addr 預設 = **那一台自己的** master_cid（未設 = 0xFFFF 廣播）；
+       唯一例外是 0x100E，它用請求帶來的 reply_cid。                        */
+  function replyAddr(sl) { return sl.masterCid; }
+
   function rspList(sl, req) {
+    const mt = req.modeType;                       // 0=全部、1=LED、2=SERVO、3=AUDIO
     const ids = [];
-    sl.modes.forEach(m => { if (m.type === 1) ids.push((m.type << 8) | m.id); });
+    sl.modes.forEach(m => {
+      const id = (m.type << 8) | m.id;
+      if (mt === 0 || m.type === mt) ids.push(id);  // slave 依 16-bit id 高 byte 過濾
+    });
     ids.sort((a, b) => a - b);
     const rest = [];
-    ids.forEach(v => { rest.push(v & 0xFF, (v >>> 8) & 0xFF); });
-    const f = mk(0x3102, [["u8", 1], ["u8", ids.length], ["bytes_rest", rest]], replyAddr(req));
+    ids.forEach(v => { rest.push(v & 0xFF, (v >>> 8) & 0xFF); });   // 每筆 2 B，u16 LE
+    // mode_type 是「回音 query」
+    const f = mk(0x3102, [["u8", mt], ["u8", Math.min(255, ids.length)], ["bytes_rest", rest]], replyAddr(sl));
     f.from = sl.cid; return f;
   }
   function rspDetail(sl, req) {
     const m = sl.modes.find(x => x.type === req.mt && x.id === req.mid);
+    // total_ms = 該模式總時長（0 = 不設限／常駐模式）
     const f = mk(0x3108, [["u8", req.mt], ["u8", req.mid], ["u32", m ? m.total : 0],
-                       ["str_u16len", m ? m.name : ""]], replyAddr(req));
+                       ["str_u16len", m ? m.name : ""]], replyAddr(sl));
     f.from = sl.cid; return f;
   }
   function rspIdentify(sl, req) {
-    const ip = "192.168.1." + (10 + sl.cid);
-    const f = mk(0x100E, [["u16", sl.cid], ["str_u16len", sl.mac.map(b => b.toString(16).padStart(2, "0").toUpperCase()).join("")],
-                       ["str_u16len", ip]], req.replyCid);
+    // cid + slave_id(MAC hex) + ip（多介面 JSON）
+    const f = mk(0x100E, [["u16", sl.cid], ["str_u16len", macHex(sl.mac)],
+                       ["str_u16len", JSON.stringify({ lan: `192.168.1.${10 + sl.cid}` })]],
+                 req.replyCid);                      // ★ 這一封用請求帶的 reply_cid
     f.from = sl.cid; return f;
   }
   const clip = (s2, n) => { s2 = String(s2); return s2.length > n ? s2.slice(0, n) + "…" : s2; };
 
   function rspTaskRsp(sl, req) {
-    const tasks = ["network", "circuit", "bus_decode", "pixel", "stream", "web_ui"];
-    const f = mk(0x1006, [["str_u16len", JSON.stringify(tasks)]], replyAddr(req));
+    const tasks = [
+      { name: "bus_decode", layer: 1, affinity: [0, 1], running_core: 0, running: true },
+      { name: "pixel",      layer: 2, affinity: [1, 0], running_core: 1, running: true },
+      { name: "web_ui",     layer: 3, affinity: [1, 0], running_core: 1, running: !!sl.webui },
+      { name: "network",    layer: 0, affinity: [0, 1], running_core: 0, running: true }
+    ];
+    const j = JSON.stringify({ boot_phase: 2, boot_layer: 2, boot_done: true, tasks });
+    const f = mk(0x1006, [["str_u16len", j]], replyAddr(sl));
     f.from = sl.cid; return f;
   }
   function rspIp(sl, req) {
-    const j = JSON.stringify({ lan: `192.168.1.${10 + sl.cid}`, wifi: "", ap: "" });
-    const f = mk(0x1015, [["str_u16len", j]], replyAddr(req));
+    // 只列「有 IP 的介面」（多介面 JSON；沒 IP 的介面省略）
+    const j = JSON.stringify({ lan: `192.168.1.${10 + sl.cid}` });
+    const f = mk(0x1015, [["str_u16len", j]], replyAddr(sl));
     f.from = sl.cid; return f;
   }
+  /* action：0=查 1=開 2=關 —— 「查」回的是**當下狀態**，不是把 action 當答案。
+     （WebREPL 由 boot 的 webrepl_ctl.ensure() 預設開啟。）                    */
+  function applyAction(cur, action) {
+    if (action === 1) return true;
+    if (action === 2) return false;
+    return cur;
+  }
   function rspWrepl(sl, req) {
-    const on = req.enab ? 1 : 0;
-    const f = mk(0x1011, [["u8", on], ["str_u16len", on ? "WebREPL active on :8266" : "WebREPL disabled"]], replyAddr(req));
+    sl.wrepl = applyAction(sl.wrepl, req.action);
+    const on = sl.wrepl ? 1 : 0;
+    const f = mk(0x1011, [["u8", on],
+                       ["str_u16len", on ? "listening 0.0.0.0:8266" : "stopped"]], replyAddr(sl));
     f.from = sl.cid; return f;
   }
   function rspWebui(sl, req) {
-    const on = req.enab ? 1 : 0;
-    const f = mk(0x1018, [["u8", on], ["str_u16len", on ? "http://" + "192.168.1." + (10 + sl.cid) + "/" : "WebUI disabled"]], replyAddr(req));
+    sl.webui = applyAction(sl.webui, req.action);
+    const on = sl.webui ? 1 : 0;
+    const f = mk(0x1018, [["u8", on],
+                       ["str_u16len", on ? `http://192.168.1.${10 + sl.cid}/　web_ui affinity=(1, 0)`
+                                         : "web_ui affinity=(0, 0)"]], replyAddr(sl));
     f.from = sl.cid; return f;
   }
   function rspNetStart(sl, req) {
     const names = ["lan", "wifi", "ap", "espnow"];
-    const f = mk(0x1013, [["u8", 1], ["str_u16len", names[req.iface] || "wifi"],
-                          ["str_u16len", `192.168.1.${10 + sl.cid}`]], replyAddr(req));
+    const iface = names[req.iface] || "wifi";
+    // ok = 該介面是否真的起來（espnow 沒有 IP）
+    const ip = iface === "espnow" ? "" : `192.168.1.${10 + sl.cid}`;
+    const f = mk(0x1013, [["u8", 1], ["str_u16len", iface], ["str_u16len", ip]], replyAddr(sl));
     f.from = sl.cid; return f;
+  }
+  /* 0x1101 → 0x1102：keys 空 = 全部（內建 ＋ provider metrics，**不是 config 樹**）；
+     其餘逐一解析：內建 → provider → config 路徑；找不到集中在 _unknown。 */
+  function statusKeyOf(sl, k) {
+    if (k === "slave_id") return { ok: true, v: macHex(sl.mac) };
+    if (k === "mem_free") return { ok: true, v: 178432 };
+    if (k === "fps") return { ok: true, v: (sl.on && !sl.paused) ? 60 : 0 };
+    if (k === "frame_count") return { ok: true, v: sl.on ? 77310 : 0 };
+    if (k === "stream_mode") return { ok: true, v: "idle" };
+    if (k === "is_streaming") return { ok: true, v: false };
+    if (k === "audio_active") return { ok: true, v: false };
+    if (k === "fs_scan_busy") return { ok: true, v: false };
+    if (k === "ips") return { ok: true, v: { lan: `192.168.1.${10 + sl.cid}` } };
+    if (k === "System.cID") return { ok: true, v: hex4(sl.cid) };
+    if (k === "System.dual_core_mode") return { ok: true, v: "0" };
+    if (k === "System.num_pixels") return { ok: true, v: 336 };
+    if (k === "Network.wifi.enable") return { ok: true, v: 0 };
+    if (k === "node.master_cid") return { ok: true, v: sl.masterCid };   // 整數（未配對 = 65535）
+    return { ok: false };
   }
   function rspStatus(sl, req) {
-    const j = JSON.stringify({
-      "System.cID": cidHex(sl.cid).slice(2),
-      "System.dual_core_mode": "0", "System.num_pixels": 336,
-      "Pixel.mode_id": sl.on ? sl.mode : 0, "Pixel.brightness": sl.bri,
-      "Network.wifi.enable": 0, "node.master_cid": cidHex(masterCid).slice(2)
-    });
-    const f = mk(0x1102, [["str_u16len", clip(j, 120)]], replyAddr(req));
+    const keys = String(req.keys == null ? "" : req.keys).trim();
+    let obj;
+    if (keys === "") {
+      obj = { slave_id: macHex(sl.mac), mem_free: 178432, uptime_ms: 1289340,
+              fps: (sl.on && !sl.paused) ? 60 : 0, frame_count: sl.on ? 77310 : 0,
+              stream_mode: "idle", is_streaming: false, ips: { lan: `192.168.1.${10 + sl.cid}` },
+              audio_active: false, fs_scan_busy: false };
+    } else {
+      obj = {};
+      const unknown = [];
+      keys.split(",").map(s => s.trim()).filter(Boolean).forEach(k => {
+        const r = statusKeyOf(sl, k);
+        if (r.ok) obj[k] = r.v; else unknown.push(k);
+      });
+      if (unknown.length) obj._unknown = unknown;
+    }
+    // status_json 是**完整可解析的 JSON**（不能截斷；真要縮小範圍請用 keys）
+    const f = mk(0x1102, [["str_u16len", JSON.stringify(obj)]], replyAddr(sl));
     f.from = sl.cid; return f;
   }
-  function rspStatusAck(sl, req, applied) {
-    const f = mk(0x1104, [["u8", 1], ["str_u16len", clip(applied, 60)]], replyAddr(req));
+  /* 0x1104：ok ＋ 逐 key 的結果說明（persist 決定寫快取／落盤哪幾條路）。 */
+  function rspStatusAck(sl, req) {
+    const n = Object.keys(req.data || {}).length || 1;
+    let msg;
+    if (req.persist === 255) msg = `存檔 ${n} 個 key`;
+    else if (req.persist === 1) msg = `寫入快取 ${n} 個 key; 存檔 ${n} 個 key`;
+    else msg = `寫入快取 ${n} 個 key`;
+    const f = mk(0x1104, [["u8", 1], ["str_u16len", clip(msg, 60)]], replyAddr(sl));
     f.from = sl.cid; return f;
   }
 
   const f0cmd = f => (f && f.cmd) ? f.cmd : 0x100E;
-
-  function replyAddr(req) {
-    // _reply(addr=None) → bus.master_cid；0x100E 例外，用請求帶的 reply_cid
-    return masterCid;
-  }
 
   /* ---------- 撞線 ---------- */
   function collide(frames, ln) {
@@ -3142,7 +3342,6 @@ const FIELD_DEFS = [
      記錄時不寫 log、不動統計；播放時才真的發生。                        */
   let timeline = [];
   let cursor = 0;
-  let recordMode = false;
   let sendingBoard = null;   // "master" 或 slave cid：正在發射
   let recvBoard = null;      // 正在接收的（可能是多台 → 用陣列）
   let recvWant = null;       // 這一幀真正要給誰（用來區分「收到並執行 / 收到但丟棄」）
@@ -3151,7 +3350,6 @@ const FIELD_DEFS = [
   let rxLive = new Set();    // 正在收的接腳（-1 = Master，其餘為 slave index）
   let playing = false;
   let playTimer = null;
-  let realStats = null;
 
   function rec(o) { timeline.push(o); }
 
@@ -3164,15 +3362,28 @@ const FIELD_DEFS = [
   /* ── 記錄：把一次指令變成 timeline（不播出、不寫 log、不動統計）── */
   function record(def, targetCid) {
     timeline = []; cursor = 0;
-    recordMode = true;
-    realStats = stats;
-    // 用假的統計物件，避免記錄階段就把數字加上去
-    stats = { sent: 0, replied: 0, collide: 0, dropped: 0 };
     try {
       const req = mk(def.cmd, def.fields, targetCid === null ? BCAST : targetCid);
       req.payload = req.payload || new Uint8Array(0);
-      req.mt = 1; req.mid = 1; req.replyCid = 1;
+      /* 請求欄位一律由 def.fields 推導（schema 的欄位順序即 wire 順序），
+         不再寫死 —— 改按鈕的欄位值，回覆內容就會跟著變。 */
+      const fv = (i, dflt) => (def.fields && def.fields[i]) ? def.fields[i][1] : dflt;
+      req.modeType = fv(0, 0);              // 0x3101
+      req.mt       = fv(0, 1);              // 0x3107 / 0x3105
+      req.mid      = fv(1, 1);
+      req.bright   = fv(3, 255);            // 0x3105（255 = 不改）
+      req.replyCid = fv(0, BCAST);          // 0x100D
+      req.spread   = fv(1, 0);              // 0x100D timeout_ms
+      req.force    = fv(2, 0);              // 0x100D
+      req.action   = fv(0, 0);              // 0x3106 / 0x1010 / 0x1017
+      req.iface    = fv(0, 1);              // 0x1012
+      req.keys     = String(fv(0, ""));     // 0x1101
+      req.persist  = fv(1, 0);              // 0x1103
+      try { req.data = JSON.parse(String(fv(0, "{}"))); } catch (e) { req.data = {}; }
+      req.masterCid = fv(0, BCAST);         // 0x1016
 
+      /* 位址過濾（app.handle_stream）：只收廣播或「等於自己 cid」的幀。
+         ★ 只有「目的 cid 等於某台節點」時才需要比對；廣播時全部都要收。 */
       const want = (targetCid === null || targetCid === BCAST)
         ? SLAVES.slice()
         : SLAVES.filter(s => s.cid === targetCid);
@@ -3204,8 +3415,12 @@ const FIELD_DEFS = [
         if (masterPinsOff()) reactions[x.cid] = { kind: "silent", text: "沒收到任何東西", why: "Master 斷電，封包沒送出去" };
         else if (!x.power) reactions[x.cid] = { kind: "nopower", text: "板子沒通電，不參與", why: "沒過電 → 不收也不回" };
         else if (cut) reactions[x.cid] = { kind: "nocable", text: "線被拔掉，收不到", why: "RX 線斷 → 位元組到不了這台" };
-        else if (hitWait.indexOf(x) >= 0) reactions[x.cid] = { kind: "run", text: "收到，要處理", why: "位址符合（" + (req.addr === BCAST ? "廣播 FF" : cidHex(req.addr)) + "）" };
-        else reactions[x.cid] = { kind: "dropped", text: "收到，但位址不符 → 丟棄", why: "位址是 " + cidHex(req.addr) + "，不是它 → ADDR 過濾丟掉" };
+        else if (hitWait.indexOf(x) >= 0) {
+          reactions[x.cid] = { kind: "run", text: "收到，要處理",
+                               why: req.addr === BCAST ? "廣播 FF → 大家都收" : "位址就是它（" + cidHex(req.addr) + "）" };
+        } else {
+          reactions[x.cid] = { kind: "dropped", text: "收到，但位址不符 → 丟棄", why: "位址是 " + cidHex(req.addr) + "，不是它 → ADDR 過濾丟掉" };
+        }
       });
 
       // 步驟 1：Master 發射
@@ -3257,35 +3472,61 @@ const FIELD_DEFS = [
         return;
       }
 
-      // 步驟 3：改方向（0x1016）
+      // 步驟 3：改方向（0x1016）—— 只改「收到這一幀的那幾台」
       if (def.setsMaster) {
-        rec({ stage: "master_cid ← 0x0001（已落盤）",
-              topo: { hot: hit.map(x => x.cid), cut: Array.from(cutWireSet) },
-              apply: () => { masterCid = 0x0001; },
+        const mc = req.masterCid & 0xFFFF;
+        const names = hit.map(x => cidHex(x.cid)).join("、");
+        rec({ stage: `${names} 的 master_cid ← ${cidHex(mc)}（已落盤）`,
+              topo: { hot: hit.map(x => x.cid), cut: Array.from(cutWireSet),
+                      reactions: (() => {
+                        const r = Object.assign({}, reactions);
+                        hit.forEach(x => { r[x.cid] = { kind: "run", text: `master_cid ← ${cidHex(mc)}`,
+                                                        why: "0x1016 只改收到幀的這一台，其他台不受影響" }; });
+                        return r;
+                      })() },
+              apply: () => { hit.forEach(x => { x.masterCid = mc; }); },
               log: { dir: "down", cmd: req.cmd, cmdName: def.name, addr: req.addr,
                      bytes: [], payload: new Uint8Array(0),
-                     note: "master_cid ← 0x0001（落盤）。之後所有回覆都改寄 0x0001" } });
+                     note: `${names} 的 master_cid ← ${cidHex(mc)}（落盤，無 ACK）。`
+                           + "之後只有這幾台的回覆寄那裡；沒收到這一幀的節點不變" } });
         return;
       }
 
       // 步驟 3'：控制類 —— 沒有回覆
       if (def.noReply) {
+        // 0x3106 的 action 語意（04_pixel_protocol.md §2.5）
+        const stopAct = req.action;
+        const setBri = req.bright !== 255;      // 255 = 不改（保留目前亮度）
         const noReplyText = def.cmd === 0x3105 ? "燈亮了 · 沒有回覆"
-          : def.cmd === 0x3106 ? "燈熄了 · 沒有回覆"
+          : (def.cmd === 0x3106 && stopAct === 0) ? "已暫停（模式狀態保留）· 沒有回覆"
+          : def.cmd === 0x3106 ? "已全關（清燈 + 省電）· 沒有回覆"
           : def.onOff === "reboot" ? "已排程重啟 · 沒有回覆"
           : "已套用 · 沒有回覆";
+        const extraWhy = def.cmd === 0x3105
+          ? `mode_type=${req.mt} mode_id=${req.mid} start_delay_ms=${fv(2, 0)}` +
+            (setBri ? `　亮度→${req.bright}` : "　亮度 255 = 不改（沿用目前值）")
+          : def.cmd === 0x3106
+            ? (stopAct === 0 ? "action=0：停止燈效／馬達，保留模式狀態（running=0）"
+                             : `action=${stopAct}：停止 + 清燈 + 進入省電`)
+          : def.name + " 是單向指令，沒有 ACK";
         rec({ stage: noReplyText,
               topo: { act: hit.map(x => x.cid), cut: Array.from(cutWireSet),
                       reactions: (() => {
                         const r = Object.assign({}, reactions);
-                        hit.forEach(x => { r[x.cid] = { kind: "run", text: "已執行（這條不回覆）", why: def.name + " 是單向指令，沒有 ACK" }; });
+                        hit.forEach(x => { r[x.cid] = { kind: "run", text: "已執行（這條不回覆）", why: extraWhy }; });
                         return r;
                       })() },
               apply: () => {
                 hit.forEach(x => {
-                  if (def.cmd === 0x3105) { x.on = true; x.paused = false; x.mode = req.mid || 1; x.bri = 255; }
-                  else if (def.cmd === 0x3106) { x.on = false; x.paused = false; }
-                  else if (def.onOff === "wifi") { x.wifi = !!req.enab; }
+                  if (def.cmd === 0x3105) {
+                    x.on = true; x.paused = false; x.mode = req.mid || 1;
+                    if (setBri) x.bri = req.bright;      // 255 不改；0 是合法值（最暗）
+                  }
+                  else if (def.cmd === 0x3106) {
+                    if (stopAct === 0) { x.paused = true; }          // 暫停：模式狀態保留
+                    else { x.on = false; x.paused = false; x.mode = 0; }   // 全關：清燈
+                  }
+                  else if (def.onOff === "wifi") { x.wifi = !!req.action; }
                   else if (def.onOff === "reboot") { x.on = false; x.rebooting = true; }
                 });
               },
@@ -3296,8 +3537,6 @@ const FIELD_DEFS = [
       }
 
       // 步驟 3''：查詢 —— 組回覆
-      req.enab = def.fields && def.fields[0] ? def.fields[0][1] : 0;
-      req.iface = def.fields && def.fields[0] ? def.fields[0][1] : 1;
       const frames = hit.map(x => {
         switch (def.resp) {
           case 0x3102: return rspList(x, req);
@@ -3309,7 +3548,7 @@ const FIELD_DEFS = [
           case 0x1018: return rspWebui(x, req);
           case 0x1013: return rspNetStart(x, req);
           case 0x1102: return rspStatus(x, req);
-          case 0x1104: return rspStatusAck(x, req, def.fields[0][1]);
+          case 0x1104: return rspStatusAck(x, req);
           default: return rspIdentify(x, req);
         }
       });
@@ -3319,25 +3558,46 @@ const FIELD_DEFS = [
         0x1018: "WEBUI_RSP", 0x1013: "NET_START_RSP", 0x1102: "STATUS_RSP", 0x1104: "STATUS_ACK"
       };
 
-      /* 0x100D 點名有「抖動視窗」(timeout_ms)：每台抽 [0, timeout_ms] 的隨機延遲才回
-         → 把「同時回」攤成序列，共用媒介上不會硬碰撞。
-         每一台的回覆都是**一次獨立的傳送**（兩個行為、兩個指令），
-         所以這裡每一步只處理一台 → 記錄也會分成兩列。
-         實作：slave/action/net_actions.py on_identify_req（_spread + delay_ms）    */
+      /* 0x100D 點名的「抖動視窗」(timeout_ms)：每台**各自獨立**抽一個
+         [0, timeout_ms] 的隨機延遲才回（net_actions._spread）。
+         ★ 抖動只把「同時」攤成「先後」，**不保證不撞**：
+           兩台抽到相同（或差不到一個幀的傳輸時間）的時槽時，線上還是撞在一起。
+           這裡照實模擬 —— 差 < COLLIDE_MS 就讓它撞。                        */
+      const COLLIDE_MS = 3;      // ≈ 一個 20 B 幀在 115200 下的傳輸時間（約 1.9 ms）
       const isScan = def.cmd === 0x100D;
-      const spread = isScan ? (def.fields && def.fields[1] ? def.fields[1][1] : 0) : 0;
+      const spread = isScan ? req.spread : 0;
       if (isScan && spread > 0 && frames.length >= 1) {
         const baseRx = Object.assign({}, reactions);
-        const reps = frames.map((f, idx) => ({
-          f: f, from: f.from,
-          ms: Math.round((spread / (frames.length + 1)) * (idx + 1) * (0.6 + Math.random() * 0.8))
-        })).sort((a, b) => a.ms - b.ms);
-
-        reps.forEach((z, k) => {
+        const reps = frames.map(f => ({ f: f, from: f.from, ms: randInt(spread + 1) }))
+                          .sort((a, b) => a.ms - b.ms);
+        // 把「同一個時槽」的併成一組（差 < COLLIDE_MS → 撞）
+        const groups = [];
+        reps.forEach(r => {
+          const g = groups[groups.length - 1];
+          if (g && (r.ms - g[g.length - 1].ms) < COLLIDE_MS) g.push(r); else groups.push([r]);
+        });
+        groups.forEach(g => {
+          if (g.length >= 2) {
+            const bytes = collide(g.map(z => z.f), g[0].f.payload.length);
+            const rxC = Object.assign({}, baseRx);
+            g.forEach(z => { rxC[z.from] = { kind: "collided", text: "想回覆，但撞線了",
+                              why: `抽到 ${g.map(q => q.ms + "ms").join(" / ")}（差 < ${COLLIDE_MS}ms）→ 同一時槽` }; });
+            rec({ stage: `✗ 碰撞：${g.length} 台抽到同一時槽（${g.map(q => q.ms + "ms").join(" / ")}）`,
+                  packets: g.map(z => ({ cmd: z.f.cmd || 0x100E, bytes: bytes, payload: new Uint8Array(0),
+                                         dir: "up", collide: true, sync: true, from: z.from,
+                                         delay: g[0].ms,
+                                         fromY: SBOARD[SLAVES.findIndex(s => s.cid === z.from)].y + SPIN.tx })),
+                  topo: { act: g.map(z => z.from), cut: Array.from(cutWireSet), reactions: rxC },
+                  log: { dir: "up", cmd: g[0].f.cmd || 0x100E, cmdName: "（碰撞）", addr: g[0].f.addr,
+                         from: null, bytes, payload: { length: 0 }, collide: true,
+                         note: `⚠ 抖動視窗 ${spread}ms 只降低機率：這兩台抽到相近的時槽 → 位元組互相蓋掉、CRC 必失敗` } });
+            return;
+          }
+          const z = g[0];
           const rx2 = Object.assign({}, baseRx);
           rx2[z.from] = { kind: "run", text: "已回覆 0x100E",
-                          why: "抽到延遲 " + z.ms + "ms（視窗 " + spread + "ms）→ 錯開，不撞線" };
-          const others = reps.slice(0, k).map(q => cidHex(q.from)).join("、");
+                          why: `抽到延遲 ${z.ms}ms（視窗 ${spread}ms）→ 比別人早/晚，這次沒撞上` };
+          const others = reps.filter(q => q !== z && q.ms < z.ms).map(q => cidHex(q.from)).join("、");
           rec({ stage: "◂ " + cidHex(z.from) + " 回覆 0x100E（抖動 " + z.ms + "ms）",
                 topo: { act: [z.from], cut: Array.from(cutWireSet), reactions: rx2 },
                 packets: [{ cmd: z.f.cmd || 0x100E, bytes: z.f.bytes, payload: z.f.payload,
@@ -3365,13 +3625,14 @@ const FIELD_DEFS = [
                         hit.forEach(x => { r[x.cid] = { kind: "collided", text: "想回覆，但撞線了", why: hit.length + " 台同時回，位元組互相蓋掉 → CRC 失敗" }; });
                         return r;
                       })() },
-              log: { dir: "up", cmd: def.resp || 0, cmdName: "（碰撞）", addr: masterCid,
+              log: { dir: "up", cmd: def.resp || 0, cmdName: "（碰撞）", addr: frames[0].addr,
                      from: null, bytes, payload: { length: 0 }, collide: true,
-                     note: `⚠ ${frames.length} 台同時回覆，位元組互相蓋掉 → CRC 必失敗、整幀丟棄` } });
+                     note: `⚠ ${frames.length} 台同時回覆，位元組互相蓋掉 → CRC 必失敗、整幀丟棄`
+                           + `（${def.name} 沒有抖動機制 → 廣播查詢必撞）` } });
       } else {
         const f = frames[0];
         rec({ stage: `◂ ${cidHex(f.from)} 回覆 0x${f.cmd.toString(16).toUpperCase()} → ` +
-                     (f.addr === BCAST ? "廣播" : cidHex(f.addr)),
+                     (f.addr === BCAST ? "廣播 FF" : cidHex(f.addr)),
               packets: [{ cmd: f.cmd, bytes: f.bytes, payload: f.payload, dir: "up", from: f.from }],
               topo: { act: hit.map(x => x.cid), cut: Array.from(cutWireSet),
                       reactions: (() => {
@@ -3380,15 +3641,18 @@ const FIELD_DEFS = [
                           const i2 = SLAVES.indexOf(x);
                           if (x.cid === f.from) {
                             r[x.cid] = { kind: "run", text: "已回覆 " + "0x" + f.cmd.toString(16).toUpperCase(),
-                                         why: "回覆寄到 " + (f.addr === BCAST ? "0xFFFF（未配對）" : cidHex(f.addr)) };
+                                         why: "回覆 addr = " + (f.addr === BCAST ? "0xFFFF（它自己的 master_cid 未設）" : cidHex(f.addr)) };
                           } else if (!x.power) {
                             r[x.cid] = { kind: "nopower", text: "沒通電，不參與", why: "沒過電 → 不收也不回" };
                           } else if (cutWireSet.has(i2 + "-rx")) {
                             r[x.cid] = { kind: "nocable", text: "線被拔掉，收不到", why: "RX 線斷 → 位元組到不了這台" };
+                          } else if (f.addr === BCAST) {
+                            // 廣播幀：每一台的位址過濾都會放行 —— 能不能處理看它有沒有 handler
+                            r[x.cid] = { kind: "dropped", text: "收到廣播（不是「丟棄」）→ 無對應 handler 才忽略",
+                                         why: "位址 0xFFFF → ADDR 過濾放行；誰有這條 handler 誰就會動" };
                           } else {
-                            // 共用匯流排：回覆每一台的 RX 都看得到，但位址不是它 → 無視
-                            r[x.cid] = { kind: "dropped", text: "收到回覆，但不是給我的 → 無視",
-                                         why: "位址是 " + (f.addr === BCAST ? "0xFFFF" : cidHex(f.addr)) + "，不是它 → 丟棄" };
+                            r[x.cid] = { kind: "dropped", text: "收到回覆，但不是給我的 → 丟棄",
+                                         why: "位址是 " + cidHex(f.addr) + "，不是它（" + cidHex(x.cid) + "）→ ADDR 過濾丟掉" };
                           }
                         });
                         return r;
@@ -3396,13 +3660,22 @@ const FIELD_DEFS = [
               log: { dir: "up", cmd: f.cmd, cmdName: RSP_NAME[f.cmd] || "RSP", addr: f.addr,
                      from: f.from, bytes: f.bytes, payload: f.payload,
                      note: (f.addr === BCAST
-                       ? "ADDR=0xFFFF（master_cid 未設定 → 回覆變廣播）"
-                       : "ADDR=" + cidHex(f.addr)) +
-                       (def.resp === 0x3108 ? "；帶模式名稱（UTF-8）" : "") } });
+                       ? "ADDR=0xFFFF（這一台的 master_cid 未設 → 回覆變廣播）"
+                       : "ADDR=" + cidHex(f.addr) + "（= 這一台的 master_cid）") +
+                       (f.cmd === 0x3108 ? "；帶模式名稱（UTF-8）" : "") +
+                       (f.cmd === 0x100E ? "；用請求帶的 reply_cid" : "") } });
       }
     } finally {
-      stats = realStats;
-      recordMode = false;
+      /* ★ 收尾：把這一輪的每一步「記進 session 紀錄」並累計統計。
+         紀錄與統計都只增不減 —— 之後按 ◀ ▶ 回放不會再動它們。       */
+      timeline.forEach(st => {
+        if (st.log) appendLog(st.log);
+        (st.packets || []).forEach(f => {
+          stats[f.dir === "down" ? "sent" : (f.collide ? "collide" : "replied")]++;
+        });
+        if (st.dropped) stats.dropped++;
+      });
+      refreshStats();
     }
   }
 
@@ -3412,12 +3685,9 @@ const FIELD_DEFS = [
     if (!st) return;
     if (st.apply) { st.apply(); syncLeds(); }
     if (st.packets) {
-      const bump = f => {
-        stats[f.dir === "down" ? "sent" : (f.collide ? "collide" : "replied")]++;
-        refreshStats();
-      };
+      // 播放只負責動畫；統計已在 record() 收尾時累計過了（回放不會重複計）
       const one = f => new Promise(done => {
-        const go = () => { bump(f); sendPacket(f).then(done); };
+        const go = () => { sendPacket(f).then(done); };
         f.delay ? setTimeout(go, f.delay) : go();
       });
       const delayed = st.packets.filter(f => f.delay);
@@ -3425,19 +3695,11 @@ const FIELD_DEFS = [
       // 同一批「一起發送」的（碰撞）→ 同時播；其餘照順序一台一台來
       const syncBatch = plain.filter(f => f.sync);
       const seq = plain.filter(f => !f.sync);
-      for (const f of seq) { bump(f); await sendPacket(f); }
-      if (syncBatch.length) {
-        syncBatch.forEach(bump);                       // 碰撞：每一台各算一次
-        await Promise.all(syncBatch.map(f => sendPacket(f)));
-      }
+      for (const f of seq) { await sendPacket(f); }
+      if (syncBatch.length) await Promise.all(syncBatch.map(f => sendPacket(f)));
       if (delayed.length) await Promise.all(delayed.map(f => one(f)));
     }
     if (st.topo) drawTopo(st.topo);
-    if (st.log) {
-      if (st.dropped) stats.dropped++;
-      logRow(st.log);
-      refreshStats();
-    }
     if (st.stage) setStage(st.stage);
     syncLeds();
     updateCtlUI();
@@ -3488,15 +3750,10 @@ const FIELD_DEFS = [
     cursor = 0; cursorLabel();
     for (let i = 0; i < k; i++) {
       cursor++;
-      // 重建時不播動畫，只把狀態與記錄補到那一點
+      // 重建只把「裝置狀態」補到那一點；紀錄與統計不受影響
       const st = timeline[i];
       if (st.apply) st.apply();
-      if (st.packets) st.packets.forEach(f => { stats[f.dir === "down" ? "sent" : (f.collide ? "collide" : "replied")]++; });
-      if (st.dropped) stats.dropped++;
     }
-    // 記錄只留到第 k 步
-    const rows = timeline.slice(0, k).filter(x => x.log).map(x => x.log);
-    renderLog(rows);
     const last = timeline[k - 1];
     if (last && last.topo) drawTopo(last.topo); else drawTopo({});
     if (last && last.stage) setStage(last.stage);
@@ -3504,9 +3761,12 @@ const FIELD_DEFS = [
   }
 
   function resetDeviceState() {
-    stats.sent = stats.replied = stats.collide = stats.dropped = 0;
-    masterCid = BCAST;
-    SLAVES.forEach(x => { x.on = false; x.paused = false; x.mode = 1; x.bri = 255; });
+    // 只重置「裝置狀態」；紀錄與統計是整場累計的，不在這裡清
+    SLAVES.forEach(x => {
+      x.on = false; x.paused = false; x.mode = 1; x.bri = 200;
+      x.masterCid = BCAST;                 // 每台自己的方向
+      x.wrepl = true; x.webui = (x.cid === 0x0002);   // WebREPL 開機預設開
+    });
   }
   function updateCtlUI() {
     const has = timeline.length > 0;
@@ -3545,11 +3805,11 @@ const FIELD_DEFS = [
     return b;
   }
   function buildCtl() {
-    // 目標選擇器
+    // 目標選擇器：FF ＋ 每一台節點（cid 都不一樣）
     const tp = $t("targetPick");
     if (tp) {
       tp.innerHTML = "";
-      const opts = [[null, "FF（廣播）", "ff"], [0x0001, "0x0001", ""], [0x0002, "0x0002", ""]];
+      const opts = [[null, "FF（廣播）", "ff"]].concat(SLAVES.map(s => [s.cid, cidHex(s.cid), ""]));
       opts.forEach(([v, lab, cls]) => {
         const b = document.createElement("button");
         b.className = "tbtn2 " + cls + (sendTo === v ? " on" : "");
@@ -3574,20 +3834,35 @@ const FIELD_DEFS = [
     put($t("grpSystem"), SYSTEM);
     put($t("grpStatus"), STATUS);
 
-    // 線路狀態
+    // 線路狀態：**每一台各自**的 master_cid（0x1016 只改收到的那一台）
     const wp = $t("wirePick");
     if (wp) {
       wp.innerHTML = "";
-      [["未配對", BCAST], ["已配對（master_cid=0x0001）", 0x0001]].forEach(([lab, v]) => {
-        const b = document.createElement("button");
-        b.className = "wbtn" + (masterCid === v ? " on" : "");
-        b.textContent = lab;
-        b.addEventListener("click", () => { masterCid = v; buildCtl(); drawTopo({}); });
-        wp.appendChild(b);
+      SLAVES.forEach(sl => {
+        const row = document.createElement("div");
+        row.className = "wirerow";
+        const nm = document.createElement("span");
+        nm.className = "wname";
+        nm.innerHTML = `${cidHex(sl.cid)} <span class="muted">${sl.label}</span>`;
+        row.appendChild(nm);
+        [[BCAST, "未配對"], [MASTER_CID, `master=${cidHex(MASTER_CID)}`]].forEach(([v, lab]) => {
+          const b = document.createElement("button");
+          b.className = "wbtn" + (sl.masterCid === v ? " on" : "");
+          b.textContent = lab;
+          b.addEventListener("click", () => { sl.masterCid = v; buildCtl(); drawTopo({}); });
+          row.appendChild(b);
+        });
+        wp.appendChild(row);
       });
-      $t("wireNote").innerHTML = masterCid === BCAST
-        ? "未配對：<code>master_cid = 0xFFFF</code>。<br>查詢的回覆會變成<b>廣播幀</b>（只有 <code>0x100E</code> 例外）。"
-        : "已配對：查詢的回覆寄到 <code>0x0001</code>。<br>按「記住我」以外的指令都不會改這個值。";
+      const unpaired = SLAVES.filter(s => s.masterCid === BCAST).map(s => cidHex(s.cid));
+      $t("wireNote").innerHTML =
+        "每台節點各自記自己的 <code>master_cid</code>（未設 = <code>0xFFFF</code>）。<br>" +
+        "查詢的回覆寄到<b>那一台自己的</b> master_cid；未配對的那台 → 回覆變<b>廣播幀</b>。" +
+        "（唯一例外：<code>0x100E</code> 用請求帶的 <code>reply_cid</code>）<br>" +
+        (unpaired.length
+          ? `目前未配對：<b>${unpaired.join("、")}</b> → 它們的回覆是廣播。`
+          : "目前全部已配對 → 回覆都是單播。") +
+        "<br>按「記住我（0x1016）」只會改<b>目標選擇器指到的那一台</b>。";
       $t("ledRow").innerHTML = ledHTML();
     }
   }
@@ -3601,22 +3876,23 @@ const FIELD_DEFS = [
       masterPower = true; paused = false; cutWireSet.clear();
       SLAVES.forEach(s => { s.power = true; });
       resetDeviceState();
-      renderLog([]);
-      refreshStats(); buildCtl(); drawTopo({}); setStage(stageStatus());
+      clearLog();
+      buildCtl(); drawTopo({}); setStage(stageStatus());
       updateCtlUI();
       note("已重置（含時間軸）。", true);
       return;
     }
-    if (name === "normal") { run(QUERIES[1], 0x0001); return; }
+    if (name === "normal") { run(QUERIES[1], SLAVES[0].cid); return; }
     if (name === "broadcast") { run(CONTROLS[1], BCAST); return; }
     if (name === "pair") {
       // 一次記錄 6 個封包 → 從頭自動播放（可用控制器單步看）
       busy = true;
       setPlaying(false);
+      const a = SLAVES[0].cid, b = SLAVES[1].cid;
       const list = [
-        [QUERIES[0], 0x0001], [QUERIES[0], 0x0002],
-        [QUERIES[1], 0x0001], [QUERIES[1], 0x0002],
-        [CONTROLS[2], 0x0001], [CONTROLS[2], 0x0002]
+        [QUERIES[0], a], [QUERIES[0], b],
+        [QUERIES[1], a], [QUERIES[1], b],
+        [CONTROLS[2], a], [CONTROLS[2], b]
       ];
       timeline = []; cursor = 0;
       list.forEach(([d, cid]) => {
@@ -3636,6 +3912,11 @@ const FIELD_DEFS = [
   // 分頁切換後才量得到尺寸 → 讓分頁切換器能叫我們重畫
   window.__simActivate = () => { drawTopo({}); };
   refreshStats();
+  $t("clearLog").addEventListener("click", () => {
+    clearLog();
+    note("流量記錄與統計已清空（裝置狀態不變）。", true);
+  });
+  $t("simResetAll").addEventListener("click", () => scenario("reset"));
   $t("snNormal").addEventListener("click", () => scenario("normal"));
   $t("snBroadcast").addEventListener("click", () => scenario("broadcast"));
   $t("snPair").addEventListener("click", () => scenario("pair"));
@@ -3665,14 +3946,16 @@ const FIELD_DEFS = [
     busy = false; updateCtlUI();
   });
   $t("failOne").addEventListener("click", () => {
-    const i = SLAVES.findIndex(s => s.cid === 0x0002);
+    const victim = SLAVES[SLAVES.length - 1];          // 最後一台（燈條 B）
+    const i = SLAVES.indexOf(victim);
     cutWireSet.add(i + "-rx"); cutWireSet.add(i + "-tx");
-    note(`${cidHex(0x0002)} 的 RX/TX 都拔掉了 → 它收不到、也回不了`);
-    drawTopo({ cut: Array.from(cutWireSet), nopower: [0x0002] });
+    note(`${cidHex(victim.cid)} 的 RX/TX 都拔掉了 → 它收不到、也回不了`);
+    drawTopo({ cut: Array.from(cutWireSet), nopower: [victim.cid] });
   });
   $t("failPower").addEventListener("click", () => {
-    SLAVES[1].power = false;
-    note("0x0002 斷電 → 位址還在，但板子不跑，完全沒反應");
+    const victim = SLAVES[SLAVES.length - 1];
+    victim.power = false;
+    note(`${cidHex(victim.cid)} 斷電 → 位址還在，但板子不跑，完全沒反應`);
     drawTopo({ cut: Array.from(cutWireSet) });
   });
   $t("failBusy").addEventListener("click", () => {
