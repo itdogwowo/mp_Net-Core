@@ -1,0 +1,3565 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NC4 協議圖文導讀 — 從一個位元組到一條指令</title>
+<style>
+/* ============================================================
+   NC4 圖文導讀 — 版面與配色
+   目標：降低理解成本。每個概念先給「一眼看懂」的圖，
+        再給精確的數字與程式碼。
+   ============================================================ */
+:root{
+  /* 深色主題（預設） */
+  --bg:#0d1117; --bg2:#131a24; --card:#161d29; --card2:#1c2533;
+  --line:#26303f; --line2:#334052;
+  --fg:#e6edf5; --fg2:#9fb0c4; --fg3:#6b7f96;
+  --acc:#4da3ff; --acc2:#2b7fd4;
+  /* 位元組欄位配色（全站一致：同一欄位永遠同一色） */
+  --c-sof:#e0b252;  --c-ver:#a98bf5;  --c-addr:#4fd1c5;
+  --c-cmd:#ff8f6b;  --c-len:#8fd15a;  --c-data:#4da3ff;
+  --c-crc:#ff6b9d;  --c-extra:#7a8ba3;
+  --ok:#3fb950; --warn:#d29922; --bad:#f85149;
+  --mono:"SF Mono",SFMono-Regular,ui-monospace,"JetBrains Mono",Menlo,Consolas,monospace;
+  --sans:-apple-system,BlinkMacSystemFont,"Noto Sans TC","PingFang TC","Microsoft JhengHei",system-ui,sans-serif;
+}
+html[data-theme="light"]{
+  --bg:#f6f8fb; --bg2:#eef2f7; --card:#ffffff; --card2:#f2f6fb;
+  --line:#dde5ee; --line2:#c8d4e2;
+  --fg:#16212e; --fg2:#4e5f73; --fg3:#7c8ea3;
+  --acc:#0b6bcb; --acc2:#0b6bcb;
+  --ok:#1a7f37; --warn:#9a6700; --bad:#cf222e;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{
+  margin:0; background:var(--bg); color:var(--fg);
+  font-family:var(--sans); font-size:16px; line-height:1.75;
+  -webkit-font-smoothing:antialiased;
+}
+a{color:var(--acc); text-decoration:none}
+a:hover{text-decoration:underline}
+code,kbd{font-family:var(--mono); font-size:.88em}
+:not(pre)>code{
+  background:var(--card2); border:1px solid var(--line);
+  padding:.1em .38em; border-radius:4px; color:var(--fg);
+  /* 不用 nowrap：長路徑（如 slave/action/<group>_actions.py）在窄螢幕會撐破版面。
+     表格內另有 nowrap 以外的處理（見 .table-scroll）。 */
+  word-break:break-word;
+}
+
+/* ---------- 頂部導覽 ---------- */
+.topbar{
+  position:sticky; top:0; z-index:50;
+  background:color-mix(in srgb,var(--bg) 88%,transparent);
+  backdrop-filter:blur(12px);
+  border-bottom:1px solid var(--line);
+}
+.topbar-in{
+  max-width:1220px; margin:0 auto; padding:10px 24px;
+  display:flex; align-items:center; gap:18px;
+}
+.brand{font-weight:700; letter-spacing:.02em; white-space:nowrap; font-size:15px}
+.brand b{color:var(--acc)}
+.topnav{display:flex; gap:2px; overflow-x:auto; flex:1; scrollbar-width:none}
+.topnav::-webkit-scrollbar{display:none}
+.topnav a{
+  color:var(--fg2); font-size:13.5px; padding:5px 10px;
+  border-radius:6px; white-space:nowrap;
+}
+.topnav a:hover,.topnav a.on{background:var(--card2); color:var(--fg); text-decoration:none}
+.tabs{display:flex; gap:4px; flex:none}
+.tab{
+  font-family:inherit; font-size:13.5px; cursor:pointer;
+  background:transparent; border:1px solid transparent; color:var(--fg3);
+  border-radius:8px; padding:6px 13px; font-weight:600; transition:.14s; white-space:nowrap;
+}
+.tab:hover{color:var(--fg); background:var(--card2)}
+.tab.on{background:color-mix(in srgb,var(--acc) 16%,transparent); color:var(--acc); border-color:color-mix(in srgb,var(--acc) 45%,transparent)}
+.tabpanel[hidden]{display:none !important}
+.side a.xlink{color:var(--acc); border-left-color:var(--acc)}
+.tbtn{
+  background:var(--card2); border:1px solid var(--line); color:var(--fg2);
+  border-radius:7px; padding:5px 10px; font-size:13px; cursor:pointer;
+  font-family:inherit; white-space:nowrap;
+}
+.tbtn:hover{color:var(--fg); border-color:var(--line2)}
+
+/* ---------- 版面骨架 ---------- */
+.wrap{max-width:1220px; margin:0 auto; padding:0 24px 120px}
+.layout{display:grid; grid-template-columns:1fr 232px; gap:48px; align-items:start}
+.side{position:sticky; top:74px; align-self:start; max-height:calc(100vh - 100px); overflow:auto}
+.side h4{margin:0 0 10px; font-size:12px; letter-spacing:.12em; text-transform:uppercase; color:var(--fg3)}
+.side a{
+  display:block; color:var(--fg2); font-size:13.5px; padding:4px 10px;
+  border-left:2px solid var(--line); line-height:1.45;
+}
+.side a:hover{color:var(--fg); text-decoration:none; background:var(--card2)}
+.side a.on{color:var(--acc); border-left-color:var(--acc); background:var(--card2)}
+
+/* ---------- Hero ---------- */
+.hero{padding:64px 0 40px}
+.hero .kicker{
+  display:inline-flex; align-items:center; gap:8px;
+  font-size:12.5px; letter-spacing:.1em; text-transform:uppercase;
+  color:var(--acc); border:1px solid color-mix(in srgb,var(--acc) 40%,transparent);
+  background:color-mix(in srgb,var(--acc) 10%,transparent);
+  padding:4px 12px; border-radius:100px; margin-bottom:22px;
+}
+.hero h1{
+  font-size:clamp(30px,4.4vw,50px); line-height:1.2; margin:0 0 18px;
+  letter-spacing:-.02em; font-weight:800;
+}
+.hero h1 em{font-style:normal; color:var(--acc)}
+.hero p.lead{font-size:18px; color:var(--fg2); max-width:62ch; margin:0 0 30px}
+.facts{display:flex; flex-wrap:wrap; gap:10px}
+.fact{
+  background:var(--card); border:1px solid var(--line); border-radius:10px;
+  padding:10px 14px; min-width:104px;
+}
+.fact .k{font-size:11.5px; color:var(--fg3); letter-spacing:.06em; text-transform:uppercase}
+.fact .v{font-family:var(--mono); font-size:17px; font-weight:600; color:var(--fg)}
+.fact .v small{font-size:11.5px; color:var(--fg3); font-weight:400; margin-left:3px}
+
+/* ---------- 章節 ---------- */
+section{padding:56px 0 8px; border-top:1px solid var(--line); margin-top:40px}
+section:first-of-type{border-top:0}
+.ch{display:flex; align-items:baseline; gap:14px; margin-bottom:8px}
+.ch .n{
+  font-family:var(--mono); font-size:13px; color:var(--acc);
+  border:1px solid color-mix(in srgb,var(--acc) 40%,transparent);
+  border-radius:6px; padding:1px 8px; flex:none;
+}
+.ch h2{margin:0; font-size:clamp(22px,2.6vw,30px); letter-spacing:-.01em; font-weight:750}
+.sub{color:var(--fg2); margin:0 0 30px; font-size:16.5px; max-width:70ch}
+h3{font-size:18.5px; margin:38px 0 12px; font-weight:700}
+h4{font-size:15.5px; margin:24px 0 8px; font-weight:650; color:var(--fg)}
+p{margin:0 0 14px}
+.muted{color:var(--fg3); font-size:14px}
+
+/* ---------- 卡片 / 格線 ---------- */
+.grid{display:grid; gap:16px}
+.g2{grid-template-columns:repeat(2,minmax(0,1fr))}
+.g3{grid-template-columns:repeat(3,minmax(0,1fr))}
+.g4{grid-template-columns:repeat(4,minmax(0,1fr))}
+.card{
+  background:var(--card); border:1px solid var(--line); border-radius:12px;
+  padding:18px 20px;
+}
+.card h5{margin:0 0 8px; font-size:15.5px; display:flex; align-items:center; gap:8px}
+.card p:last-child{margin-bottom:0}
+.card .ico{
+  width:26px; height:26px; border-radius:7px; flex:none;
+  display:grid; place-items:center; font-size:14px;
+  background:var(--card2); border:1px solid var(--line2);
+}
+.pan{background:var(--card); border:1px solid var(--line); border-radius:14px; padding:22px}
+.note{
+  border-left:3px solid var(--acc); background:var(--card2);
+  border-radius:0 10px 10px 0; padding:14px 18px; margin:18px 0;
+}
+.note.warn{border-left-color:var(--warn)}
+.note.bad{border-left-color:var(--bad)}
+.note.ok{border-left-color:var(--ok)}
+.note .t{font-size:13px; font-weight:700; letter-spacing:.04em; margin-bottom:5px; display:block}
+.note.warn .t{color:var(--warn)} .note.bad .t{color:var(--bad)}
+.note.ok .t{color:var(--ok)} .note .t{color:var(--acc)}
+.note p:last-child{margin-bottom:0}
+
+/* ---------- 表格 ---------- */
+table{width:100%; border-collapse:collapse; margin:16px 0; font-size:14.5px}
+th,td{text-align:left; padding:9px 12px; border-bottom:1px solid var(--line); vertical-align:top}
+th{color:var(--fg3); font-size:12.5px; letter-spacing:.06em; text-transform:uppercase; font-weight:600}
+tbody tr:hover{background:var(--card2)}
+td code{white-space:nowrap}
+
+/* ---------- 程式碼 ---------- */
+pre{
+  background:var(--bg2); border:1px solid var(--line); border-radius:10px;
+  padding:14px 16px; overflow:auto; font-family:var(--mono);
+  font-size:13.2px; line-height:1.65; margin:14px 0;
+}
+pre .c{color:var(--fg3)}          /* 註解 */
+pre .k{color:var(--c-ver)}        /* 關鍵字 */
+pre .s{color:var(--c-len)}        /* 字串 */
+pre .n{color:var(--c-cmd)}        /* 數字/常數 */
+pre .f{color:var(--acc)}          /* 函式名 */
+
+/* ============================================================
+   封包拆解：位元組格
+   ============================================================ */
+.pktgrid{
+  display:grid; grid-template-columns:repeat(18,1fr);
+  gap:2px; margin:20px 0 6px;
+}
+.pb{
+  position:relative; border-radius:3px; background:var(--f);
+  color:#0b0f14; font-family:var(--mono); font-size:11.5px; font-weight:700;
+  display:grid; place-items:center; height:30px; cursor:pointer;
+  transition:transform .12s, box-shadow .12s; opacity:.9;
+  overflow:hidden;
+}
+.pb:hover{transform:translateY(-2px) scale(1.06); box-shadow:0 4px 14px rgba(0,0,0,.4); z-index:5; opacity:1}
+.pb.first{border-left:2px solid rgba(0,0,0,.45)}
+.pb.dim{opacity:.28}
+.pb.sel{opacity:1; box-shadow:0 0 0 2px var(--fg), 0 4px 16px rgba(0,0,0,.5); transform:translateY(-2px); z-index:6}
+.pktgrid.hideval .pb{color:transparent}
+.offrow{
+  display:grid; grid-template-columns:repeat(18,1fr); gap:2px;
+  font-family:var(--mono); font-size:9.5px; color:var(--fg3); margin-bottom:12px;
+}
+.offrow span{text-align:center}
+
+/* 欄位圖例（可點） */
+.legend{display:flex; flex-wrap:wrap; gap:7px; margin:14px 0 4px}
+.lg{
+  display:flex; align-items:center; gap:7px; cursor:pointer;
+  background:var(--card2); border:1px solid var(--line); border-radius:8px;
+  padding:5px 11px; font-size:13px; font-family:var(--mono);
+  transition:.12s;
+}
+.lg:hover{border-color:var(--line2); background:var(--card)}
+.lg.on{border-color:var(--fg); background:var(--card)}
+.lg i{width:11px; height:11px; border-radius:3px; background:var(--f); flex:none}
+.lg b{font-weight:700}
+.lg span{color:var(--fg3); font-size:11.5px}
+
+/* CRC 覆蓋範圍條 */
+.crcbar{margin:22px 0 6px}
+.crcbar .track{
+  display:grid; grid-template-columns:repeat(18,1fr); gap:2px; height:26px; align-items:center;
+}
+.crcbar .cell{height:6px; border-radius:3px; background:var(--line); opacity:.55}
+.crcbar .cell.in{background:var(--c-crc); opacity:1}
+.crcbar .lbl{font-size:12.5px; color:var(--fg2); margin-top:8px}
+.crcbar .lbl code{color:var(--c-crc)}
+
+/* 欄位詳解面板 */
+.detail{
+  margin-top:20px; background:var(--card); border:1px solid var(--line);
+  border-radius:12px; padding:18px 20px; min-height:132px;
+}
+.detail .dh{display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:10px}
+.detail .dh .nm{font-family:var(--mono); font-size:19px; font-weight:700; color:var(--fg)}
+.detail .dh .tag{
+  font-size:12px; padding:2px 9px; border-radius:100px;
+  border:1px solid var(--line2); color:var(--fg2); font-family:var(--mono);
+}
+.detail .dh .tag.byte{background:var(--card2)}
+.detail dl{display:grid; grid-template-columns:96px 1fr; gap:4px 14px; margin:0; font-size:14.5px}
+.detail dt{color:var(--fg3); font-size:13px}
+.detail dd{margin:0}
+.detail dd code{white-space:normal; word-break:break-all}
+
+/* ============================================================
+   黏包拆包模擬器
+   ============================================================ */
+.simtop{display:flex; gap:14px; flex-wrap:wrap; align-items:center; margin-bottom:16px}
+.simtop label{font-size:13px; color:var(--fg2); display:flex; gap:7px; align-items:center}
+input[type=range]{accent-color:var(--acc); width:130px}
+.btn{
+  font-family:inherit; font-size:13.5px; cursor:pointer;
+  background:var(--acc); color:#fff; border:1px solid var(--acc);
+  border-radius:8px; padding:7px 15px; font-weight:600;
+}
+.btn:hover{filter:brightness(1.1)}
+.btn.ghost{background:var(--card2); color:var(--fg2); border-color:var(--line)}
+.btn.ghost:hover{color:var(--fg); border-color:var(--line2)}
+.btn.ghost.on{background:color-mix(in srgb,var(--ok) 22%,transparent); color:var(--fg); border-color:var(--ok)}
+.btn:disabled{opacity:.45; cursor:not-allowed}
+
+.simstage{
+  background:var(--bg2); border:1px solid var(--line); border-radius:12px;
+  padding:16px; margin-bottom:14px;
+}
+.simstage .sh{
+  font-size:12px; letter-spacing:.08em; text-transform:uppercase;
+  color:var(--fg3); margin-bottom:10px; display:flex; justify-content:space-between; gap:10px;
+}
+.bufstrip{display:flex; flex-wrap:wrap; gap:2px; min-height:30px; align-items:center}
+.by{
+  font-family:var(--mono); font-size:11px; font-weight:700;
+  padding:5px 3px; border-radius:3px; min-width:23px; text-align:center;
+  background:var(--card2); color:var(--fg2); border:1px solid var(--line);
+  transition:.15s;
+}
+.by.fresh{background:color-mix(in srgb,var(--acc) 34%,transparent); color:var(--fg); border-color:var(--acc)}
+.by.scan{background:color-mix(in srgb,var(--bad) 30%,transparent); border-color:var(--bad); color:var(--fg); transform:translateY(-3px)}
+.by.sof{background:color-mix(in srgb,var(--c-sof) 45%,transparent); border-color:var(--c-sof); color:var(--fg)}
+.by.wait{background:color-mix(in srgb,var(--warn) 28%,transparent); border-color:var(--warn); color:var(--fg)}
+.by.empty{color:var(--fg3); opacity:.5}
+.simlog{
+  font-family:var(--mono); font-size:12.4px; line-height:1.85;
+  max-height:190px; overflow:auto;
+}
+.simlog div{border-bottom:1px solid var(--line); padding:2px 0; display:flex; gap:10px}
+.simlog .tm{color:var(--fg3); flex:none}
+.simlog .ok{color:var(--ok)} .simlog .er{color:var(--bad)}
+.simlog .wn{color:var(--warn)} .simlog .in{color:var(--fg2)}
+.stats{display:flex; gap:10px; flex-wrap:wrap; margin-top:12px}
+.stat{
+  background:var(--card); border:1px solid var(--line); border-radius:10px;
+  padding:9px 14px; min-width:88px;
+}
+.stat .k{font-size:11px; color:var(--fg3); text-transform:uppercase; letter-spacing:.06em}
+.stat .v{font-family:var(--mono); font-size:17px; font-weight:700}
+.stat.ok .v{color:var(--ok)} .stat.er .v{color:var(--bad)} .stat.wn .v{color:var(--warn)}
+
+/* ============================================================
+   Schema 組包器
+   ============================================================ */
+.builder{display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:20px}
+.cmdpick{display:flex; gap:8px; flex-wrap:wrap; margin-bottom:16px}
+.pill{
+  font-family:var(--mono); font-size:13px; cursor:pointer;
+  background:var(--card2); border:1px solid var(--line); color:var(--fg2);
+  border-radius:8px; padding:7px 13px; transition:.12s;
+}
+.pill:hover{border-color:var(--line2); color:var(--fg)}
+.pill.on{background:color-mix(in srgb,var(--acc) 20%,transparent); border-color:var(--acc); color:var(--fg); font-weight:600}
+.fields{display:flex; flex-direction:column; gap:10px}
+.fld{display:grid; grid-template-columns:minmax(90px,150px) 1fr; gap:12px; align-items:center}
+.fld label{font-family:var(--mono); font-size:13.5px; color:var(--fg)}
+.fld label small{display:block; font-family:var(--sans); font-size:11.5px; color:var(--fg3)}
+.fld input{
+  background:var(--bg2); border:1px solid var(--line); color:var(--fg);
+  border-radius:7px; padding:7px 11px; font-family:var(--mono); font-size:13.5px;
+  width:100%;
+}
+.fld input:focus{outline:none; border-color:var(--acc); box-shadow:0 0 0 3px color-mix(in srgb,var(--acc) 22%,transparent)}
+.outblock{margin-top:16px}
+.outblock .ol{
+  font-size:11.5px; letter-spacing:.08em; text-transform:uppercase;
+  color:var(--fg3); margin-bottom:6px; display:flex; justify-content:space-between; gap:10px; align-items:center;
+}
+.hexbox{
+  font-family:var(--mono); font-size:13px; word-break:break-all; line-height:1.9;
+  background:var(--bg2); border:1px solid var(--line); border-radius:9px; padding:11px 13px;
+}
+.hexbox .b{display:inline-block; padding:1px 3px; border-radius:3px; margin:1px 0; cursor:default}
+.hexbox .b:hover{background:color-mix(in srgb,var(--fg) 18%,transparent)}
+.badge{
+  font-size:11.5px; padding:2px 9px; border-radius:100px;
+  border:1px solid var(--line2); color:var(--fg2); font-weight:600;
+}
+.badge.ok{background:color-mix(in srgb,var(--ok) 18%,transparent); border-color:var(--ok); color:var(--ok)}
+.badge.er{background:color-mix(in srgb,var(--bad) 18%,transparent); border-color:var(--bad); color:var(--bad)}
+.tysplit{display:flex; gap:2px; margin:14px 0 6px; flex-wrap:wrap}
+.tyb{
+  font-family:var(--mono); font-size:11px; font-weight:700; color:#0b0f14;
+  padding:5px 6px; border-radius:3px; background:var(--f);
+}
+
+/* ============================================================
+   定址模型
+   ============================================================ */
+.lanes{position:relative; padding:8px 0}
+.lane{
+  border:1px dashed var(--line2); border-radius:12px; padding:14px 18px;
+  margin:0 0 46px; position:relative; background:var(--card);
+}
+.lane .lt{
+  position:absolute; top:-11px; left:16px; background:var(--bg);
+  padding:0 9px; font-size:12.5px; letter-spacing:.06em; color:var(--fg2);
+  font-family:var(--mono);
+}
+.lane.protocol{border-color:color-mix(in srgb,var(--c-addr) 60%,transparent)}
+.lane.radio{border-color:color-mix(in srgb,var(--c-crc) 60%,transparent)}
+.lane .items{display:flex; gap:12px; flex-wrap:wrap}
+.addr{
+  background:var(--card2); border:1px solid var(--line); border-radius:9px;
+  padding:9px 13px; font-family:var(--mono); font-size:13px; flex:1; min-width:150px;
+}
+.addr b{display:block; font-size:11.5px; color:var(--fg3); font-family:var(--sans); letter-spacing:.04em; margin-bottom:3px}
+.addr .val{color:var(--c-addr); font-weight:700}
+.addr.mac .val{color:var(--c-crc); font-weight:700}
+.bridge{
+  position:absolute; left:50%; transform:translateX(-50%);
+  display:flex; flex-direction:column; align-items:center; gap:2px;
+  font-size:12px; color:var(--fg3); margin-top:-24px;
+}
+.bridge .ar{font-size:16px; line-height:1; color:var(--fg3)}
+.bridge .txt{background:var(--bg); padding:0 8px; white-space:nowrap}
+
+/* 時序圖 */
+.seq{margin:22px 0; overflow-x:auto}
+.seq svg{min-width:640px; width:100%; height:auto}
+
+/* 傳輸層 */
+.transports{display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:12px; margin:20px 0}
+.tr{
+  background:var(--card); border:1px solid var(--line); border-radius:11px;
+  padding:14px 16px; position:relative; overflow:hidden;
+}
+.tr::before{content:""; position:absolute; left:0; top:0; bottom:0; width:3px; background:var(--f)}
+.tr .tn{font-family:var(--mono); font-weight:700; font-size:14px; color:var(--f)}
+.tr .tf{font-family:var(--mono); font-size:11.5px; color:var(--fg3); margin:3px 0 8px}
+.tr .td{font-size:13.5px; color:var(--fg2); line-height:1.6}
+.tr .tk{
+  font-size:11px; display:inline-block; margin-top:9px; padding:2px 8px;
+  border-radius:100px; border:1px solid var(--line2); color:var(--fg3);
+}
+
+/* 域地圖 */
+.domains{display:grid; grid-template-columns:repeat(auto-fit,minmax(168px,1fr)); gap:11px; margin:20px 0}
+.dom{
+  background:var(--card); border:1px solid var(--line); border-radius:11px;
+  padding:13px 15px; border-top:3px solid var(--f);
+}
+.dom .dc{font-family:var(--mono); font-size:16px; font-weight:700; color:var(--f)}
+.dom .dn{font-size:14.5px; font-weight:650; margin:3px 0 5px}
+.dom .dd{font-size:12.8px; color:var(--fg2); line-height:1.55}
+.dom .dq{font-family:var(--mono); font-size:11.5px; color:var(--fg3); margin-top:7px}
+.dom.dead{opacity:.45}
+
+/* 流程箭頭 */
+.flow{display:flex; align-items:stretch; gap:0; flex-wrap:wrap; margin:20px 0}
+.step{
+  flex:1; min-width:132px; background:var(--card); border:1px solid var(--line);
+  padding:13px 15px; position:relative;
+}
+.step:first-child{border-radius:11px 0 0 11px}
+.step:last-child{border-radius:0 11px 11px 0}
+.step+.step{border-left:0}
+.step .sn{font-family:var(--mono); font-size:11.5px; color:var(--acc)}
+.step .st{font-weight:650; font-size:14px; margin:3px 0 4px}
+.step .sd{font-size:12.6px; color:var(--fg2); line-height:1.55}
+.step::after{
+  content:"›"; position:absolute; right:-8px; top:50%; transform:translateY(-50%);
+  color:var(--fg3); font-size:20px; z-index:2; background:var(--bg);
+  width:16px; text-align:center; line-height:1;
+}
+.step:last-child::after{content:""}
+
+/* 檔案清單 */
+.files{display:grid; grid-template-columns:repeat(auto-fit,minmax(258px,1fr)); gap:10px; margin:18px 0}
+.fl{
+  background:var(--card); border:1px solid var(--line); border-radius:9px;
+  padding:11px 14px;
+}
+.fl .fn{font-family:var(--mono); font-size:13.2px; color:var(--acc); word-break:break-all}
+.fl .fd{font-size:13px; color:var(--fg2); margin-top:3px}
+
+/* 深/淺色切換的過渡 */
+body,.card,.pan,.lane,.simstage,.detail,.dom,.tr,.step{
+  transition:background-color .18s, border-color .18s, color .18s;
+}
+
+@media (max-width:1020px){
+  /* 側欄隱藏時，網格也必須收成單欄 —— 否則會留下一條 232px 的空欄造成水平溢出 */
+  .layout{grid-template-columns:minmax(0,1fr)}
+  .topbar-in{min-width:0}
+  .brand{flex:none}
+  .topnav{min-width:0}
+  .side{display:none}
+  .g2,.g3,.g4{grid-template-columns:1fr}
+  .builder{grid-template-columns:1fr}
+  .fld{grid-template-columns:1fr}
+  .wrap{padding:0 18px 80px}
+  .topbar-in{padding:10px 18px}
+  .detail dl{grid-template-columns:1fr; gap:2px 0}
+  .detail dt{margin-top:8px}
+  .step::after{display:none}
+  .step{border-radius:0 !important; border-left:1px solid var(--line) !important}
+  .step:first-child{border-radius:11px 11px 0 0 !important}
+  .step:last-child{border-radius:0 0 11px 11px !important}
+  .step+.step{border-top:0}
+}
+/* 表格太寬時自己捲動，不要撐破整個頁面 */
+.table-scroll{overflow-x:auto; margin:16px 0; -webkit-overflow-scrolling:touch}
+.table-scroll>table{margin:0}
+.table-scroll td code,.table-scroll th code{white-space:normal; word-break:break-word}
+
+/* ============================================================
+   章節 07 — 匯流排模擬器
+   ============================================================ */
+.simwork{
+  display:grid; grid-template-columns:minmax(300px,336px) minmax(0,1fr);
+  gap:20px; align-items:start; margin:18px 0 22px;
+}
+/* 左右兩欄都限高、各自捲動 —— 高度用同一個算式，所以看起來一樣高 */
+.simwork{
+  --stage-h: clamp(540px, calc(100vh - 120px), 780px);
+}
+.simwork>*{align-self:start; min-width:0}
+.simleft,.simright{
+  height:var(--stage-h);
+  overflow-y:auto; overflow-x:hidden;
+  overscroll-behavior:contain;
+  scrollbar-gutter:stable;
+}
+.simright{position:sticky; top:76px; display:flex; flex-direction:column; justify-content:center}
+.simright .simwrap{flex:0 0 auto}
+/* 細捲軸（滑鼠移上去才明顯） */
+.simleft::-webkit-scrollbar,.simright::-webkit-scrollbar{width:8px}
+.simleft::-webkit-scrollbar-thumb,.simright::-webkit-scrollbar-thumb{
+  background:var(--line2); border-radius:4px;
+}
+.simleft::-webkit-scrollbar-thumb:hover,.simright::-webkit-scrollbar-thumb:hover{background:var(--fg3)}
+.simleft::-webkit-scrollbar-track,.simright::-webkit-scrollbar-track{background:transparent}
+.simleft,.simright{scrollbar-width:thin; scrollbar-color:var(--line2) transparent}
+.simctl{
+  display:grid; grid-template-columns:1fr;   /* 控制盤一律單欄，把寬度讓給拓撲 */
+  gap:10px; margin:0 0 14px;
+}
+.simctl .grp{padding:11px 13px}
+.simctl summary{
+  display:flex; justify-content:space-between; align-items:center; gap:8px;
+  cursor:pointer; list-style:none; font-size:11.5px; letter-spacing:.08em;
+  text-transform:uppercase; color:var(--fg3); user-select:none;
+}
+.simctl summary::-webkit-details-marker{display:none}
+.simctl summary::after{content:"▾"; font-size:11px; color:var(--fg3); transition:.15s; flex:none}
+.simctl details[open] summary::after{transform:rotate(180deg)}
+.simctl summary:hover{color:var(--fg)}
+.simctl details[open] summary{margin-bottom:10px}
+.simctl .cmdbtn{font-size:13px; padding:6px 10px}
+.simctl .cmdbtn .cm{font-size:11px}
+.stagetop{
+  display:flex; justify-content:space-between; align-items:center; gap:10px;
+  margin:-4px 0 10px;
+}
+#stageTitle{font-size:12.5px; color:var(--fg2); font-family:var(--mono); min-width:0;
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+.transport{display:flex; align-items:center; gap:5px; flex:none}
+.tp{
+  font-family:inherit; font-size:12.5px; cursor:pointer; line-height:1;
+  background:var(--card2); border:1px solid var(--line); color:var(--fg2);
+  border-radius:7px; padding:6px 9px; transition:.12s; white-space:nowrap;
+}
+.tp:hover:not(:disabled){color:var(--fg); border-color:var(--acc); background:color-mix(in srgb,var(--acc) 12%,transparent)}
+.tp:disabled{opacity:.35; cursor:not-allowed}
+.tp.wide{padding:6px 11px; font-weight:600}
+.tp.wide.on{background:color-mix(in srgb,var(--ok) 22%,transparent); border-color:var(--ok); color:var(--fg)}
+.cur{font-family:var(--mono); font-size:11.5px; color:var(--fg3); min-width:44px; text-align:center}
+.simctl .grp{
+  background:var(--card); border:1px solid var(--line);
+  border-radius:11px; padding:13px 15px;
+}
+.simctl .gh{
+  font-size:11.5px; letter-spacing:.08em; text-transform:uppercase;
+  color:var(--fg3); margin-bottom:9px; display:flex; justify-content:space-between; gap:8px;
+}
+.cmdbtn{
+  display:block; width:100%; text-align:left; margin-bottom:6px;
+  background:var(--card2); border:1px solid var(--line); color:var(--fg);
+  border-radius:8px; padding:7px 11px; cursor:pointer;
+  font-family:inherit; font-size:13.5px; line-height:1.4; transition:.12s;
+}
+.cmdbtn:hover:not(:disabled){border-color:var(--acc); background:color-mix(in srgb,var(--acc) 12%,transparent)}
+.cmdbtn:disabled{opacity:.4; cursor:not-allowed}
+.cmdbtn code{font-size:12px; color:var(--acc); background:none; border:0; padding:0}
+.cmdbtn .cm{display:block; font-size:11.5px; color:var(--fg3); margin-top:2px}
+.wirepick{display:flex; gap:5px; flex-wrap:wrap}
+.wbtn{
+  flex:1; min-width:60px; background:var(--card2); border:1px solid var(--line);
+  color:var(--fg2); border-radius:7px; padding:6px; cursor:pointer;
+  font-family:var(--mono); font-size:12px; transition:.12s;
+}
+.wbtn:hover{color:var(--fg); border-color:var(--line2)}
+.wbtn.on{background:color-mix(in srgb,var(--ok) 20%,transparent); border-color:var(--ok); color:var(--fg); font-weight:600}
+.ledrow{display:flex; gap:7px}
+.led{
+  width:18px; height:18px; border-radius:50%; flex:none;
+  background:color-mix(in srgb,var(--fg) 12%,transparent);
+  border:1px solid var(--line2); transition:.2s;
+}
+.led.on{background:#e0b252; border-color:#e0b252; box-shadow:0 0 10px #e0b25280}
+
+.simwrap{
+  background:var(--card); border:1px solid var(--line);
+  border-radius:14px; padding:14px; overflow-x:auto;
+}
+.simwrap svg{width:100%; height:auto; max-height:calc(var(--stage-h, 640px) - 74px); display:block; margin:0 auto}
+.simwrap svg text{font-family:var(--mono)}
+.simwrap svg .hit:hover{stroke:var(--acc) !important; stroke-opacity:.45 !important}
+@keyframes nxPulse{0%{r:5;opacity:.95}100%{r:17;opacity:0}}
+@keyframes nxRing{0%{r:5;opacity:.9}100%{r:19;opacity:0}}
+.nxpulse{animation:nxPulse .55s ease-out forwards}
+.nxring{animation:nxRing .45s ease-out forwards}
+.nlab{font-size:12px; fill:var(--fg2)}
+.nval{font-size:15px; font-weight:700; fill:var(--fg)}
+.ntiny{font-size:10.5px; fill:var(--fg3)}
+.nbox{fill:var(--card2); stroke:var(--line2); stroke-width:1.5}
+.nbox.hot{stroke:var(--acc); stroke-width:2.4}
+.nbox.act{stroke:var(--ok); stroke-width:2.4}
+.nbox.miss{stroke:var(--bad); stroke-width:2.4; stroke-dasharray:5 4}
+.pktext{font-size:10px; font-weight:700; fill:#0b0f14}
+.warnlab{font-size:10.5px; fill:var(--warn)}
+
+.simtable{margin-top:18px}
+.simtable table{font-size:13.5px}
+.simtable td code{white-space:normal; word-break:break-all; font-size:12.5px}
+.chip{
+  display:inline-block; font-size:11.5px; padding:2px 8px; border-radius:6px;
+  border:1px solid var(--line2); color:var(--fg2);
+  white-space:nowrap; line-height:1.5;
+}
+/* 方向／指令欄不要擠壓，否則 chip 會被折成圓形 */
+.simtable td:nth-child(1),.simtable th:nth-child(1){width:48px}
+.simtable td:nth-child(2),.simtable th:nth-child(2){white-space:nowrap}
+.simtable td:nth-child(3),.simtable th:nth-child(3){white-space:nowrap}
+.chip.ff{background:color-mix(in srgb,var(--c-sof) 20%,transparent); border-color:var(--c-sof); color:var(--fg)}
+.chip.uni{background:color-mix(in srgb,var(--c-addr) 20%,transparent); border-color:var(--c-addr); color:var(--fg)}
+.chip.no{background:color-mix(in srgb,var(--fg) 8%,transparent)}
+.chip.yes{background:color-mix(in srgb,var(--ok) 20%,transparent); border-color:var(--ok); color:var(--fg)}
+.chip.col{background:color-mix(in srgb,var(--bad) 20%,transparent); border-color:var(--bad); color:var(--fg)}
+
+@media (max-width:1080px){
+  .simwork{grid-template-columns:1fr}
+  .simright{position:sticky; top:60px; z-index:5; order:-1}
+  .simwrap{padding:10px}
+  .simwrap svg{min-width:0}
+  /* 手機／平板：不鎖高度，改成滑整頁；舞台留一個可視高度就好 */
+  .simwork{--stage-h:auto}
+  .simleft,.simright{height:auto; max-height:none; overflow:visible}
+  .simright{max-height:min(58vh, 460px); overflow-y:auto}
+}
+@media (max-width:1020px){
+  .simctl{grid-template-columns:1fr}
+}
+@media print{
+  .topbar,.side,.simtop,.btn{display:none}
+  section{break-inside:avoid}
+  body{background:#fff; color:#000}
+}
+</style>
+</head>
+<body>
+<div class="topbar">
+  <div class="topbar-in">
+    <div class="tabs" id="tabs">
+      <button class="tab" data-tab="guide">圖文導讀</button>
+      <button class="tab" data-tab="sim">匯流排模擬器</button>
+    </div>
+    <nav class="topnav" id="topnav">
+      <a href="#big">全局</a>
+      <a href="#layer">分層</a>
+      <a href="#wire">封包解剖</a>
+      <a href="#stream">黏包拆包</a>
+      <a href="#schema">Schema</a>
+      <a href="#addr">定址</a>
+      <a href="#transport">傳輸</a>
+      <a href="#domains">指令域</a>
+      <a href="#debug">排錯</a>
+      <a href="#ref">文件地圖</a>
+    </nav>
+    <button class="tbtn" id="themeBtn" title="切換深/淺色">☀︎ / ☾</button>
+  </div>
+</div>
+
+
+<div class="wrap tabpanel" id="tab-guide">
+<!-- ══════════════════════ HERO ══════════════════════ -->
+<header class="hero">
+  <div class="kicker">mp_Net-Core · 協議層導讀</div>
+  <h1>NC4：把一台裝置的「一句話」<br>拆成 <em>26 個位元組</em></h1>
+  <p class="lead">
+    這份導讀不假設你讀過任何原始碼。我們從最外層開始——先看整個系統在做什麼，
+    再一層一層往裡拆，最後你會知道封包裡每一個位元組為什麼在那裡。
+    所有圖都可以點、可以玩，數字全部來自實際的 <code>slave/lib/sys/proto.py</code>。
+  </p>
+  <div class="facts">
+    <div class="fact"><div class="k">標記 SOF</div><div class="v">"NC"</div></div>
+    <div class="fact"><div class="k">版本</div><div class="v">4</div></div>
+    <div class="fact"><div class="k">檔頭</div><div class="v">9<small>B</small></div></div>
+    <div class="fact"><div class="k">檢查碼</div><div class="v">CRC32<small>4B</small></div></div>
+    <div class="fact"><div class="k">負載上限</div><div class="v">8192<small>B</small></div></div>
+    <div class="fact"><div class="k">指令</div><div class="v">112<small>條 / 12 域</small></div></div>
+  </div>
+</header>
+
+<div class="layout">
+<main>
+
+<!-- ══════════════════════ 1 全局 ══════════════════════ -->
+<section id="big">
+  <div class="ch"><span class="n">01</span><h2>先看全局：這套協議在忙什麼</h2></div>
+  <p class="sub">
+    一句話：<b>一個上層（Server / PC / 遙控器）用同一種封包，控制很多台 ESP32，而且不管中間走的是網路線、WiFi、還是 UART 排線。</b>
+  </p>
+
+  <div class="grid g2">
+    <div class="card">
+      <h5><span class="ico">📦</span>一個封包，五種通道</h5>
+      <p>NC4 只管「封包長什麼樣」。同樣的位元組可以走 WebSocket、UDP、TCP、UART、ESP-NOW。
+      換通道不用改指令、不用改解析程式——這是整個設計最重要的取捨。</p>
+    </div>
+    <div class="card">
+      <h5><span class="ico">🎯</span>誰在講話，講給誰</h5>
+      <p>封包裡有一個 <code>ADDR</code>（2 B）。裝置只收「廣播」或「寫我位址」的封包，
+      其餘直接丟掉——所以同一條匯流排上掛十台也不會互相干擾。</p>
+    </div>
+    <div class="card">
+      <h5><span class="ico">🧩</span>指令是什麼，由設定檔決定</h5>
+      <p>「<code>0x1002</code> 這個指令帶著哪些欄位」不是寫死在程式裡，而是寫在
+      <code>schema/*.json</code>。加指令＝改 JSON ＋ 寫一個處理函式。</p>
+    </div>
+    <div class="card">
+      <h5><span class="ico">🔒</span>每個封包都自帶驗證</h5>
+      <p>尾端 4 B 的 CRC32 涵蓋「檔頭扣掉標記」＋「整個負載」。
+      位元組錯了就整包丟掉，不會把壞資料當指令執行。</p>
+    </div>
+  </div>
+
+  <h3>一趟完整的旅程（也是本頁的章節順序）</h3>
+  <div class="flow">
+    <div class="step">
+      <div class="sn">02</div><div class="st">分層</div>
+      <div class="sd">先知道「通道、位元組、指令」是三件不同的事</div>
+    </div>
+    <div class="step">
+      <div class="sn">03</div><div class="st">封包</div>
+      <div class="sd">9 B 檔頭 ＋ 負載 ＋ 4 B CRC32，逐位元組拆</div>
+    </div>
+    <div class="step">
+      <div class="sn">04</div><div class="st">解析</div>
+      <div class="sd">位元組流會黏在一起、會斷一半，怎麼救</div>
+    </div>
+    <div class="step">
+      <div class="sn">05</div><div class="st">負載</div>
+      <div class="sd">負載裡的欄位，由 schema 決定怎麼排</div>
+    </div>
+    <div class="step">
+      <div class="sn">06</div><div class="st">定址</div>
+      <div class="sd">協議位址 vs 射頻 MAC，最多人搞混的地方</div>
+    </div>
+    <div class="step">
+      <div class="sn">07</div><div class="st">模擬器</div>
+      <div class="sd">自己按，看誰回什麼、誰撞線</div>
+    </div>
+    <div class="step">
+      <div class="sn">08</div><div class="st">傳輸</div>
+      <div class="sd">同一包走五條路的差別</div>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════════════════ 2 分層 ══════════════════════ -->
+<section id="layer">
+  <div class="ch"><span class="n">02</span><h2>分層：同一件事的三種講法</h2></div>
+  <p class="sub">
+    大部分「看不懂」都來自把這三層混在一起講。先把它們分開，後面就都通了。
+  </p>
+
+  <div class="grid g3">
+    <div class="card" style="border-top:3px solid var(--c-addr)">
+      <h5><span class="ico" style="color:var(--c-addr)">①</span>通道層</h5>
+      <p><b>「東西怎麼過去的」</b></p>
+      <p class="muted">WebSocket / UDP / TCP / UART / ESP-NOW。這一層完全不知道你在傳什麼指令，
+      只負責搬位元組。它壞掉＝連線問題。</p>
+    </div>
+    <div class="card" style="border-top:3px solid var(--c-cmd)">
+      <h5><span class="ico" style="color:var(--c-cmd)">②</span>位元組層</h5>
+      <p><b>「這串位元組是不是一個完整、沒壞的封包」</b></p>
+      <p class="muted">SOF / 版本 / 長度 / CRC32。這一層只做一件事：把連續位元組流切成一幀一幀。
+      它壞掉＝CRC 錯誤、一直等資料。</p>
+    </div>
+    <div class="card" style="border-top:3px solid var(--c-ver)">
+      <h5><span class="ico" style="color:var(--c-ver)">③</span>指令層</h5>
+      <p><b>「這幀要做什麼、參數是多少」</b></p>
+      <p class="muted">CMD 碼 ＋ schema 定義的負載。這一層才開始有意義。
+      它壞掉＝欄位解錯、動作做錯。</p>
+    </div>
+  </div>
+
+  <h3>一幀從網路線到動作，中間經過誰</h3>
+  <div class="flow">
+    <div class="step" style="border-top:3px solid var(--c-addr)">
+      <div class="sn">通道層</div><div class="st">bus / rx_hub</div>
+      <div class="sd">收位元組，寫進環形緩衝</div>
+    </div>
+    <div class="step" style="border-top:3px solid var(--c-cmd)">
+      <div class="sn">位元組層</div><div class="st">StreamParser</div>
+      <div class="sd">找 SOF、湊滿長度、驗 CRC32</div>
+    </div>
+    <div class="step" style="border-top:3px solid var(--c-ver)">
+      <div class="sn">指令層</div><div class="st">SchemaCodec</div>
+      <div class="sd">把負載位元組解成欄位字典</div>
+    </div>
+    <div class="step" style="border-top:3px solid var(--c-len)">
+      <div class="sn">派發</div><div class="st">Dispatcher</div>
+      <div class="sd">依 CMD 碼找處理函式</div>
+    </div>
+    <div class="step" style="border-top:3px solid var(--ok)">
+      <div class="sn">行為</div><div class="st">actions</div>
+      <div class="sd">真的去開燈、傳檔、回話</div>
+    </div>
+  </div>
+
+  <div class="note">
+    <span class="t">為什麼要先分層</span>
+    <p>出問題時，「分層」就是你的第一把刀：<b>完全沒反應</b> → 通道層；
+    <b>封包收到了但被丟掉</b> → 位元組層；<b>動作了但不是你要的</b> → 指令層。
+    第 9 章有一張對照表可以直接查。</p>
+  </div>
+</section>
+
+<!-- ══════════════════════ 3 封包解剖 ══════════════════════ -->
+<section id="wire">
+  <div class="ch"><span class="n">03</span><h2>封包解剖：一個真實的 26 位元組</h2></div>
+  <p class="sub">
+    下面是<b>真實跑出來的</b>一幀——一台編號 <code>11401</code> 的裝置開機時廣播「我是誰」。
+    滑過或點任何一個位元組方塊，下面會告訴你它是什麼。
+  </p>
+
+  <div class="pan">
+    <div style="display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap; margin-bottom:4px">
+      <div class="muted" style="font-size:13.5px">
+        <code>SLAVE_ANNOUNCE</code>（<code>0x1002</code>）— 從機 → 廣播 — 共 26 B
+      </div>
+      <button class="btn ghost" id="toggleVal" style="font-size:12.5px; padding:5px 12px">隱藏位元組值</button>
+    </div>
+
+    <div class="pktgrid" id="pktgrid"></div>
+    <div class="offrow" id="offrow"></div>
+
+    <div class="legend" id="legend"></div>
+
+    <div class="crcbar">
+      <div class="track" id="crctrack"></div>
+      <div class="lbl" id="crclbl"></div>
+    </div>
+
+    <div class="detail" id="detail"></div>
+  </div>
+
+  <h3>位元組不是隨機排的，順序有理由</h3>
+  
+<div class="table-scroll">
+<table>
+    <thead><tr><th>欄位</th><th>大小</th><th>在本幀的值</th><th>為什麼在這裡</th></tr></thead>
+    <tbody>
+      <tr><td><code>SOF</code></td><td>2 B</td><td><code>4e 43</code>（"NC"）</td>
+        <td>放最前面，因為解析器要在雜訊裡「找起點」。兩個位元組比一個位元組不容易誤判。</td></tr>
+      <tr><td><code>VER</code></td><td>1 B</td><td><code>04</code></td>
+        <td>在 SOF 後面。舊版是 3、用 CRC16；現在是 4、用 CRC32。解析器靠它決定要不要繼續解。</td></tr>
+      <tr><td><code>ADDR</code></td><td>2 B</td><td><code>ff ff</code>（廣播）</td>
+        <td>放檔頭而不是負載：<b>通道層才能先過濾</b>，不是寫給我的封包連解都不用解。</td></tr>
+      <tr><td><code>CMD</code></td><td>2 B</td><td><code>02 10</code>（= <code>0x1002</code>）</td>
+        <td>先有指令碼，才知道負載要用哪套 schema 解。</td></tr>
+      <tr><td><code>LEN</code></td><td>2 B</td><td><code>0d 00</code>（= 13）</td>
+        <td>放負載前面：解析器先知道「還要等幾個位元組才湊成一幀」，才能處理斷在半路的資料。</td></tr>
+      <tr><td><code>DATA</code></td><td>變長</td><td>13 B</td>
+        <td>真正的內容。長度 0 是合法的（例如「查狀態」這種不帶參數的指令）。</td></tr>
+      <tr><td><code>CRC32</code></td><td>4 B</td><td><code>38 cd 53 fb</code></td>
+        <td>一定在最後：要等所有內容到齊才算得出來。</td></tr>
+    </tbody>
+  </table>
+</div>
+
+  <div class="grid g2">
+    <div class="note warn" style="margin:0">
+      <span class="t">⚠ 所有數字都是「小端序」（little-endian）</span>
+      <p><code>LEN = 13</code> 在位元組裡是 <code>0d 00</code>，不是 <code>00 0d</code>。
+      <code>0x1002</code> 是 <code>02 10</code>。寫對接工具時最常死在這裡。</p>
+    </div>
+    <div class="note" style="margin:0">
+      <span class="t">CRC32 的涵蓋範圍刻意不含 SOF</span>
+      <p>範圍是 <code>buffer[2 : 9+LEN]</code>＝從 <code>VER</code> 到負載結尾。
+      不含開頭的 "NC"（那只是同步標記），也不含 CRC 自己（算不出來）。</p>
+    </div>
+  </div>
+
+  <h4>原始碼長這樣</h4>
+  <pre><span class="c"># slave/lib/sys/proto.py — 組包的核心（節錄）</span>
+ln = <span class="f">len</span>(payload)
+total = HDR_LEN + ln + CRC_LEN          <span class="c"># 9 + 13 + 4 = 26</span>
+
+<span class="c"># 1. 檔頭 9 B：用 struct 一次寫完</span>
+struct.<span class="f">pack_into</span>(<span class="s">"&lt;2sBHHH"</span>, b, off, SOF, CUR_VER, addr, cmd, ln)
+<span class="c">#                        ↑    ↑      ↑     ↑    ↑</span>
+<span class="c">#                      2B SOF 1B VER 2B ADDR 2B CMD 2B LEN</span>
+
+<span class="c"># 2. 負載：直接寫進緩衝，不另外建 bytes</span>
+b[off + HDR_LEN : off + HDR_LEN + ln] = payload
+
+<span class="c"># 3. CRC32：範圍是 header[2:] + payload（不含 SOF、不含 CRC 自己）</span>
+crc_val = binascii.<span class="f">crc32</span>(b[off + 2 : off + HDR_LEN + ln], <span class="n">0</span>) &amp; <span class="n">0xFFFFFFFF</span>
+struct.<span class="f">pack_into</span>(<span class="s">"&lt;I"</span>, b, off + HDR_LEN + ln, crc_val)</pre>
+</section>
+
+<!-- ══════════════════════ 4 黏包拆包 ══════════════════════ -->
+<section id="stream">
+  <div class="ch"><span class="n">04</span><h2>黏包拆包：位元組流不是一封一封來的</h2></div>
+  <p class="sub">
+    如果你是從 UDP 來的，可能會以為「一次收 = 一個封包」。但在 TCP、WebSocket、UART 上，
+    位元組是<b>連續一直流</b>的：三個封包可能擠在一起到，一個封包也可能斷成兩半。
+    解析器的全部工作就是「把這條水流切回一幀一幀」。
+  </p>
+
+  <div class="grid g3">
+    <div class="card">
+      <h5><span class="ico">🧷</span>黏包</h5>
+      <p>兩幀黏在一起到。做法：切掉第一幀後<b>不要清空緩衝</b>，繼續在原地找下一個 SOF。</p>
+    </div>
+    <div class="card">
+      <h5><span class="ico">✂️</span>拆包（半包）</h5>
+      <p>幀只到一半。做法：算出 <code>9 + LEN + 4</code>，發現不夠就<b>原地等</b>，下次資料到了接在後面。</p>
+    </div>
+    <div class="card">
+      <h5><span class="ico">🧭</span>錯位</h5>
+      <p>遇到雜訊或壞封包。做法：<b>只往前移 1 個位元組</b>重新找 "NC"，而不是整包丟掉重來。</p>
+    </div>
+  </div>
+
+  <h3>規則只有五條</h3>
+  <div class="flow">
+    <div class="step"><div class="sn">①</div><div class="st">找 SOF</div>
+      <div class="sd">在緩衝裡找 <code>"NC"</code>。找不到就等更多資料，並丟掉不可能構成開頭的殘留。</div></div>
+    <div class="step"><div class="sn">②</div><div class="st">驗版本／長度</div>
+      <div class="sd"><code>VER ≠ 4</code> 或 <code>LEN &gt; 8192</code> → 這不是有效開頭，往前移 1 B 繼續找。</div></div>
+    <div class="step"><div class="sn">③</div><div class="st">湊齊一幀</div>
+      <div class="sd">需要 <code>9 + LEN + 4</code> 個位元組。不夠 → 保留緩衝，等下一批。</div></div>
+    <div class="step"><div class="sn">④</div><div class="st">驗 CRC32</div>
+      <div class="sd">通過才交出去。失敗 → 往前移 1 B，把它當成錯位資料。</div></div>
+    <div class="step"><div class="sn">⑤</div><div class="st">交出並前進</div>
+      <div class="sd">負載是<b>零拷貝</b>的記憶體視圖，指向緩衝內部，不另外複製。</div></div>
+  </div>
+
+  <div class="note warn">
+    <span class="t">第 ② 條的長度檢查不是多餘的</span>
+    <p>如果解到一段雜訊，剛好湊出 <code>"NC"</code>，後面兩個位元組又剛好被當成 <code>LEN</code>，
+    就可能得到「這一幀有 60000 個位元組」這種荒謬值。不擋的話，解析器會一直等一個永遠不會來的封包，
+    甚至把記憶體撐爆。<code>max_len = 8192</code> 就是這個保險。</p>
+  </div>
+
+  <h3>自己玩一次：模擬器</h3>
+  <p class="sub" style="margin-bottom:16px">
+    下面是真的照上面五條規則跑的解析器。它會持續產生封包流——包含黏包、半包、還有被雜訊打壞的封包。
+    看著緩衝區變化，你就能明白「為什麼要往前移 1 個位元組」。
+  </p>
+
+  <div class="pan">
+    <div class="simtop">
+      <button class="btn" id="simToggle">▶ 開始</button>
+      <button class="btn ghost" id="simStep">單步餵一批</button>
+      <button class="btn ghost" id="simGarbage">丟雜訊進去</button>
+      <button class="btn ghost" id="simReset">重置</button>
+      <label>速度 <input type="range" id="simSpeed" min="1" max="10" value="5"></label>
+      <label><input type="checkbox" id="simErr" checked> 偶爾產生壞封包</label>
+    </div>
+
+    <div class="simstage">
+      <div class="sh"><span>① 解析器緩衝區（還沒被處理掉的位元組）</span><span id="bufSize" class="muted"></span></div>
+      <div class="bufstrip" id="bufstrip"><span class="muted" style="font-size:13px">（空）</span></div>
+    </div>
+
+    <div class="simstage">
+      <div class="sh"><span>② 剛剛發生什麼事</span><span class="muted">最新在最上面</span></div>
+      <div class="simlog" id="simlog"><div><span class="tm">—</span><span class="in">按「開始」或「單步」來看解析器怎麼工作</span></div></div>
+    </div>
+
+    <div class="stats">
+      <div class="stat ok"><div class="k">成功解出</div><div class="v" id="stOk">0</div></div>
+      <div class="stat er"><div class="k">CRC 失敗</div><div class="v" id="stCrc">0</div></div>
+      <div class="stat wn"><div class="k">重新同步</div><div class="v" id="stSync">0</div></div>
+      <div class="stat"><div class="k">等待中</div><div class="v" id="stWait">0</div></div>
+      <div class="stat"><div class="k">緩衝位元組</div><div class="v" id="stBuf">0</div></div>
+    </div>
+
+    <div class="note" style="margin-top:18px">
+      <span class="t">觀察重點</span>
+      <p>當 <b>CRC 失敗</b>計數增加時，注意緩衝區是怎麼動的：它<b>只前進 1 個位元組</b>，
+      然後繼續找下一個 <code>"NC"</code>。這就是「錯位」的處理方式——成本是掃描，不是整包丟棄。
+      另外注意 <b>「等待中」</b>：那是半包，解析器沒有丟掉任何東西，只是原地等。</p>
+    </div>
+  </div>
+
+  <h4>程式碼對照</h4>
+  <pre><span class="c"># 熱路徑（實際在跑）— app.handle_stream</span>
+<span class="k">for</span> ver, addr, cmd, payload_mv <span class="k">in</span> parser:<span class="f">pop_frame</span>():
+    <span class="c"># payload_mv 是「指向緩衝內部的視圖」，零拷貝 → 必須立刻用完</span>
+    app.disp.<span class="f">dispatch</span>(cmd, payload_mv, ctx)
+
+<span class="c"># 需要跨幀持有時（正確性優先）</span>
+<span class="k">for</span> ver, addr, cmd, payload <span class="k">in</span> parser.<span class="f">pop</span>():
+    <span class="c"># pop() 會多做一次 bytes() 複製，所以可以安全留著</span>
+    handle(cmd, payload)
+
+<span class="c"># 這兩個介面的解析結果完全一樣：同樣的 SOF 重同步 / VER / LEN / CRC32 檢查。</span>
+<span class="c"># 差別只在「複不複製」。實測純解碼 8K：1.11 MB/s → 4.00 MB/s。</span></pre>
+</section>
+
+<!-- ══════════════════════ 5 Schema ══════════════════════ -->
+<section id="schema">
+  <div class="ch"><span class="n">05</span><h2>負載：指令的「長相」寫在設定檔裡</h2></div>
+  <p class="sub">
+    封包只告訴你「這是 <code>0x1002</code>」和「負載有 13 個位元組」。
+    至於這 13 個位元組要切成哪幾個欄位、每個欄位幾 bytes，由
+    <code>slave/schema/sys.json</code> 決定。這叫 schema 驅動。
+  </p>
+
+  <div class="grid g2">
+    <div class="card">
+      <h5><span class="ico">✅</span>好處</h5>
+      <p>加新指令不用碰解析器、不用改協議。改一個 JSON ＋ 寫一個處理函式就好。
+      對接方也可以直接讀 JSON 當文件。</p>
+    </div>
+    <div class="card">
+      <h5><span class="ico">⚠️</span>代價</h5>
+      <p>「欄位順序」就是合約。順序改了、型別改了，就是無聲的破壞性變更——
+      而且是<b>兩邊都不會報錯</b>的那種。</p>
+    </div>
+  </div>
+
+  <h3>支援的型別只有六種</h3>
+  <p>全部都是小端序。知道這六種，你就能看懂任何一條指令的負載。</p>
+  
+<div class="table-scroll">
+<table>
+    <thead><tr><th>型別</th><th>type code</th><th>佔幾個位元組</th><th>怎麼排</th></tr></thead>
+    <tbody>
+      <tr><td><code>u8</code></td><td>0</td><td>1</td><td>無號整數 0–255</td></tr>
+      <tr><td><code>u16</code></td><td>1</td><td>2</td><td>無號整數 0–65535，小端序</td></tr>
+      <tr><td><code>u32</code></td><td>2</td><td>4</td><td>無號整數，小端序</td></tr>
+      <tr><td><code>str_u16len</code></td><td>3</td><td>2 ＋ 內容長度</td>
+        <td>先 2 B 長度，再 UTF-8 內容。<b>長度是位元組數，不是字數</b>——中文一個字 3 B。</td></tr>
+      <tr><td><code>bytes_fixed</code></td><td>4</td><td>固定在 JSON 的 <code>len</code></td>
+        <td>例如 sha256 就是 32 B，不足補 0、超過截掉。</td></tr>
+      <tr><td><code>bytes_rest</code></td><td>5</td><td>吃掉剩下的全部</td>
+        <td>必須放最後一個欄位。適合「檔案片段」這種長度不定的資料。</td></tr>
+    </tbody>
+  </table>
+</div>
+
+  <div class="note">
+    <span class="t">關於 encode 與 decode 的小陷阱</span>
+    <p><code>SchemaCodec.encode</code> 其實還支援 <code>i16</code> / <code>i32</code>（有號整數），
+    但 <code>schema_loader</code> 沒有給它們 type code（會落成 255），所以解不回來。
+    <b>目前所有 schema JSON 都只用上面六種</b>——別在 JSON 裡寫 <code>i16</code>。</p>
+  </div>
+
+  <h3>自己組一包看看</h3>
+  <p class="sub" style="margin-bottom:16px">
+    改下面的欄位值，右邊會即時長出對應的位元組，並附上完整的封包。
+    「參考」那行是用專案裡真的 <code>proto.py</code> 產生的，可以看出兩邊一模一樣。
+  </p>
+
+  <div class="pan">
+    <div class="cmdpick" id="cmdpick"></div>
+    <div class="builder">
+      <div>
+        <div class="fields" id="fields"></div>
+        <div class="tysplit" id="tysplit"></div>
+        <p class="muted" style="font-size:12.5px; margin-top:10px" id="tyhint"></p>
+      </div>
+      <div>
+        <div class="outblock">
+          <div class="ol"><span>負載位元組（DATA）</span><span class="muted" id="plLen"></span></div>
+          <div class="hexbox" id="plHex"></div>
+        </div>
+        <div class="outblock">
+          <div class="ol"><span>完整封包（含檔頭與 CRC32）</span><span id="cmpBadge" class="badge">—</span></div>
+          <div class="hexbox" id="fullHex"></div>
+        </div>
+        <div class="outblock">
+          <div class="ol"><span>參考值（真的 proto.py 產生的）</span></div>
+          <div class="hexbox" style="color:var(--fg2)" id="refHex"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <h4>Schema JSON 長這樣（節錄 <code>slave/schema/sys.json</code>）</h4>
+  <pre>{
+  <span class="s">"group"</span>: <span class="s">"sys"</span>,
+  <span class="s">"cmds"</span>: [
+    { <span class="s">"cmd"</span>: <span class="s">"0x1002"</span>, <span class="s">"name"</span>: <span class="s">"SLAVE_ANNOUNCE"</span>,
+      <span class="s">"payload"</span>: [
+        {<span class="s">"name"</span>: <span class="s">"slave_id"</span>,    <span class="s">"type"</span>: <span class="s">"str_u16len"</span>},
+        {<span class="s">"name"</span>: <span class="s">"pixel_count"</span>, <span class="s">"type"</span>: <span class="s">"u16"</span>},
+        {<span class="s">"name"</span>: <span class="s">"hw_version"</span>,  <span class="s">"type"</span>: <span class="s">"str_u16len"</span>}
+      ]}
+  ]
+}</pre>
+  <p class="muted">檔案依<b>檔名排序</b>載入；<code>finalize()</code> 再依 cmd id 排序建表。
+  同一條 cmd 出現兩次時，後載入的覆蓋前面——所以檔名順序是有意義的。</p>
+</section>
+
+<!-- ══════════════════════ 6 定址 ══════════════════════ -->
+<section id="addr">
+  <div class="ch"><span class="n">06</span><h2>定址：這台裝置有兩個名字</h2></div>
+  <p class="sub">
+    這是整份文件裡最容易誤解的一段。原因很簡單：<b>同一個裝置在兩層各有一個位址，
+    而且它們不能互推</b>。先把兩層分開看。
+  </p>
+
+  <div class="lanes">
+    <div class="lane protocol">
+      <span class="lt">協議層 · 2 bytes · 寫在封包的 ADDR 欄位</span>
+      <div class="items">
+        <div class="addr"><b>我的名字（協定位址）</b><span class="val">cid = 0x0002</span><br>
+          <span class="muted" style="font-size:12px">程式裡叫 <code>bus.cid</code></span></div>
+        <div class="addr"><b>我上級的名字</b><span class="val">master_cid</span><br>
+          <span class="muted" style="font-size:12px">未設定 = <code>0xFFFF</code></span></div>
+        <div class="addr"><b>廣播</b><span class="val">0xFFFF</span><br>
+          <span class="muted" style="font-size:12px">大家都要收</span></div>
+      </div>
+    </div>
+    <div class="bridge">
+      <span class="ar">▲</span><span class="txt">不可互推：一個是「誰」，一個是「怎麼送到」</span><span class="ar">▼</span>
+    </div>
+    <div class="lane radio">
+      <span class="lt">射頻層 · 6 bytes · 送出去時才決定</span>
+      <div class="items">
+        <div class="addr mac"><b>我的實際位址</b><span class="val">MAC</span><br>
+          <span class="muted" style="font-size:12px">程式裡叫 <code>slave_id</code>（歷史名，其實就是 MAC）</span></div>
+        <div class="addr mac"><b>我上級的實際位址</b><span class="val">master_mac</span><br>
+          <span class="muted" style="font-size:12px">主動發送時才需要</span></div>
+        <div class="addr mac"><b>這一幀從哪來</b><span class="val">src_mac</span><br>
+          <span class="muted" style="font-size:12px">射頻層免費附帶，不用對方講</span></div>
+      </div>
+    </div>
+  </div>
+
+  <h3>三個最常見的誤解</h3>
+  <div class="grid g3">
+    <div class="card" style="border-top:3px solid var(--bad)">
+      <h5><span class="ico" style="color:var(--bad)">✗</span>「cid 就是 MAC 的簡寫」</h5>
+      <p><b>不是。</b>cid 是 2 B 的協議位址，可以手寫（面板就是 <code>"0001"</code>）；
+      MAC 是 6 B 的射頻位址，晶片出廠就有。<b>兩者不可互推。</b></p>
+    </div>
+    <div class="card" style="border-top:3px solid var(--bad)">
+      <h5><span class="ico" style="color:var(--bad)">✗</span>「src_mac 就是 master_mac」</h5>
+      <p><b>只有剛好上級在講話時才相同。</b>前者是「<b>這一幀</b>誰講的」，後者是「<b>我上級</b>是誰」。
+      延後發射（抖動）時必須用前者，因為那時講話的人早就換了。</p>
+    </div>
+    <div class="card" style="border-top:3px solid var(--bad)">
+      <h5><span class="ico" style="color:var(--bad)">✗</span>「slave_id 是另一個編號」</h5>
+      <p><b>它就是 MAC。</b>只是歷史名字沿用下來，出現在心跳、
+      <code>0x100E</code>、peers 表 key 等很多地方。看到它就想成「這台的 MAC」。</p>
+    </div>
+  </div>
+
+  <h3>完整流程：遙控器怎麼找到一台節點</h3>
+  <p class="sub" style="margin-bottom:12px">
+    四步，四個指令。注意每一步「協議層填什麼」和「射頻層送去哪」是<b>分開決定的</b>。
+  </p>
+
+  <div class="seq">
+    <svg viewBox="0 0 720 400" role="img" aria-label="節點發現時序圖">
+      <defs>
+        <marker id="ar" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto">
+          <path d="M0,0 L7,3 L0,6 z" fill="currentColor"/>
+        </marker>
+      </defs>
+      <g font-family="var(--sans)" font-size="13" fill="var(--fg)">
+        <!-- 生命線 -->
+        <rect x="70" y="30" width="150" height="34" rx="8" fill="var(--card)" stroke="var(--line2)"/>
+        <text x="145" y="52" text-anchor="middle" font-weight="600">遙控器</text>
+        <line x1="145" y1="64" x2="145" y2="370" stroke="var(--line2)" stroke-dasharray="4 4"/>
+
+        <rect x="470" y="30" width="150" height="34" rx="8" fill="var(--card)" stroke="var(--line2)"/>
+        <text x="545" y="52" text-anchor="middle" font-weight="600">節點（cid 0x0002）</text>
+        <line x1="545" y1="64" x2="545" y2="370" stroke="var(--line2)" stroke-dasharray="4 4"/>
+
+        <!-- 1. 廣播點名 -->
+        <line x1="145" y1="96" x2="540" y2="96" stroke="var(--c-addr)" stroke-width="2" marker-end="url(#ar)" color="var(--c-addr)"/>
+        <text x="152" y="88" fill="var(--c-addr)" font-family="var(--mono)" font-size="12">0x100D IDENTIFY_REQ（廣播）</text>
+        <text x="152" y="112" fill="var(--fg3)" font-size="11.5">ADDR=0xFFFF　射頻=廣播 MAC　負載=reply_cid, timeout_ms</text>
+
+        <!-- 抖動說明 -->
+        <rect x="300" y="126" width="170" height="30" rx="7" fill="var(--card2)" stroke="var(--warn)"/>
+        <text x="385" y="146" text-anchor="middle" fill="var(--warn)" font-size="11.5">隨機延遲 0～timeout_ms（防撞）</text>
+
+        <!-- 2. 單播回應 -->
+        <line x1="540" y1="186" x2="150" y2="186" stroke="var(--c-len)" stroke-width="2" marker-end="url(#ar)" color="var(--c-len)"/>
+        <text x="152" y="178" fill="var(--c-len)" font-family="var(--mono)" font-size="12">0x100E IDENTIFY_RSP（單播回問的人）</text>
+        <text x="152" y="202" fill="var(--fg3)" font-size="11.5">ADDR=reply_cid（協議層說「回給它」）</text>
+        <text x="152" y="218" fill="var(--fg3)" font-size="11.5">射頻去向=src_mac（射頻層免費學到的）</text>
+
+        <!-- 3. 記住 -->
+        <rect x="480" y="238" width="230" height="30" rx="7" fill="var(--card2)" stroke="var(--line2)"/>
+        <text x="595" y="258" text-anchor="middle" fill="var(--fg2)" font-size="11.5">遙控器把人記進清單</text>
+
+        <!-- 4. SET_MASTER -->
+        <line x1="145" y1="300" x2="540" y2="300" stroke="var(--c-ver)" stroke-width="2" marker-end="url(#ar)" color="var(--c-ver)"/>
+        <text x="152" y="292" fill="var(--c-ver)" font-family="var(--mono)" font-size="12">0x1016 SET_MASTER（單播）</text>
+        <text x="152" y="316" fill="var(--fg3)" font-size="11.5">「以後你回話回給我」＝ 唯一會設定「方向」的指令</text>
+
+        <!-- 5. 之後 -->
+        <line x1="145" y1="356" x2="540" y2="356" stroke="var(--fg3)" stroke-width="1.6" stroke-dasharray="5 4" marker-end="url(#ar)" color="var(--fg3)"/>
+        <text x="152" y="348" fill="var(--fg2)" font-size="12">之後所有指令：ADDR 自動填 master_cid，而且會落盤（重開機還在）</text>
+      </g>
+    </svg>
+  </div>
+
+  
+<div class="table-scroll">
+<table>
+    <thead><tr><th>步驟</th><th>指令</th><th>協議層 ADDR</th><th>射頻層去向</th><th>誰決定的</th></tr></thead>
+    <tbody>
+      <tr><td>① 點名</td><td><code>0x100D</code></td><td><code>0xFFFF</code> 廣播</td><td>廣播 MAC</td>
+        <td>發起方直接指定</td></tr>
+      <tr><td>② 回應</td><td><code>0x100E</code></td><td>負載裡的 <code>reply_cid</code></td><td><code>src_mac</code></td>
+        <td><b>兩個不同來源</b>：一個來自負載，一個來自射頻層</td></tr>
+      <tr><td>③ 記住</td><td>—</td><td>—</td><td>—</td><td>遙控器端自己存</td></tr>
+      <tr><td>④ 定方向</td><td><code>0x1016</code></td><td><code>0x0002</code> 單播</td><td><code>master_mac</code></td>
+        <td>唯一寫入者；寫入後會落盤</td></tr>
+    </tbody>
+  </table>
+</div>
+
+  <div class="note bad">
+    <span class="t">為什麼「回覆」的位址不直接用 MAC？（第一個理由是決定性的）</span>
+    <p><b>1. UART / RS485 根本沒有 MAC。</b>共用匯流排上沒有「射頻來源」可以學，
+    而廣播掃描的幀頭是 <code>0xFFFF</code>——
+    這時 <code>reply_cid</code> 是<b>唯一</b>能知道「該回給誰」的途徑。
+    整條流程的前提是「傳輸層無關」，改成 MAC 在共用匯流排上就做不出來。</p>
+    <p><b>2. 負載裡的 MAC 可以說謊。</b>射頻來源是發送者的實際位址（學不到假的），
+    payload 只是對方填的字串。用 payload 的 MAC 當目的地＝任何人都能叫你去打第三台。</p>
+    <p><b>3. 兩個位址本來就活在兩層。</b>硬塞成一個，會讓「哪一層」的資訊消失。</p>
+  </div>
+
+  <div class="note ok">
+    <span class="t">那什麼時候真的需要「存下來的 MAC」？</span>
+    <p><b>主動發送時</b>（開機公告 <code>0x1002</code>、心跳）。
+    那條路<b>沒有幀進來</b>，所以沒有 <code>src_mac</code> 可以學——
+    只能靠 <code>master_mac</code>。它的存在就是為了這個，
+    而它的值取自 <code>0x1016</code> <b>收幀當下</b>的 <code>src_mac</code>（跟 <code>0x100E</code> 帶回 cid 的方式完全對稱）。</p>
+  </div>
+
+  <h4>封包怎麼被過濾（<code>app.handle_stream</code>）</h4>
+  <pre><span class="c"># 只收兩種封包，其餘直接丟掉</span>
+<span class="k">if</span> addr != ADDR_BROADCAST <span class="k">and</span> addr != bus.cid:
+    <span class="k">continue</span>      <span class="c"># 不是廣播、也不是寫給我 → 不干我的事</span></pre>
+  <p class="muted">這條規則是「同一條匯流排掛很多台」的基礎。也因為它，
+  「逐位址掃描」在接收端是現成可用的。</p>
+</section>
+
+
+<!-- ══════════════════════ 8 傳輸 ══════════════════════ -->
+<section id="transport">
+  <div class="ch"><span class="n">07</span><h2>傳輸：同一包，五條路</h2></div>
+  <p class="sub">
+    這一章要回答一個常見疑問：「既然封包一樣，那換通道到底差在哪？」
+    答案是：<b>差在「誰負責切幀」和「有沒有額外的前綴」</b>。
+  </p>
+
+  <div class="transports">
+    <div class="tr" style="--f:var(--c-data)">
+      <div class="tn">CTRL-WS</div>
+      <div class="tf">lib/sys/net_bus.py (TYPE_WS)</div>
+      <div class="td">WebSocket。主控制通道，指令、回覆、串流都走這裡。</div>
+      <span class="tk">訊息邊界天然存在</span>
+    </div>
+    <div class="tr" style="--f:var(--c-len)">
+      <div class="tn">UDP-DISCV</div>
+      <div class="tf">lib/sys/net_bus.py (TYPE_UDP)</div>
+      <div class="td">UDP 廣播發現，預設埠 9000。用來「找到對方在哪」。</div>
+      <span class="tk">一個 datagram = 一幀</span>
+    </div>
+    <div class="tr" style="--f:var(--c-ver)">
+      <div class="tn">TCP</div>
+      <div class="tf">lib/sys/net_bus.py (TYPE_TCP)</div>
+      <div class="td">備用／直連。純位元組流，最需要 StreamParser。</div>
+      <span class="tk">會黏包、會拆包</span>
+    </div>
+    <div class="tr" style="--f:var(--c-cmd)">
+      <div class="tn">CIRCUIT</div>
+      <div class="tf">lib/sys/circuit_bus.py</div>
+      <div class="td">UART 實體線。有線控制，也是 bus_speed 臨時提速的對象。</div>
+      <span class="tk">慢，但最穩</span>
+    </div>
+    <div class="tr" style="--f:var(--c-crc)">
+      <div class="tn">NOW-Bus</div>
+      <div class="tf">lib/sys/now_bus.py</div>
+      <div class="td">ESP-NOW。沒有 WiFi 也能用的短距離控制。</div>
+      <span class="tk">射頻層帶 src_mac</span>
+    </div>
+  </div>
+
+  <h3>環形緩衝的槽位佈局：有一個 2 B 前綴</h3>
+  <p>位元組收進來之後，寫進各 bus 的 <code>AtomicStreamHub</code> 時會加一個長度前綴。
+  <b>這個前綴不是 NC4 的一部分</b>——它是內部傳遞用的，<code>BusDecodeTask</code> 讀出來時會剝掉。</p>
+  <div class="pan" style="padding:16px 20px">
+    <div class="hexbox" style="display:flex; align-items:center; gap:14px; flex-wrap:wrap; font-size:14px">
+      <span><span class="b" style="background:color-mix(in srgb,var(--c-extra) 45%,transparent); padding:4px 9px; border-radius:4px">u16 LE：這幀有多長</span></span>
+      <span style="color:var(--fg3)">＋</span>
+      <span><span class="b" style="background:color-mix(in srgb,var(--c-data) 40%,transparent); padding:4px 9px; border-radius:4px">完整的 NC4 封包（從 "NC" 開始）</span></span>
+    </div>
+    <p class="muted" style="margin:12px 0 0; font-size:13.5px">
+      <code>[0:2]</code> = 長度 n　<code>[2:2+n]</code> = NC4 封包。
+      也就是說：<b>StreamParser 看到的永遠是乾淨的 NC4 封包</b>，前綴在更早的地方就沒了。
+    </p>
+  </div>
+
+  <h3>「為什麼我的 26 個位元組還沒到？」</h3>
+  <p>同樣一幀，不同通道的耗時差很多。這張表可以幫你判斷「慢」是正常的還是壞了。</p>
+  
+<div class="table-scroll">
+<table>
+    <thead><tr><th>通道</th><th>一幀 26 B 的實際耗時</th><th>換算</th><th>什麼時候會覺得慢</th></tr></thead>
+    <tbody>
+      <tr><td>WiFi（WS/TCP/UDP）</td><td>約 1 ms 等級 + 排程抖動</td><td>—</td><td>大量小封包時，是排程而不是頻寬在限制</td></tr>
+      <tr><td>UART 115200</td><td>26 × 10 ÷ 115200 ≈ <b>2.3 ms</b></td><td>≈ 11.5 KB/s</td><td>傳檔時非常明顯</td></tr>
+      <tr><td>UART 921600</td><td>≈ <b>0.28 ms</b></td><td>≈ 92 KB/s</td><td>這就是 bus_speed 要解決的事</td></tr>
+      <tr><td>ESP-NOW</td><td>約 1–3 ms／幀</td><td>—</td><td>有每幀開銷，不適合高速串流</td></tr>
+    </tbody>
+  </table>
+</div>
+  <p class="muted" style="font-size:13.5px">
+    計算是「每 byte 10 bits」（8 資料 ＋ 1 起始 ＋ 1 停止）。所以 115200 baud ≈ 11520 B/s。
+    完整協商流程、時序與失敗處理見 <code>doc/01_protocol/09_bus_speed_protocol.md</code>。
+  </p>
+
+  <div class="note">
+    <span class="t">這裡就是「分層」發揮作用的地方</span>
+    <p>整份 NC4 只有一個地方知道「怎麼送」：bus。也只有一個地方知道「怎麼切幀」：StreamParser。
+    所以換通道＝換一個 bus 實作，協議本身、指令、schema、處理函式<b>一個字都不用改</b>。</p>
+  </div>
+</section>
+
+<!-- ══════════════════════ 9 指令域與執行 ══════════════════════ -->
+<section id="domains">
+  <div class="ch"><span class="n">08</span><h2>112 條指令長什麼樣</h2></div>
+  <p class="sub">
+    不用背。知道「編號的第二個 byte 代表哪一類」就夠你翻文件了。
+    完整欄位定義在 <code>doc/01_protocol/02_command_index.md</code>。
+  </p>
+
+  <div class="domains" id="domains-grid"></div>
+
+  <div class="note warn">
+    <span class="t">編號不是照順序長的</span>
+    <p><code>0x17xx</code> 沒有東西，<code>0x16xx</code> 曾是 Router 執行期指令、2026-09 已經移除
+    （職責併進 <code>0x11xx</code> 與 config），編號保留不再使用。
+    所以「找不到某個號碼」是正常的。</p>
+  </div>
+
+  <h3>一條指令最後怎麼變成動作</h3>
+  <div class="flow">
+    <div class="step"><div class="sn">cmd 編號</div><div class="st">Dispatcher</div>
+      <div class="sd">在 <code>dispatch_buf</code> 裡查這個編號，取出欄位描述</div></div>
+    <div class="step"><div class="sn">欄位描述</div><div class="st">SchemaCodec</div>
+      <div class="sd">依型別把負載解成 dict，並附上 <code>_name</code> / <code>_cmd</code></div></div>
+    <div class="step"><div class="sn">dict</div><div class="st">handler</div>
+      <div class="sd"><code>action/&lt;group&gt;_actions.py</code> 裡的 <code>on_xxx(ctx, args)</code></div></div>
+    <div class="step"><div class="sn">結果</div><div class="st">回覆</div>
+      <div class="sd">用 <code>ctx.reply()</code> 回包，ADDR 自動填 <code>master_cid</code></div></div>
+  </div>
+</section>
+
+<!-- ══════════════════════ 10 排錯 ══════════════════════ -->
+<section id="debug">
+  <div class="ch"><span class="n">09</span><h2>壞掉的時候怎麼查</h2></div>
+  <p class="sub">
+    照「分層」的順序往下問，一次砍掉一半的可能。先看症狀，再對照原因。
+  </p>
+
+  
+<div class="table-scroll">
+<table>
+    <thead><tr><th>症狀</th><th>最可能在哪一層</th><th>常見原因</th><th>怎麼確認</th></tr></thead>
+    <tbody>
+      <tr>
+        <td>對方完全沒反應，連 log 都沒有</td>
+        <td>① 通道層</td>
+        <td>位址或埠不對、線沒接、WiFi 沒起來、ESP-NOW 沒配對</td>
+        <td>先在通道層確認「位元組有沒有進來」</td>
+      </tr>
+      <tr>
+        <td>位元組進來了，但一直沒有反應</td>
+        <td>② 位元組層</td>
+        <td>解析器一直「等待中」：<code>LEN</code> 被解成很大、或 SOF 之後就斷了</td>
+        <td>看緩衝區是不是只增不減；看 LEN 欄位解出來的值</td>
+      </tr>
+      <tr>
+        <td>封包被丟掉，CRC 一直失敗</td>
+        <td>② 位元組層</td>
+        <td>① 對端 CRC 算法／範圍不同 ② 版本不是 4（舊版用 CRC16）③ 位元組在傳輸中真的壞了</td>
+        <td>自己算一次 <code>crc32(buf[2:9+LEN])</code> 跟封包尾端比</td>
+      </tr>
+      <tr>
+        <td>CRC 對，但欄位值是垃圾</td>
+        <td>③ 指令層</td>
+        <td>schema 欄位順序／型別跟對端不一致；或中間插了新的欄位</td>
+        <td>拿 schema JSON 逐欄位對位元組</td>
+      </tr>
+      <tr>
+        <td>數值差很多（例如 300 變成 7680）</td>
+        <td>③ 指令層</td>
+        <td>端序搞錯：<code>0d 00</code> 被當成 big-endian 讀成 <code>0x0d00</code></td>
+        <td>確認是 <code>&lt;H</code>（little-endian）不是 <code>&gt;H</code></td>
+      </tr>
+      <tr>
+        <td>字串尾巴多出亂碼</td>
+        <td>③ 指令層</td>
+        <td><code>str_u16len</code> 的長度是「位元組數」不是「字數」，中文一個字 3 B</td>
+        <td>比對 <code>len(s.encode('utf-8'))</code></td>
+      </tr>
+      <tr>
+        <td>指令有執行，但回覆收不到</td>
+        <td>④ 定址</td>
+        <td>還沒 <code>0x1016 SET_MASTER</code>：<code>master_cid</code> 還是 <code>0xFFFF</code>，
+          回覆變成廣播（或沒人認領）</td>
+        <td>先做一次配對；確認 <code>bus.master_cid</code></td>
+      </tr>
+      <tr>
+        <td>換了通道就壞掉</td>
+        <td>① 通道層</td>
+        <td>把「射頻層學到的東西」寫進了指令層：例如假設一定有 <code>src_mac</code>
+          （UART 上沒有）</td>
+        <td>問自己：這一行的資訊在共用匯流排上還存在嗎？</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+  <div class="note bad">
+    <span class="t">最難查的一類：安靜的錯值</span>
+    <p>欄位順序或型別錯了，通常<b>不會報錯</b>——它會解出一個「看起來合理」的值，
+    然後動作做錯。所以：對接新指令時，<b>先驗證再相信</b>。
+    拿一條已知答案的指令（例如 <code>0x1004</code> 帶 <code>01 01</code>）走一遍全鏈路，
+    確認欄位解出來跟預期一樣，再去測新指令。</p>
+  </div>
+
+  <h3>加一條新指令要動四個地方</h3>
+  <div class="flow">
+    <div class="step"><div class="sn">①</div><div class="st">schema</div>
+      <div class="sd"><code>slave/schema/&lt;group&gt;.json</code> 加一筆 cmd 定義</div></div>
+    <div class="step"><div class="sn">②</div><div class="st">handler</div>
+      <div class="sd"><code>slave/action/&lt;group&gt;_actions.py</code> 寫 <code>on_xxx</code> 並註冊</div></div>
+    <div class="step"><div class="sn">③</div><div class="st">registry</div>
+      <div class="sd"><code>slave/action/registry.py</code> 確認模組有被 import 並註冊</div></div>
+    <div class="step"><div class="sn">④</div><div class="st">任務（可選）</div>
+      <div class="sd">需要背景工作才動 <code>tasks/</code> ＋ <code>main.py</code> 或 <code>Core0.py</code></div></div>
+  </div>
+
+  <h4>離線驗證：不用上板也能測</h4>
+  <pre><span class="c"># 不需要真的連線，直接餵一幀進去走完整條鏈路</span>
+pkt = Proto.<span class="f">pack</span>(<span class="n">0x1004</span>, SchemaCodec.<span class="f">encode</span>(cmd_def, {<span class="s">"wifi_enable"</span>: <span class="n">1</span>, <span class="s">"core_control"</span>: <span class="n">1</span>}))
+app.<span class="f">handle_stream</span>(parser, pkt, transport_name=<span class="s">"Test"</span>, send_func=<span class="f">print</span>)</pre>
+  <p class="muted">完整開發流程（含慣例與踩坑）在 <code>Skills/mp-netcore/SKILL.md</code>。</p>
+</section>
+
+<!-- ══════════════════════ 11 文件地圖 ══════════════════════ -->
+<section id="ref">
+  <div class="ch"><span class="n">10</span><h2>文件與程式碼地圖</h2></div>
+  <p class="sub">
+    這份導讀是「入口」。要精確的欄位定義或實作細節，往下面這些地方去。
+  </p>
+
+  <h3>動手前先看這三份</h3>
+  <div class="files">
+    <div class="fl"><div class="fn">doc/01_protocol/01_nc4_protocol.md</div>
+      <div class="fd">協議層唯一真相：封包、CRC、schema、傳輸、定址。本頁的精確版。</div></div>
+    <div class="fl"><div class="fn">doc/01_protocol/02_command_index.md</div>
+      <div class="fd">112 條指令的完整查詢表，含每條的欄位與方向。</div></div>
+    <div class="fl"><div class="fn">doc/01_protocol/09_bus_speed_protocol.md</div>
+      <div class="fd">最完整的一份端對端流程教學：協商、時序、失敗處理、master 範例。</div></div>
+  </div>
+
+  <h3>要寫程式時看這些</h3>
+  <div class="files">
+    <div class="fl"><div class="fn">slave/lib/sys/proto.py</div>
+      <div class="fd">封包打包／解析，<b>唯一真相</b>。<code>SOF</code> / <code>CUR_VER=4</code> / <code>MAX_PAYLOAD=8192</code> 都在這裡。</div></div>
+    <div class="fl"><div class="fn">slave/lib/sys/schema_loader.py</div>
+      <div class="fd">載入 schema JSON、排序、建 viper 加速用的查表緩衝。<code>_TYPE_CODE</code> 六種型別。</div></div>
+    <div class="fl"><div class="fn">slave/lib/sys/schema_codec.py</div>
+      <div class="fd">欄位編解碼。看 <code>encode()</code> 就知道超界時會夾住而不是報錯。</div></div>
+    <div class="fl"><div class="fn">slave/lib/sys/dispatch.py</div>
+      <div class="fd">cmd → 解碼 → 找 handler 的派發邏輯。</div></div>
+    <div class="fl"><div class="fn">slave/lib/sys/net_bus.py / circuit_bus.py / now_bus.py</div>
+      <div class="fd">三種傳輸層實作（WebSocket/UDP/TCP、UART、ESP-NOW）。</div></div>
+    <div class="fl"><div class="fn">slave/app.py</div>
+      <div class="fd">裝配層：<code>create_parser()</code> / <code>handle_stream()</code>，位址過濾也在這。</div></div>
+    <div class="fl"><div class="fn">slave/schema/*.json</div>
+      <div class="fd">12 個域、112 條指令的定義。對接方的權威文件其實是這些檔案。</div></div>
+    <div class="fl"><div class="fn">slave/action/*.py</div>
+      <div class="fd">每條指令的實際行為。<code>registry.py</code> 是統一註冊入口。</div></div>
+    <div class="fl"><div class="fn">Skills/mp-netcore/SKILL.md</div>
+      <div class="fd">新增功能模組的完整流程（schema／action／task／config）。</div></div>
+  </div>
+
+  <h3>想跑起來看</h3>
+  <div class="files">
+    <div class="fl"><div class="fn">tools/PC/NetBusMaster.py</div>
+      <div class="fd">PC 端 master 主工具，NC4 最完整的實作參考。</div></div>
+    <div class="fl"><div class="fn">test/protocol/night_run/interactive_master.py</div>
+      <div class="fd">最小可讀的互動式範例：掃描／傳檔／提速選單。</div></div>
+    <div class="fl"><div class="fn">test/protocol/bench_net.py / test_master_writer.py</div>
+      <div class="fd">協議壓測與逐位元組對比測試。</div></div>
+  </div>
+
+  <div class="pan" style="margin-top:26px">
+    <h4 style="margin-top:0">對接前檢查清單</h4>
+    <div class="grid g2" style="gap:8px 26px">
+      <p style="margin:0">☐ 標記是 <code>"NC"</code>（<code>4e 43</code>）</p>
+      <p style="margin:0">☐ 版本 <code>VER = 4</code>，CRC 用 <b>CRC32</b>（不是 CRC16）</p>
+      <p style="margin:0">☐ CRC 範圍是 <code>buf[2 : 9+LEN]</code>，不含 SOF、不含 CRC 自己</p>
+      <p style="margin:0">☐ 所有整數都是<b>小端序</b></p>
+      <p style="margin:0">☐ 字串是 <b>2 B 長度 ＋ UTF-8</b>，長度算位元組不數字</p>
+      <p style="margin:0">☐ 單幀負載 ≤ 8192 B（工程上限）</p>
+      <p style="margin:0">☐ 實作了 SOF 重同步（往前移 1 B），不是整包丟棄</p>
+      <p style="margin:0">☐ 回覆的 ADDR 記得填 <code>master_cid</code></p>
+    </div>
+  </div>
+
+  <p class="muted" style="margin-top:34px; font-size:13px">
+    本頁所有位元組範例皆由專案內實際的 <code>slave/lib/sys/proto.py</code> 與
+    <code>schema_codec.py</code> 產生並核對。若協議有變動，請以
+    <code>doc/01_protocol/01_nc4_protocol.md</code> 為準並回來更新本頁。
+  </p>
+</section>
+
+</main>
+
+<!-- ══════════════════════ 側邊目錄 ══════════════════════ -->
+<aside class="side">
+  <h4>章節</h4>
+  <a href="#big">01 先看全局</a>
+  <a href="#layer">02 分層</a>
+  <a href="#wire">03 封包解剖</a>
+  <a href="#stream">04 黏包拆包</a>
+  <a href="#schema">05 負載 schema</a>
+  <a href="#addr">06 定址模型</a>
+  <a href="#tab-sim" class="xlink">▸ 匯流排模擬器（另一分頁）</a>
+  <a href="#transport">07 傳輸層</a>
+  <a href="#domains">08 指令域與執行</a>
+  <a href="#debug">09 壞掉怎麼查</a>
+  <a href="#ref">10 文件地圖</a>
+</aside>
+</div>
+</div>
+
+<!-- ══════════════════════ 分頁 2：模擬器 ══════════════════════ -->
+<div class="wrap tabpanel" id="tab-sim" hidden>
+  <header class="hero" style="padding:44px 0 26px">
+    <div class="kicker">互動 · 不用接線</div>
+    <h1>把 Master 和兩台 Slave <em>接起來</em>，然後送指令</h1>
+    <p class="lead">
+      下面是兩台真的接上共用匯流排的機器。按按鈕送指令，看封包怎麼走、
+      哪台收到、誰回話、誰撞線；也可以<b>點板子斷電</b>、<b>點線拔線</b>，看鏈路掛掉時會怎樣。
+    </p>
+  </header>
+
+<!-- ══════════════════════ 匯流排模擬器（分頁 2）══════════════════════ -->
+<section id="sim-section">
+  <div class="ch"><span class="n">SIM</span><h2>匯流排模擬器</h2></div>
+  <p class="sub">
+    一台 Master 接在匯流排上，掛著兩台 Slave。按下面的按鈕送指令，
+    上面會畫出封包怎麼走、哪台收到、誰回話、誰撞線；下面會列出<b>實際的位元組</b>。
+    規則是照 <code>slave/action/*.py</code> 的實作寫的，不是示意。
+  </p>
+
+  <div class="simwork">
+  <!-- 左：控制盤（分組可摺疊，避免太長） -->
+  <div class="simleft">
+  <div class="simctl">
+
+    <details class="grp" open>
+      <summary><span>① 燈效查詢（指定一台）</span><span class="muted">會有回覆</span></summary>
+      <div id="grpQuery"></div>
+    </details>
+
+    <details class="grp" open>
+      <summary><span>② 燈效控制</span><span class="muted">沒有回覆</span></summary>
+      <div id="grpControl"></div>
+    </details>
+
+    <details class="grp">
+      <summary><span>③ 系統 / 身分</span><span class="muted">12 條</span></summary>
+      <div id="grpSystem"></div>
+    </details>
+
+    <details class="grp">
+      <summary><span>④ 狀態與設定</span><span class="muted">查得到值</span></summary>
+      <div id="grpStatus"></div>
+    </details>
+
+    <details class="grp">
+      <summary><span>⑤ 線路狀態</span><span class="muted">決定回覆寄到哪</span></summary>
+      <div class="wirepick" id="wirePick"></div>
+      <div id="wireNote" class="muted" style="font-size:12px; margin-top:10px"></div>
+      <div style="margin-top:11px">
+        <div class="gh" style="margin-bottom:6px"><span>燈效狀態</span></div>
+        <div class="ledrow" id="ledRow"></div>
+      </div>
+    </details>
+
+    <details class="grp">
+      <summary><span>⑥ 故障模擬</span><span class="muted">點圖也可以</span></summary>
+      <button class="cmdbtn" id="failOne">拔掉 0x0002 的線<span class="cm">它收不到 → 只有 0x0001 動作</span></button>
+      <button class="cmdbtn" id="failPower">把 0x0002 斷電<span class="cm">板子不跑 → 完全沒反應</span></button>
+      <button class="cmdbtn" id="failBusy">佔用匯流排（別人在講話）<span class="cm">你送出的封包會被丟棄</span></button>
+      <button class="cmdbtn" id="failFix">全部修好<span class="cm">接回線、通電、匯流排空閒</span></button>
+    </details>
+
+    <details class="grp">
+      <summary><span>⑦ 情境</span><span class="muted">一鍵示範</span></summary>
+      <button class="cmdbtn" id="snNormal">單播查詢（正常）<span class="cm">指定 #1 → 只有 #1 回</span></button>
+      <button class="cmdbtn" id="snBroadcast">廣播查詢（撞線）<span class="cm">兩台同時回 → 線上打成一團</span></button>
+      <button class="cmdbtn" id="snPair">完整流程示範<span class="cm">連送 6 個封包，看收發節奏</span></button>
+      <button class="cmdbtn" id="snReset">重置<span class="cm">清空流量與統計</span></button>
+    </details>
+
+  </div>
+
+  <div id="simHint" class="muted" style="font-size:13px; margin:-8px 2px 0">
+    提示：直接點板子可以斷電／通電，點任何一條接線可以拔線／接回。
+  </div>
+  </div><!-- /simleft -->
+
+  <!-- 右：拓撲（黏在旁邊，按按鈕時看得到） -->
+  <div class="simright">
+    <div class="simwrap" id="simStage">
+      <div class="stagetop">
+        <span id="stageTitle">匯流排 · 待機</span>
+        <div class="transport">
+          <button class="tp" id="simFirst" title="回到第一步">⏮</button>
+          <button class="tp" id="simPrev" title="上一步">◀</button>
+          <button class="tp wide on" id="simPlay" title="播放中／暫停">⏸ 播放中</button>
+          <button class="tp" id="simNext" title="下一步">▶</button>
+          <span id="simCursor" class="cur">0 / 0</span>
+        </div>
+      </div>
+      <svg id="topo" viewBox="0 0 1000 520" role="img" aria-label="Master 與兩台 Slave 的匯流排拓撲"></svg>
+    </div>
+  </div><!-- /simright -->
+  </div><!-- /simwork -->
+
+  <!-- ③ 流量記錄 -->
+  <div class="simtable">
+    <div style="display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap; margin:22px 0 4px">
+      <h3 style="margin:0">流量記錄</h3>
+      <span class="muted" style="font-size:12.5px">每一列都是真的位元組（欄位已著色）</span>
+    </div>
+    <table>
+      <thead><tr>
+        <th style="width:52px">#</th><th style="width:88px">方向</th>
+        <th style="width:104px">指令</th><th>位元組</th><th style="width:130px">說明</th>
+      </tr></thead>
+      <tbody id="simTbody">
+        <tr><td colspan="5" class="muted" style="padding:22px; text-align:center">
+          還沒有流量。按上面的按鈕送一個封包看看。</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="stats" style="margin-top:18px">
+    <div class="stat"><div class="k">Master 發出</div><div class="v" id="simSent">0</div></div>
+    <div class="stat ok"><div class="k">Slave 回覆</div><div class="v" id="simReplied">0</div></div>
+    <div class="stat er"><div class="k">碰撞</div><div class="v" id="simCollide">0</div></div>
+    <div class="stat wn"><div class="k">被丟棄</div><div class="v" id="simDropped">0</div></div>
+  </div>
+
+  <div class="note warn" style="margin-top:20px">
+    <span class="t">這個模擬器要你看見的事</span>
+    <p><b>① 控制類指令永遠不會有回覆。</b><code>0x3105</code>/<code>0x3106</code> 送出去，
+    只能靠「燈變了」和板子的 log 確認 —— 模擬器裡就是看上面的燈。</p>
+    <p><b>② 回覆寄到哪，由線路狀態決定。</b>切到「未配對」時
+    <code>master_cid = 0xFFFF</code>，連<em>查詢的回覆</em>都會變成廣播幀
+    （只有 <code>0x100E</code> 例外，它用請求裡的 <code>reply_cid</code>）。</p>
+    <p><b>③ 廣播查詢一定會撞線。</b>兩台都通過位址過濾、都回話、又沒有抖動錯開 ——
+    線上就是兩份位元組疊在一起。這不是 bug，是「廣播查詢」本來就不該用。</p>
+  </div>
+</section>
+
+  <p class="muted" style="margin-top:34px; font-size:13px">
+    模擬結果依 <code>slave/action/*.py</code> 的實際行為：位址過濾、回覆位址、無 ACK 的指令、
+    廣播查詢撞線。想把原理讀過一遍，切到「圖文導讀」分頁。
+  </p>
+</div>
+
+<script>
+"use strict";
+/* ================================================================
+   共用工具
+   ================================================================ */
+const $  = (s, r) => (r || document).querySelector(s);
+const $$ = (s, r) => Array.from((r || document).querySelectorAll(s));
+const hex2 = n => n.toString(16).padStart(2, "0");
+const bytesToHex = arr => Array.from(arr, hex2).join(" ");
+
+/* CRC32（與 Python binascii.crc32 相同：多項式 0xEDB88320） */
+const CRC_TABLE = (() => {
+  const t = new Uint32Array(256);
+  for (let i = 0; i < 256; i++) {
+    let c = i;
+    for (let k = 0; k < 8; k++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
+    t[i] = c >>> 0;
+  }
+  return t;
+})();
+function crc32(bytes, start, end) {
+  let c = 0xFFFFFFFF;
+  for (let i = start; i < end; i++) c = CRC_TABLE[(c ^ bytes[i]) & 0xFF] ^ (c >>> 8);
+  return (c ^ 0xFFFFFFFF) >>> 0;
+}
+function utf8(str) { return new TextEncoder().encode(str); }
+
+/* 組一幀 NC4：SOF(2) VER(1) ADDR(2) CMD(2) LEN(2) | payload | CRC32(4) */
+function buildFrame(cmd, payload, addr) {
+  const n = payload.length, total = 9 + n + 4;
+  const b = new Uint8Array(total);
+  b[0] = 0x4E; b[1] = 0x43;                       // "NC"
+  b[2] = 4;                                        // VER
+  b[3] = addr & 0xFF; b[4] = (addr >>> 8) & 0xFF;  // ADDR (LE)
+  b[5] = cmd & 0xFF;  b[6] = (cmd >>> 8) & 0xFF;   // CMD  (LE)
+  b[7] = n & 0xFF;    b[8] = (n >>> 8) & 0xFF;     // LEN  (LE)
+  b.set(payload, 9);
+  const c = crc32(b, 2, 9 + n);                    // CRC 範圍 = buf[2 : 9+LEN]
+  b[9 + n]     =  c         & 0xFF;
+  b[9 + n + 1] = (c >>>  8) & 0xFF;
+  b[9 + n + 2] = (c >>> 16) & 0xFF;
+  b[9 + n + 3] = (c >>> 24) & 0xFF;
+  return b;
+}
+
+/* 依 schema 型別把值編成 payload（與 SchemaCodec.encode 同樣的規則） */
+function enc(type, val, extra) {
+  const out = [];
+  const push16 = v => { out.push(v & 0xFF, (v >>> 8) & 0xFF); };
+  const push32 = v => { out.push(v & 0xFF, (v >>> 8) & 0xFF, (v >>> 16) & 0xFF, (v >>> 24) & 0xFF); };
+  if (type === "u8") out.push(+val & 0xFF);
+  else if (type === "u16") push16(Math.max(0, Math.min(0xFFFF, +val || 0)));
+  else if (type === "u32") push32(Math.max(0, Math.min(0xFFFFFFFF, +val || 0)) >>> 0);
+  else if (type === "str_u16len") {
+    const b = utf8(String(val === undefined || val === null ? "" : val));
+    push16(b.length);
+    b.forEach(x => out.push(x));
+  } else if (type === "bytes_fixed") {
+    const n = extra || 0, src = val || [];
+    for (let i = 0; i < n; i++) out.push(i < src.length ? src[i] & 0xFF : 0);
+  } else if (type === "bytes_rest") {
+    (val || []).forEach(x => out.push(x & 0xFF));
+  }
+  return out;
+}
+
+/* 用「欄位定義陣列」組一幀：mk(0x100D, [["u16",1],["u16",50],["u8",0]], 0xFFFF) */
+function mk(cmd, fields, addr) {
+  const payload = [];
+  (fields || []).forEach(f => enc(f[0], f[1], f[2]).forEach(b => payload.push(b)));
+  const bytes = buildFrame(cmd, payload, addr);
+  return { cmd, addr, payload: Uint8Array.from(payload), bytes };
+}
+
+/* ================================================================
+   分頁切換（導讀 / 模擬器）
+   ================================================================ */
+(function tabs() {
+  const panels = { guide: $("#tab-guide"), sim: $("#tab-sim") };
+  const btns = $$("#tabs .tab");
+  let cur = "guide";
+
+  function show(name, targetId) {
+    if (!panels[name]) name = "guide";
+    cur = name;
+    Object.keys(panels).forEach(k => { panels[k].hidden = (k !== name); });
+    btns.forEach(b => b.classList.toggle("on", b.dataset.tab === name));
+    // 導覽列只在導讀分頁有意義
+    $("#topnav").style.display = (name === "guide") ? "" : "none";
+    document.documentElement.dataset.tab = name;
+    // 分頁切換後重新量測模擬器（隱藏時量不到尺寸）
+    if (name === "sim" && typeof window.__simActivate === "function") window.__simActivate();
+    if (targetId) {
+      const el = document.getElementById(targetId);
+      if (el) requestAnimationFrame(() => el.scrollIntoView({ block: "start" }));
+    } else {
+      window.scrollTo({ top: 0 });
+    }
+  }
+  btns.forEach(b => b.addEventListener("click", () => {
+    show(b.dataset.tab);
+    history.replaceState(null, "", b.dataset.tab === "sim" ? "#sim-section" : "#big");
+  }));
+  // 側欄／任何指向 #tab-sim 的連結
+  $$('a[href="#tab-sim"]').forEach(a => a.addEventListener("click", e => {
+    e.preventDefault(); show("sim"); history.replaceState(null, "", "#sim-section");
+  }));
+  // 深連結：#sim-section 直接開模擬器分頁
+  function fromHash() {
+    const h = (location.hash || "").replace("#", "");
+    if (h === "sim-section" || h === "sim") { show("sim"); return; }
+    if (h && document.getElementById(h)) {
+      const inSim = panels.sim.contains(document.getElementById(h));
+      show(inSim ? "sim" : "guide", inSim ? h : null);
+      if (!inSim) requestAnimationFrame(() => document.getElementById(h).scrollIntoView({ block: "start" }));
+    } else show("guide");
+  }
+  window.addEventListener("hashchange", fromHash);
+  fromHash();
+})();
+
+/* ================================================================
+   主題切換
+   ================================================================ */
+(function () {
+  const btn = $("#themeBtn");
+  const saved = (() => { try { return localStorage.getItem("nc4theme"); } catch (e) { return null; } })();
+  if (saved) document.documentElement.dataset.theme = saved;
+  btn.addEventListener("click", () => {
+    const cur = document.documentElement.dataset.theme === "light" ? "" : "light";
+    document.documentElement.dataset.theme = cur;
+    try { localStorage.setItem("nc4theme", cur); } catch (e) {}
+  });
+})();
+
+/* ================================================================
+   側欄 / 導覽列捲動高亮
+   ================================================================ */
+(function () {
+  const secs = $$("section[id]");
+  const links = $$(".side a, #topnav a");
+  const obs = new IntersectionObserver(es => {
+    es.forEach(e => {
+      if (!e.isIntersecting) return;
+      const id = e.target.id;
+      links.forEach(a => a.classList.toggle("on", a.getAttribute("href") === "#" + id));
+    });
+  }, { rootMargin: "-72px 0px -70% 0px" });
+  secs.forEach(s => obs.observe(s));
+})();
+
+/* ================================================================
+   03 封包解剖
+   ================================================================ */
+const SAMPLE = {
+  cmd: 0x1002,
+  name: "SLAVE_ANNOUNCE",
+  addr: 0xFFFF,
+  payload: [0x05,0x00, 0x31,0x31,0x34,0x30,0x31, 0x2c,0x01, 0x02,0x00, 0x76,0x31],
+  crc: [0x38,0xcd,0x53,0xfb]
+};
+const FRAME = new Uint8Array([].concat(
+  [0x4e,0x43,0x04,0xff,0xff,0x02,0x10,0x0d,0x00],
+  SAMPLE.payload, SAMPLE.crc
+));
+
+const FIELD_DEFS = [
+  { key:"sof",  name:"SOF",   start:0,  len:2, color:"var(--c-sof)",
+    role:"同步標記（Start Of Frame）",
+    desc:"固定兩個位元組 4e 43，也就是 ASCII 的 \"NC\"。解析器在連續位元組流裡就是靠找這兩個位元組來判斷「一幀從這裡開始」。用兩個位元組而不是一個，是為了降低在雜訊裡誤判的機率。",
+    code:"SOF = b\"NC\"" },
+  { key:"ver",  name:"VER",   start:2,  len:1, color:"var(--c-ver)",
+    role:"協議版本",
+    desc:"固定為 4。舊版（mp_Net-Light）是 3，檔頭配置與檢查碼都不同（CRC16、2 B）。解析器看到不是 4 就認定「這不是有效開頭」，往前移一個位元組重新找 SOF。",
+    code:"CUR_VER = 4" },
+  { key:"addr", name:"ADDR",  start:3,  len:2, color:"var(--c-addr)",
+    role:"目的協定位址（cid，uint16 小端序）",
+    desc:"這一幀要給誰。本幀是 ffff，代表廣播（ADDR_BROADCAST），所有裝置都要收。接收端只接受「廣播」或「等於自己 cid」的封包，其餘直接丟棄——這是同一條匯流排上掛多台裝置不會互相干擾的原因。",
+    code:"ADDR_BROADCAST = 0xFFFF" },
+  { key:"cmd",  name:"CMD",   start:5,  len:2, color:"var(--c-cmd)",
+    role:"指令碼（uint16 小端序）",
+    desc:"要做什麼。本幀 02 10 → 0x1002 = SLAVE_ANNOUNCE（從機開機公告）。編號的高位元組代表「域」：0x10xx 是系統類。指令的欄位定義不在封包裡，而在 slave/schema/*.json。",
+    code:"0x1002 → schema/sys.json" },
+  { key:"len",  name:"LEN",   start:7,  len:2, color:"var(--c-len)",
+    role:"負載長度（uint16 小端序）",
+    desc:"DATA 有幾個位元組，本幀是 0d 00 = 13。放在負載前面，是為了讓解析器能先算「還要等幾個位元組」才湊成一幀——這是處理「半包」的關鍵。解析器會擋掉大於 8192 的值，避免誤同步時把記憶體撐爆。",
+    code:"ln > MAX_PAYLOAD → 重同步" },
+  { key:"data", name:"DATA",  start:9,  len:13, color:"var(--c-data)",
+    role:"負載（格式由 schema 決定）",
+    desc:"真正的內容。本幀依 schema/sys.json 的定義切成三欄：slave_id(str_u16len)、pixel_count(u16)、hw_version(str_u16len)。詳細拆法見下一章。長度 0 是合法的——很多查詢類指令不帶參數。",
+    code:"見 §05 負載 schema" },
+  { key:"crc",  name:"CRC32", start:22, len:4, color:"var(--c-crc)",
+    role:"檢查碼（uint32 小端序）",
+    desc:"涵蓋範圍是 buf[2 : 9+LEN]，也就是從 VER 開始到負載結尾——刻意不含開頭的 SOF（那只是同步標記，不是資料），也不含 CRC 自己（算不出來）。驗證失敗時整幀不採用，解析器往前移 1 個位元組重新找 SOF。",
+    code:"binascii.crc32(b[2:9+ln], 0)" }
+];
+
+(function buildWire() {
+  const grid = $("#pktgrid"), offrow = $("#offrow"), legend = $("#legend");
+  const detail = $("#detail");
+
+  // 位元組格
+  FRAME.forEach((byteVal, i) => {
+    const f = FIELD_DEFS.find(x => i >= x.start && i < x.start + x.len);
+    const d = document.createElement("div");
+    d.className = "pb" + (i === f.start ? " first" : "");
+    d.style.setProperty("--f", f.color);
+    d.style.gridColumn = (i % 9) * 2 + 1;
+    d.style.gridRow = Math.floor(i / 9) + 1;
+    d.textContent = hex2(byteVal);
+    d.dataset.key = f.key;
+    d.dataset.idx = i;
+    grid.appendChild(d);
+  });
+  // offset 標尺
+  for (let r = 0; r < Math.ceil(FRAME.length / 9); r++) {
+    for (let i = 0; i < 9; i++) {
+      const s = document.createElement("span");
+      const idx = r * 9 + i;
+      s.textContent = idx < FRAME.length ? idx : "";
+      s.style.gridColumn = i * 2 + 1;
+      s.style.gridRow = r + 1;
+      offrow.appendChild(s);
+    }
+  }
+
+  // 圖例
+  FIELD_DEFS.forEach(f => {
+    const el = document.createElement("div");
+    el.className = "lg"; el.dataset.key = f.key;
+    el.style.setProperty("--f", f.color);
+    const cnt = f.len === 1 ? "1 B" : f.len + " B";
+    el.innerHTML = `<i></i><b>${f.name}</b><span>${cnt} · offset ${f.start}</span>`;
+    legend.appendChild(el);
+  });
+
+  // CRC 覆蓋範圍
+  const track = $("#crctrack");
+  for (let i = 0; i < FRAME.length; i++) {
+    const c = document.createElement("div");
+    c.className = "cell" + (i >= 2 && i <= 9 + 13 - 1 ? " in" : "");
+    c.style.gridColumn = (i % 9) * 2 + 1;
+    c.style.gridRow = Math.floor(i / 9) + 1;
+    track.appendChild(c);
+  }
+  $("#crclbl").innerHTML =
+    `CRC32 涵蓋 <code>buf[2 : 22]</code>（VER 到負載結尾，共 20 個位元組）——` +
+    `<b>不含</b>開頭的 SOF，也<b>不含</b>最後 4 B 的 CRC 自己。` +
+    `本幀算出來是 <code>0xfb53cd38</code>，小端序排成 <code>38 cd 53 fb</code>。`;
+
+  // 互動：hover / click 顯示詳解
+  function show(key) {
+    const f = FIELD_DEFS.find(x => x.key === key);
+    const bs = Array.from(FRAME.slice(f.start, f.start + f.len), hex2).join(" ");
+    const ascii = Array.from(FRAME.slice(f.start, f.start + f.len))
+      .map(b => (b >= 0x20 && b < 0x7f) ? String.fromCharCode(b) : "·").join("");
+    detail.innerHTML = `
+      <div class="dh">
+        <span class="nm" style="color:${f.color}">${f.name}</span>
+        <span class="tag byte">${f.len} B</span>
+        <span class="tag">offset ${f.start} – ${f.start + f.len - 1}</span>
+        <span class="tag">${f.role}</span>
+      </div>
+      <dl>
+        <dt>本幀位元組</dt><dd><code style="color:${f.color}">${bs}</code>
+          ${f.key === "sof" || f.key === "data" ? `<span class="muted">（ASCII：<code>${ascii}</code>）</span>` : ""}</dd>
+        <dt>原始碼</dt><dd><code>${f.code}</code></dd>
+        <dt>說明</dt><dd>${f.desc}</dd>
+      </dl>`;
+    $$(".pb", grid).forEach(b => {
+      const on = b.dataset.key === key;
+      b.classList.toggle("sel", on);
+      b.classList.toggle("dim", !on);
+    });
+    $$(".lg", legend).forEach(l => l.classList.toggle("on", l.dataset.key === key));
+  }
+
+  $$(".pb", grid).forEach(b => {
+    b.addEventListener("mouseenter", () => show(b.dataset.key));
+    b.addEventListener("click", () => show(b.dataset.key));
+  });
+  $$(".lg", legend).forEach(l => {
+    l.addEventListener("mouseenter", () => show(l.dataset.key));
+    l.addEventListener("click", () => show(l.dataset.key));
+  });
+
+  show("cmd");   // 預設示範
+
+  // 隱藏位元組值（自我測驗用）
+  $("#toggleVal").addEventListener("click", e => {
+    const on = grid.classList.toggle("hideval");
+    e.target.textContent = on ? "顯示位元組值" : "隱藏位元組值";
+  });
+})();
+
+/* ================================================================
+   04 黏包拆包模擬器
+   ================================================================ */
+(function sim() {
+  const MAXLEN = 8192, HDR = 9, CRCL = 4;
+  let buf = new Uint8Array(0);
+  let seq = 0x1001;
+  let running = false, timer = null;
+  let logs = [];
+  let stats = { ok: 0, crc: 0, sync: 0, wait: 0 };
+  let lastScan = -1, lastWait = -1, freshFrom = 0;
+
+  const bufstrip = $("#bufstrip"), simlog = $("#simlog");
+
+  function log(kind, text) {
+    const t = new Date().toLocaleTimeString("zh-TW", { hour12: false });
+    logs.unshift({ t, kind, text });
+    if (logs.length > 60) logs.pop();
+    simlog.innerHTML = logs.slice(0, 14).map(l =>
+      `<div><span class="tm">${l.t}</span><span class="${l.kind}">${l.text}</span></div>`
+    ).join("");
+  }
+
+  function renderBuf() {
+    const show = buf.slice(0, 96);
+    bufstrip.innerHTML = "";
+    if (!show.length) {
+      bufstrip.innerHTML = '<span class="muted" style="font-size:13px">（空）</span>';
+    } else {
+      show.forEach((b, i) => {
+        const s = document.createElement("span");
+        s.className = "by";
+        if (i >= freshFrom) s.classList.add("fresh");
+        if (i === lastScan) s.classList.add("scan");
+        if (i === 0 && buf[0] === 0x4E && buf[1] === 0x43) s.classList.add("sof");
+        if (i === lastWait) s.classList.add("wait");
+        s.textContent = hex2(b);
+        bufstrip.appendChild(s);
+      });
+      if (buf.length > 96) {
+        const s = document.createElement("span");
+        s.className = "by empty";
+        s.textContent = `…+${buf.length - 96}`;
+        bufstrip.appendChild(s);
+      }
+    }
+    $("#bufSize").textContent = buf.length ? `${buf.length} 個位元組待處理` : "";
+    $("#stOk").textContent   = stats.ok;
+    $("#stCrc").textContent  = stats.crc;
+    $("#stSync").textContent = stats.sync;
+    $("#stWait").textContent = stats.wait;
+    $("#stBuf").textContent  = buf.length;
+  }
+
+  function feed(chunk) {
+    freshFrom = buf.length;
+    const nb = new Uint8Array(buf.length + chunk.length);
+    nb.set(buf, 0); nb.set(chunk, buf.length);
+    buf = nb;
+    log("in", `← 收到 ${chunk.length} B：<span style="color:var(--fg3)">${bytesToHex(chunk.slice(0, 18))}${chunk.length > 18 ? " …" : ""}</span>`);
+    parse();
+    renderBuf();
+  }
+
+  function parse() {
+    lastScan = -1; lastWait = -1;
+    for (;;) {
+      if (buf.length < HDR) { return; }
+
+      // ① 找 SOF
+      let s = -1;
+      for (let i = 0; i + 1 < buf.length; i++) {
+        if (buf[i] === 78 /* 'N' */ && buf[i + 1] === 67 /* 'C' */) { s = i; break; }
+      }
+      if (s < 0) {
+        // 沒有 SOF：保留最後 1 B（可能是被切半的 "N"）
+        const drop = buf.length - 1;
+        if (drop > 0) {
+          log("wn", `✗ 找不到 SOF，丟棄 ${drop} B 殘留`);
+          stats.sync++;
+          buf = buf.slice(drop);
+          lastScan = 0;
+        }
+        return;
+      }
+      if (s > 0) {
+        log("wn", `✗ 錯位：前 ${s} B 不是封包開頭 → 往前移 ${s} B 重新找 SOF`);
+        stats.sync++;
+        buf = buf.slice(s);
+        lastScan = 0;
+        return;
+      }
+
+      // ② 驗版本 / 長度
+      const ver = buf[2];
+      const ln = buf[7] | (buf[8] << 8);
+      if (ver !== 4 || ln > MAXLEN) {
+        const why = ver !== 4 ? `VER=${ver} ≠ 4` : `LEN=${ln} > ${MAXLEN}`;
+        log("er", `✗ ${why} → 這不是有效開頭，往前移 1 B`);
+        stats.sync++;
+        buf = buf.slice(1);
+        lastScan = 0;
+        return;
+      }
+
+      // ③ 湊齊一幀
+      const total = HDR + ln + CRCL;
+      if (buf.length < total) {
+        lastWait = 0;
+        stats.wait++;
+        log("wn", `⏳ 半包：需要 ${total} B，目前只有 ${buf.length} B → 原地等`);
+        return;
+      }
+
+      // ④ 驗 CRC32
+      const want = crc32(buf, 2, HDR + ln);
+      const got = (buf[HDR + ln] | (buf[HDR + ln + 1] << 8) |
+                   (buf[HDR + ln + 2] << 16) | (buf[HDR + ln + 3] << 24)) >>> 0;
+      if (want !== got) {
+        log("er", `✗ CRC 失敗（算出 ${want.toString(16)}，封包寫 ${got.toString(16)}）→ 往前移 1 B`);
+        stats.crc++;
+        buf = buf.slice(1);
+        lastScan = 0;
+        return;
+      }
+
+      // ⑤ 交出
+      const cmd = buf[5] | (buf[6] << 8);
+      const addr = buf[3] | (buf[4] << 8);
+      log("ok", `✓ 解出一幀：CMD=0x${cmd.toString(16)} ADDR=0x${addr.toString(16)} ` +
+                `負載 ${ln} B，CRC 正確（吃掉 ${total} B）`);
+      stats.ok++;
+      buf = buf.slice(total);
+      lastScan = -1;
+    }
+  }
+
+  /* ---- 產生一段位元組流（模擬真實通道） ---- */
+  function makeStream() {
+    const parts = [];
+    const nPkt = Math.random() < 0.28 ? 2 : 1;   // 28% 機率黏包
+    for (let p = 0; p < nPkt; p++) {
+      // 用 u32 slave 欄位當內容，長度 4 或 8 → 幀長 17 或 21
+      const plen = Math.random() < 0.5 ? 4 : 8;
+      const payload = new Uint8Array(plen);
+      const v = seq++;
+      for (let i = 0; i < plen; i++) payload[i] = (v >>> (i * 8)) & 0xFF;
+      const addr = Math.random() < 0.3 ? 0xFFFF : 0x0001;
+      let frame = buildFrame(0x100A, payload, addr);
+      // 壞封包：翻一個位元（不動 SOF/VER，讓它走到 CRC 檢查）
+      if ($("#simErr").checked && Math.random() < 0.16) {
+        const i = 9 + Math.floor(Math.random() * Math.max(1, plen));
+        frame = frame.slice(); frame[i] ^= 0x80;
+        log("wn", "⚠ 這一幀在傳輸中被雜訊打壞 1 個位元（模擬）");
+      }
+      if (Math.random() < 0.05) parts.push(new Uint8Array([0x11, 0x22, 0x33])); // 雜訊
+      parts.push(frame);
+    }
+    // 串接
+    let all = new Uint8Array(parts.reduce((a, p) => a + p.length, 0));
+    let o = 0; parts.forEach(p => { all.set(p, o); o += p.length; });
+    // 拆包：30% 機率切一半送出
+    if (all.length > 8 && Math.random() < 0.3) {
+      const cut = 4 + Math.floor(Math.random() * (all.length - 6));
+      return [all.slice(0, cut), all.slice(cut)];
+    }
+    return [all];
+  }
+
+  function tick() {
+    const chunks = makeStream();
+    let i = 0;
+    const push = () => {
+      if (i < chunks.length) {
+        feed(chunks[i++]);
+        if (i < chunks.length) setTimeout(push, 260);
+      }
+    };
+    push();
+  }
+
+  function setRunning(on) {
+    running = on;
+    $("#simToggle").textContent = on ? "⏸ 暫停" : "▶ 開始";
+    $("#simToggle").classList.toggle("on", on);
+    if (timer) { clearInterval(timer); timer = null; }
+    if (on) {
+      const sp = +$("#simSpeed").value;
+      timer = setInterval(tick, 1400 - sp * 110);
+      tick();
+    }
+  }
+
+  $("#simToggle").addEventListener("click", () => setRunning(!running));
+  $("#simStep").addEventListener("click", () => { makeStream().forEach(feed); });
+  $("#simGarbage").addEventListener("click", () => {
+    const g = new Uint8Array(9);
+    for (let i = 0; i < 9; i++) g[i] = Math.floor(Math.random() * 256);
+    feed(g);
+  });
+  $("#simReset").addEventListener("click", () => {
+    setRunning(false);
+    buf = new Uint8Array(0); seq = 0x1001; logs = [];
+    stats = { ok: 0, crc: 0, sync: 0, wait: 0 };
+    lastScan = lastWait = -1;
+    simlog.innerHTML = '<div><span class="tm">—</span><span class="in">已重置</span></div>';
+    renderBuf();
+  });
+  $("#simSpeed").addEventListener("input", () => { if (running) setRunning(true); });
+
+  renderBuf();
+})();
+
+/* ================================================================
+   05 Schema 組包器
+   ================================================================ */
+(function builder() {
+  const CMDS = [
+    { cmd: 0x1002, name: "SLAVE_ANNOUNCE", addr: 0xFFFF,
+      fields: [
+        { n: "slave_id",    t: "str_u16len", v: "11401" },
+        { n: "pixel_count", t: "u16",        v: 300 },
+        { n: "hw_version",  t: "str_u16len", v: "v1" }
+      ],
+      ref: "4e4304ffff02100d00050031313430312c0102007631 38cd53fb",
+      tip: "從機開機公告。這是本頁封包解剖用的同一幀。" },
+    { cmd: 0x1004, name: "SYS_CTRL", addr: 0x0001,
+      fields: [
+        { n: "wifi_enable",  t: "u8", v: 1 },
+        { n: "core_control", t: "u8", v: 1 }
+      ],
+      ref: "4e43040100041002000101 f4592b48",
+      tip: "最短的指令之一：負載只有 2 B。適合當「全鏈路 smoke test」。" },
+    { cmd: 0x100A, name: "TIME_SYNC", addr: 0xFFFF,
+      fields: [
+        { n: "master_time_ms", t: "u32", v: 123456789 }
+      ],
+      ref: "4e4304ffff0a10040015cd5b07 a3684227",
+      tip: "適合觀察小端序：123456789 = 0x075BCD15，在位元組裡是 15 cd 5b 07（反過來）。" },
+    { cmd: 0x100D, name: "IDENTIFY_REQ", addr: 0xFFFF,
+      fields: [
+        { n: "reply_cid",  t: "u16", v: 1 },
+        { n: "timeout_ms", t: "u16", v: 50 },
+        { n: "force",      t: "u8",  v: 0 }
+      ],
+      ref: "4e4304ffff0d1005000100320000 3b58ec46",
+      tip: "點名指令。timeout_ms 是抖動視窗：>0 代表收到的人要隨機延遲 0～timeout_ms 再回，避免同時回話撞在一起。注意它有三個欄位——少寫一個，長度與 CRC 就全錯（這正是本頁初稿踩到的坑）。" },
+    { cmd: 0x1016, name: "SET_MASTER", addr: 0x0002,
+      fields: [
+        { n: "master_cid", t: "u16", v: 1 }
+      ],
+      ref: "4e43040200161002000100 11cdbdff",
+      tip: "唯一會改變「方向」的指令——告訴對方「以後你回話回給我」，而且會落盤。" }
+  ];
+
+  const TYPECOLOR = {
+    u8: "var(--c-len)", u16: "var(--c-addr)", u32: "var(--c-ver)",
+    str_u16len: "var(--c-data)", bytes_fixed: "var(--c-cmd)"
+  };
+  const TYPEDESC = {
+    u8: "1 B 無號整數", u16: "2 B 無號整數（小端序）", u32: "4 B 無號整數（小端序）",
+    str_u16len: "2 B 長度 ＋ UTF-8 內容"
+  };
+
+  let cur = CMDS[0];
+  const $pick = $("#cmdpick"), $fields = $("#fields"), $split = $("#tysplit");
+
+  function encodeField(f) {
+    const out = [];
+    if (f.t === "u8") {
+      out.push(+f.v & 0xFF);
+    } else if (f.t === "u16") {
+      const v = Math.max(0, Math.min(0xFFFF, +f.v || 0));
+      out.push(v & 0xFF, (v >>> 8) & 0xFF);
+    } else if (f.t === "u32") {
+      const v = Math.max(0, Math.min(0xFFFFFFFF, +f.v || 0)) >>> 0;
+      out.push(v & 0xFF, (v >>> 8) & 0xFF, (v >>> 16) & 0xFF, (v >>> 24) & 0xFF);
+    } else if (f.t === "str_u16len") {
+      const b = utf8(String(f.v));
+      const n = Math.min(0xFFFF, b.length);
+      out.push(n & 0xFF, (n >>> 8) & 0xFF);
+      for (let i = 0; i < n; i++) out.push(b[i]);
+    }
+    return out;
+  }
+
+  function renderPick() {
+    $pick.innerHTML = "";
+    CMDS.forEach(c => {
+      const b = document.createElement("button");
+      b.className = "pill" + (c === cur ? " on" : "");
+      b.innerHTML = `0x${c.cmd.toString(16)} <span style="color:var(--fg3)">${c.name}</span>`;
+      b.addEventListener("click", () => { cur = c; renderPick(); renderFields(); });
+      $pick.appendChild(b);
+    });
+  }
+
+  function renderFields() {
+    $fields.innerHTML = "";
+    cur.fields.forEach(f => {
+      const isNum = f.t === "u8" || f.t === "u16" || f.t === "u32";
+      const w = document.createElement("div");
+      w.className = "fld";
+      w.innerHTML = `<label>${f.n}<small>${f.t} · ${TYPEDESC[f.t]}</small></label>
+        <input type="${isNum ? "number" : "text"}" ${isNum ? `min="0" max="${f.t === "u8" ? 255 : f.t === "u16" ? 65535 : 4294967295}"` : ""}>`;
+      const inp = $("input", w);
+      inp.value = f.v;
+      inp.addEventListener("input", () => {
+        f.v = isNum ? (+inp.value || 0) : inp.value;
+        update();
+      });
+      $fields.appendChild(w);
+    });
+    update();
+  }
+
+  function update() {
+    const payload = [];
+    const spans = [];
+    cur.fields.forEach(f => {
+      const bs = encodeField(f);
+      spans.push({ f, from: payload.length, to: payload.length + bs.length });
+      bs.forEach(b => payload.push(b));
+    });
+    const frame = buildFrame(cur.cmd, payload, cur.addr);
+
+    // 型別分段視覺
+    $split.innerHTML = spans.map(s =>
+      `<span class="tyb" style="--f:${TYPECOLOR[s.f.t]}" title="${s.f.n} · ${s.f.t} · ${s.to - s.from} B">${
+        s.f.n} · ${s.to - s.from}B</span>`).join("");
+    $("#tyhint").textContent = cur.tip;
+
+    // 負載 hex（依欄位著色）
+    const colorOf = i => {
+      const s = spans.find(s => i >= s.from && i < s.to);
+      return s ? TYPECOLOR[s.f.t] : "var(--fg3)";
+    };
+    $("#plHex").innerHTML = payload.map((b, i) =>
+      `<span class="b" style="background:color-mix(in srgb,${colorOf(i)} 26%,transparent);color:var(--fg)">${hex2(b)}</span>`
+    ).join(" ");
+    $("#plLen").textContent = payload.length + " B";
+
+    // 完整封包
+    $("#fullHex").innerHTML = Array.from(frame).map((b, i) => {
+      let c = "var(--c-data)";
+      if (i < 2) c = "var(--c-sof)";
+      else if (i === 2) c = "var(--c-ver)";
+      else if (i < 5) c = "var(--c-addr)";
+      else if (i < 7) c = "var(--c-cmd)";
+      else if (i < 9) c = "var(--c-len)";
+      else if (i >= 9 + payload.length) c = "var(--c-crc)";
+      return `<span class="b" style="background:color-mix(in srgb,${c} 26%,transparent);color:var(--fg)">${hex2(b)}</span>`;
+    }).join(" ");
+
+    // 與參考值比對
+    const refClean = cur.ref.replace(/\s/g, "");
+    const mine = Array.from(frame, hex2).join("");
+    const badge = $("#cmpBadge");
+    if (mine === refClean) {
+      badge.className = "badge ok";
+      badge.textContent = "✓ 與 proto.py 完全一致";
+    } else {
+      badge.className = "badge er";
+      badge.textContent = "≠ 與參考值不同（改過欄位值就會這樣）";
+    }
+    // 參考值著色顯示
+    $("#refHex").innerHTML = cur.ref.split(" ").map(part =>
+      part.split("").reduce((acc, ch, i, arr) => {
+        if (i % 2 === 0) acc.push(ch); else acc[acc.length - 1] += ch;
+        return acc;
+      }, []).map(h => `<span class="b">${h}</span>`).join(" ")
+    ).join(" <span style='color:var(--fg3)'>|</span> ");
+  }
+
+  renderPick(); renderFields();
+})();
+
+/* ================================================================
+   08 指令域地圖
+   ================================================================ */
+(function domains() {
+  const LIST = [
+    { c: "0x10xx", n: "sys", q: 23, color: "var(--c-data)",
+      d: "系統：發現、控制、任務管理、定址、遠端更新。最核心的一域。" },
+    { c: "0x11xx", n: "status", q: 4, color: "var(--c-addr)",
+      d: "狀態與設定。同一個 key 既能查即時狀態也能查／改設定。" },
+    { c: "0x12xx", n: "heartbeat", q: 2, color: "var(--c-len)",
+      d: "心跳。用來知道對方還活著。" },
+    { c: "0x13xx", n: "now", q: 3, color: "var(--c-crc)",
+      d: "ESP-NOW 相關：節點表、配對、通道。" },
+    { c: "0x14xx", n: "hw", q: 8, color: "var(--c-cmd)",
+      d: "硬體控制，以及 bus_speed 臨時提速（0x1403～0x1408）。" },
+    { c: "0x15xx", n: "waiting_to_trash", q: 2, color: "var(--c-extra)",
+      d: "待清理功能。名字本身就說明了它的處境。" },
+    { c: "0x16xx", n: "（已移除）", q: 0, color: "var(--c-extra)", dead: true,
+      d: "原 Router 執行期指令，2026-09 移除，職責併入 0x11xx 與 config。編號保留不用。" },
+    { c: "0x18xx", n: "bench", q: 4, color: "var(--c-ver)",
+      d: "性能測試：通用接收吞吐量。" },
+    { c: "0x20xx", n: "file", q: 16, color: "var(--c-sof)",
+      d: "檔案傳輸與查詢。上傳／下載／兩段式 commit／斷點續傳。" },
+    { c: "0x22xx", n: "ota", q: 21, color: "var(--ok)",
+      d: "韌體 OTA。與合作方的合同，設計理由另見 03_ota_protocol.md。" },
+    { c: "0x30xx", n: "stream", q: 8, color: "var(--c-len)",
+      d: "pixel 串流：把畫面資料推出去。" },
+    { c: "0x31xx", n: "pixel", q: 8, color: "var(--c-cmd)",
+      d: "模式播放（LED / SERVO）：列出、查詢、設定、停止。" },
+    { c: "0x32xx", n: "audio", q: 13, color: "var(--c-crc)",
+      d: "音訊播放：WAV 串流、播放清單、多軌混音。" }
+  ];
+  const g = $("#domains-grid");
+  LIST.forEach(d => {
+    const el = document.createElement("div");
+    el.className = "dom" + (d.dead ? " dead" : "");
+    el.style.setProperty("--f", d.color);
+    el.innerHTML = `<div class="dc">${d.c}</div>
+      <div class="dn">${d.n}</div>
+      <div class="dd">${d.d}</div>
+      <div class="dq">${d.q ? d.q + " 條指令" : "未使用"}</div>`;
+    g.appendChild(el);
+  });
+})();
+
+/* ================================================================
+   07 匯流排模擬器
+   —— 規則照 slave/action/*.py 的實作：
+      · 位址過濾：只收 0xFFFF 或自己的 cid
+      · 回覆位址：預設 bus.master_cid（未配對 = 0xFFFF）
+                  唯一例外是 0x100E，用請求裡的 reply_cid
+      · 0x3105 / 0x3106 完全不回覆
+      · 0x3101 / 0x3107 沒有抖動 → 多台同時回 = 撞線
+   ================================================================ */
+(function busSim() {
+  const BCAST = 0xFFFF;
+  const SW = 1000, SH = 520;
+  const TRUNK_X0 = 232, TRUNK_X1 = 700;
+
+  const SLAVE_DEFAULTS = { on: false, paused: false, mode: 1, bri: 255 };
+  const SLAVES = [
+    { cid: 0x0001, label: "燈條 A", power: true, mac: [0x24,0x6F,0x28,0xA1,0xB2,0x01], modes: [
+        { type: 1, id: 1, name: "demo_eyes",  total: 0 },
+        { type: 1, id: 2, name: "wave_loop",  total: 5000 } ] },
+    { cid: 0x0002, label: "燈條 B", power: true, mac: [0x24,0x6F,0x28,0xC3,0xD4,0x02], modes: [
+        { type: 1, id: 1, name: "demo_eyes",  total: 0 },
+        { type: 1, id: 3, name: "breath",     total: 3200 } ] }
+  ].map(sl => Object.assign({}, SLAVE_DEFAULTS, sl));
+
+  let masterCid = BCAST;      // 就是 bus.master_cid：只有 0x1016 會改
+  let masterPower = true;
+  const cutWireSet = new Set();     // 被拔掉的線（key 見 WIRE_POS）
+  const cidHex = v => "0x" + v.toString(16).padStart(4, "0").toUpperCase();
+  const masterPinsOff = () => !masterPower;
+  function note(msg, hint) {
+    const el = document.getElementById("simHint");
+    if (el) { el.textContent = msg || ""; el.style.color = hint ? "var(--fg3)" : "var(--fg2)"; }
+  }
+  let paused = false;         // 模擬「線路忙 / 有人在講話」
+  let busy = false;           // 正在播動畫
+  let queue = Promise.resolve();
+  let seqNo = 0;
+  // 注意：這要用 let —— 記錄階段會暫時換成假物件，避免「記錄」就把數字加上去
+  let stats = { sent: 0, replied: 0, collide: 0, dropped: 0 };
+
+  const S = () => document.getElementById("topo");
+  const $t = id => document.getElementById(id);
+  function ledHTML() {
+    return SLAVES.map(s =>
+      `<div class="led${s.on && !s.paused ? " on" : ""}" id="led${s.cid}" title="0x${s.cid.toString(16).padStart(4,"0")}"></div>`
+    ).join("");
+  }
+  function syncLeds() {
+    SLAVES.forEach(s => {
+      const el = $t("led" + s.cid);
+      if (el) el.classList.toggle("on", !!s.on && !s.paused);
+    });
+  }
+
+  /* ---------- 拓撲圖 ---------- */
+  const BUS_X = 520;                       // 匯流排主幹（Master 與 Slave 之間）
+  // 顏色綁「接腳」：所有 TX 一律綠、所有 RX 一律粉（純色）
+  const TX_COLOR = "var(--c-len)";
+  const RX_COLOR = "var(--c-crc)";
+  // Master 在左、兩台 Slave 在右（接腳一律朝向中間的匯流排）
+  const MBOARD  = { x: 40,  y: 180, w: 232, h: 132, side: "right" };   // 接腳在右緣 → 指向匯流排
+  const SBOARD  = [
+    { x: 660, y: 40,  w: 234, h: 116, side: "left"  },   // 0x0001（右上，接腳在左緣）
+    { x: 660, y: 320, w: 234, h: 116, side: "left"  }    // 0x0002（右下，接腳在左緣）
+  ];
+  const MPIN = { tx: { x: MBOARD.x + MBOARD.w, y: MBOARD.y + 46 },   // 接腳在右緣
+                 rx: { x: MBOARD.x + MBOARD.w, y: MBOARD.y + 84 } };
+  const SPIN = { tx: 46, rx: 84 };   // 所有板子統一：TX 在上、RX 在下
+  const pinAt = (i, kind) => {
+    const B = SBOARD[i];
+    return B.side === "left"
+      ? { x: B.x, y: B.y + (kind === "rx" ? SPIN.rx : SPIN.tx) }
+      : { x: B.x + B.w, y: B.y + (kind === "rx" ? SPIN.rx : SPIN.tx) };
+  };
+  // 接線端點：用 SPIN 現算（畫圖與熱區共用同一份，不會兩邊不一致）
+  const wirePos = k => {
+    if (k === "m-tx") return [MPIN.tx.x - 5, MPIN.tx.y, BUS_X + 5, MPIN.tx.y];
+    if (k === "m-rx") return [MPIN.rx.x - 5, MPIN.rx.y, BUS_X + 5, MPIN.rx.y];
+    const i = +k[0], kind = k.endsWith("rx") ? "rx" : "tx";
+    const pt = pinAt(i, kind);
+    const bx = SBOARD[i].x > BUS_X ? BUS_X + 5 : BUS_X - 5;   // 板子在右 → 接左邊
+    if (SBOARD[i].side === "left") return [pt.x + 5, pt.y, bx, pt.y];
+    return [pt.x - 5, pt.y, bx, pt.y];
+  };
+  const WIRE_KEYS = ["m-tx", "m-rx", "0-rx", "0-tx", "1-rx", "1-tx"];
+
+  function drawTopo(hl) {
+    hl = hl || {};
+    const hotSet  = new Set(hl.hot || []);
+    const actSet  = new Set(hl.act || []);
+    const missSet = new Set(hl.miss || []);
+    const cutSet  = new Set(hl.cut || []);
+    if (hl.reactions !== undefined) reactions = hl.reactions || {};
+
+    // 「正在發射 / 正在接收」的標示
+    const sendSet = new Set(sendingBoard != null ? [sendingBoard] : []);
+    const recvArr = Array.isArray(recvBoard) ? recvBoard : (recvBoard != null ? [recvBoard] : []);
+    const recvSet = new Set(recvArr);
+    const wantSet = new Set(recvWant || []);
+    const notMineSet = new Set(recvArr.filter(c => !wantSet.has(c)));
+    const masterRecv = recvSet.has("master") && !sendSet.has("master");
+    const reactOf = cid => reactions[cid] || null;
+    const RX_COL  = { run: "var(--ok)", dropped: "var(--warn)", nopower: "var(--fg3)",
+                      nocable: "var(--bad)", collided: "var(--bad)", silent: "var(--fg3)" };
+    const RX_LEAD = { run: "✓", dropped: "✗", nopower: "✗", nocable: "✗", collided: "✗", silent: "·" };
+
+    const L = [], busLayer = [];
+    const busColor = paused ? "var(--bad)" : "var(--acc2)";
+
+    // 接腳（含「剛剛被波形打到」的放大動畫）
+    // 接腳位置直接從接線端點取 → 保證接腳一定落在線上
+    const pinPt = (x1, y1, x2, y2, atLeftEnd) => atLeftEnd ? { x: x1, y: y1 } : { x: x2, y: y2 };
+    function drawPin(pt, label, cut, live, touched, opt) {
+      if (touched) {
+        L.push(`<circle cx="${pt.x}" cy="${pt.y}" r="16" fill="none" stroke="${busColor}" stroke-width="2.4" opacity=".9"/>`);
+        L.push(`<circle cx="${pt.x}" cy="${pt.y}" r="6.5" fill="${busColor}"/>`);
+      } else {
+        L.push(`<circle cx="${pt.x}" cy="${pt.y}" r="3.2"
+          fill="${live ? (label === "TX" ? TX_COLOR : RX_COLOR) : "var(--line2)"}"/>`);
+      }
+      // 標籤畫在板子內側、緊貼接腳（畫在接線之後 → 不會被線蓋住）
+      const inward = (opt && opt.pinEdge === "right") ? -1 : 1;
+      L.push(`<text x="${pt.x + 9 * inward}" y="${pt.y + 4}" class="ntiny"
+        text-anchor="${inward > 0 ? "start" : "end"}"
+        style="paint-order:stroke; stroke:var(--bg); stroke-width:3px">${label}</text>`);
+    }
+
+    // 板子（含標題、位址、狀態、反應標籤）
+    function drawBoard(B, title, sub, addrTxt, state, opt) {
+      opt = opt || {};
+      const cls = state.cls || "";
+      L.push(`<rect x="${B.x}" y="${B.y}" width="${B.w}" height="${B.h}" rx="10"
+        class="nbox${cls}" data-power="1" style="cursor:pointer"/>`);
+      const tx0 = B.x + 12 + (B.txOff || 0);
+      L.push(`<text x="${B.x + 12}" y="${B.y + 19}" class="ntiny" fill="var(--fg3)">${title}</text>`);
+      L.push(`<text x="${B.x + B.w - 12}" y="${B.y + 20}" class="nval" text-anchor="end"
+        fill="${addrTxt === "0xFFFF" ? "var(--warn)" : "var(--c-addr)"}">${addrTxt}</text>`);
+      L.push(`<text x="${tx0}" y="${B.y + 38}" class="nlab">${sub}</text>`);
+      if (opt.line3) L.push(`<text x="${tx0}" y="${B.y + 58}" class="ntiny">${opt.line3}</text>`);
+      if (opt.line4) L.push(`<text x="${tx0}" y="${B.y + 76}" class="ntiny">${opt.line4}</text>`);
+      if (opt.line5) L.push(`<text x="${tx0}" y="${B.y + 94}" class="ntiny">${opt.line5}</text>`);
+      // 電源燈
+      const on = !state.off;
+      L.push(`<circle cx="${B.x + B.w - 16}" cy="${B.y + B.h - 13}" r="4.5"
+        fill="${on ? "var(--ok)" : "var(--fg3)"}"/>`);
+      L.push(`<text x="${B.x + B.w - 26}" y="${B.y + B.h - 9}" class="ntiny"
+        text-anchor="end">${on ? "PWR" : "斷電"}</text>`);
+      // 反應標籤（板子左側或右側，看哪邊有空間）
+      const re = opt.reaction;
+      if (re) {
+        const col = RX_COL[re.kind] || "var(--fg3)";
+        const lead = RX_LEAD[re.kind] || "·";
+        const w2 = Math.max(120, re.text.length * 8 + 26);
+        // 板子在匯流排右側 → 標籤往右放；在左側 → 往左放（遠離匯流排）
+        const rightSide = (B.x + B.w / 2) > BUS_X;
+        const lx = rightSide ? B.x : B.x + B.w - w2;
+        const ly = B.y + B.h + 10;
+        L.push(`<rect x="${lx}" y="${ly}" width="${w2}" height="21" rx="6"
+          fill="var(--bg)" stroke="${col}" stroke-width="1.5"/>`);
+        L.push(`<text x="${lx + 10}" y="${ly + 15}" class="ntiny" font-weight="700"
+          fill="${col}">${lead} ${re.text}</text>`);
+        if (re.why) {
+          L.push(`<text x="${lx + 4}" y="${ly + 36}" class="ntiny" fill="var(--fg3)">↳ ${re.why}</text>`);
+        }
+      }
+      // 發送／接收徽章（板子上方）
+      const badge = sendSet.has(opt.key) ? ["▲ 傳送中", "var(--acc)"]
+        : (notMineSet.has(opt.key) ? ["▼ 收到但不是給我的", "var(--warn)"]
+        : (recvSet.has(opt.key) ? ["▼ 收到", "var(--ok)"] : null));
+      if (badge) {
+        const bw = badge[0].length * 8 + 16;
+        L.push(`<rect x="${B.x + 2}" y="${B.y - 23}" width="${bw}" height="19" rx="6"
+          fill="var(--bg)" stroke="${badge[1]}" stroke-width="1.6"/>`);
+        L.push(`<text x="${B.x + 2 + bw / 2}" y="${B.y - 9}" class="ntiny"
+          text-anchor="middle" fill="${badge[1]}" font-weight="700">${badge[0]}</text>`);
+      }
+    }
+
+    /* ── Master（左側）── */
+    const mOff = masterPinsOff();
+    const mState = { off: mOff, cls: sendSet.has("master") ? " hot" : (masterRecv ? " act" : (actSet.has("master") ? " act" : "")) };
+    drawBoard(MBOARD, "MCU 0 · MASTER", "PC / USB-UART",
+      mOff ? "（斷電）" : (masterCid === BCAST ? "0xFFFF" : cidHex(masterCid)), mState,
+      { key: "master", reaction: reactOf("master"),
+        line3: masterCid === BCAST ? "未配對 → 回覆變廣播" : "已配對 → 回覆寄這裡",
+        line4: "TX = 送出去　RX = 收回來", line5: "RS485 半雙工 · 115200" });
+
+    /* ── 兩台 Slave ── */
+    SLAVES.forEach((sl, i) => {
+      const B = SBOARD[i];
+      const off = !sl.power;
+      const cls = off ? " off"
+        : (notMineSet.has(sl.cid) ? " miss"
+          : sendSet.has(sl.cid) ? " hot"
+          : recvSet.has(sl.cid) ? " act"
+          : (missSet.has(sl.cid) ? " miss" : (hotSet.has(sl.cid) ? " hot" : (actSet.has(sl.cid) ? " act" : ""))));
+      const st = off ? "斷電" : (sl.on ? `mode ${sl.mode}${sl.paused ? "（暫停）" : ""}` : "熄燈");
+      B.txOff = (B.side === "left" ? 46 : 0);   // 讓開接腳的內縮量
+      B.txW = B.w - B.txOff - (B.side === "right" ? 46 : 0);
+      drawBoard(B, `MCU ${i + 1} · SLAVE`, sl.label,
+        off ? "（斷電）" : cidHex(sl.cid), { off: off, cls: cls },
+        { key: sl.cid, reaction: reactOf(sl.cid),
+          line3: `燈效：${st}　亮度 ${sl.bri}`,
+          line4: `可播模式 ${sl.modes.map(x => x.id).join(" / ")}`,
+          line5: `mac ${sl.mac.map(b => b.toString(16).padStart(2, "0")).join(":")}` });
+    });
+
+    /* ── 接線（每條都是水平直線，不重疊）── */
+    function wire(x1, y1, x2, y2, color, cut, hot, opt) {
+      opt = opt || {};
+      L.push(`<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}"
+        stroke="${cut ? "var(--bad)" : color}" stroke-width="${hot ? 3.4 : 2.6}"
+        stroke-dasharray="${cut ? "6 5" : "0"}" stroke-linecap="round"/>`);
+      // 箭頭：由呼叫端直接指定方向（+1 往右、-1 往左）
+      if (!cut && Math.abs(x2 - x1) > 30 && opt.arrow) {
+        const dd = opt.arrow;
+        const rightEnd = Math.max(x1, x2), leftEnd = Math.min(x1, x2);
+        // TX：箭頭靠匯流排那端；RX：箭頭靠接腳那端
+        const ax = opt.near ? (dd > 0 ? opt.near + 16 : opt.near - 16) : (dd > 0 ? rightEnd - 14 : leftEnd + 14);
+        L.push(`<path d="M${ax} ${y2} l${-7 * dd} -5 l0 10 z" fill="${color}" opacity=".9"/>`);
+      }
+      if (cut) {
+        const mx = (x1 + x2) / 2, my = (y1 + y2) / 2;
+        L.push(`<circle cx="${mx}" cy="${my}" r="10" fill="var(--bg)" stroke="var(--bad)" stroke-width="9" stroke-opacity=".3"/>`);
+        L.push(`<text x="${mx}" y="${my + 4}" class="warnlab" text-anchor="middle" font-weight="700">✂</text>`);
+      }
+    }
+    const cutWire = k => cutSet.has(k);
+    // Master 在左 → 它的 TX/RX 在線的左端（TX 色在左）；Slave 在右 → RX/TX 在右端
+    wire(MPIN.tx.x, MPIN.tx.y, BUS_X - 5, MPIN.tx.y, TX_COLOR, cutWire("m-tx"), false, { arrow: 1 });   // TX → 匯流排
+    wire(MPIN.rx.x, MPIN.rx.y, BUS_X - 5, MPIN.rx.y, RX_COLOR, cutWire("m-rx"), false, { arrow: -1, near: 272 });  // 匯流排 → RX
+    SLAVES.forEach((sl, i) => {
+      const sLeft = SBOARD[i].x < BUS_X;             // Slave 在右 → false
+      const rx = pinAt(i, "rx"), tx = pinAt(i, "tx");
+      const edgeX = sLeft ? rx.x + 5 : rx.x - 5;
+      const edgeX2 = sLeft ? tx.x + 5 : tx.x - 5;
+      // 顏色用「這塊板子這一端」的接腳：Slave 的 RX 線是粉、TX 線是綠
+      wire(edgeX, rx.y, BUS_X + (sLeft ? 5 : -5), rx.y, RX_COLOR, cutWire(i + "-rx"), false, { arrow: 1, near: 655 });   // 匯流排 → RX
+      wire(edgeX2, tx.y, BUS_X + (sLeft ? 5 : -5), tx.y, TX_COLOR, cutWire(i + "-tx"), false, { arrow: -1 });  // TX → 匯流排
+      L.push(`<circle cx="${BUS_X + (sLeft ? 5 : -5)}" cy="${rx.y}" r="3.5" fill="${cutWire(i + "-rx") ? "var(--bad)" : RX_COLOR}"/>`);
+      L.push(`<circle cx="${BUS_X + (sLeft ? 5 : -5)}" cy="${tx.y}" r="3.5" fill="${cutWire(i + "-tx") ? "var(--bad)" : TX_COLOR}"/>`);
+    });
+    L.push(`<circle cx="${BUS_X - 5}" cy="${MPIN.tx.y}" r="3.5" fill="${cutWire("m-tx") ? "var(--bad)" : TX_COLOR}"/>`);
+    L.push(`<circle cx="${BUS_X - 5}" cy="${MPIN.rx.y}" r="3.5" fill="${cutWire("m-rx") ? "var(--bad)" : RX_COLOR}"/>`);
+
+    // 接腳
+    const mEdge = MBOARD.x < BUS_X ? "right" : "left";
+    drawPin({ x: MPIN.tx.x, y: MPIN.tx.y }, "TX", cutWire("m-tx"), !cutWire("m-tx"), txLive, { pinEdge: mEdge });
+    drawPin({ x: MPIN.rx.x, y: MPIN.rx.y }, "RX", cutWire("m-rx"), !cutWire("m-rx"), rxLive.has(-1), { pinEdge: mEdge });
+    SLAVES.forEach((sl, i) => {
+      const rx = pinAt(i, "rx"), tx = pinAt(i, "tx");
+      const edge = SBOARD[i].side;   // left = 接腳在左緣、right = 接腳在右緣
+      drawPin(rx, "RX", cutWire(i + "-rx"), sl.power && !cutWire(i + "-rx"), rxLive.has(i), { pinEdge: edge });
+      drawPin(tx, "TX", cutWire(i + "-tx"), sl.power && !cutWire(i + "-tx"), false, { pinEdge: edge });
+    });
+
+    /* ── 匯流排主幹（最後畫，蓋在接點上）── */
+    const ys = [MPIN.tx.y, MPIN.rx.y].concat(SLAVES.map((_, i) => pinAt(i, "rx").y),
+                                             SLAVES.map((_, i) => pinAt(i, "tx").y));
+    const BUS_Y0 = Math.min.apply(null, ys) - 30;
+    const BUS_Y1 = Math.max.apply(null, ys) + 30;
+    busLayer.push(`<rect x="${BUS_X - 5}" y="${BUS_Y0}" width="10" height="${BUS_Y1 - BUS_Y0}"
+      rx="5" fill="${busColor}" opacity=".9"/>`);
+    busLayer.push(`<text x="${BUS_X}" y="${BUS_Y0 - 40}" class="ntiny" text-anchor="middle" fill="var(--acc)" font-weight="700">RS485 兩線匯流排</text>`);
+    busLayer.push(`<text x="${BUS_X}" y="${BUS_Y0 - 24}" class="ntiny" text-anchor="middle" fill="${TX_COLOR}">A 線：Master TX ↔ Slave RX</text>`);
+    busLayer.push(`<text x="${BUS_X - 60}" y="${BUS_Y1 + 40}" class="ntiny" text-anchor="middle" fill="var(--acc)">↑ 點任何一條接線可拔線</text>`);
+    if (paused) busLayer.push(`<text x="${BUS_X + 12}" y="${(BUS_Y0 + BUS_Y1) / 2}" class="warnlab">匯流排忙線中</text>`);
+
+    const svgEl = S();
+    if (!svgEl.querySelector("#static")) {
+      svgEl.innerHTML = `<defs>
+          <filter id="pktGlow" x="-60%" y="-250%" width="220%" height="600%">
+            <feGaussianBlur stdDeviation="3" result="b"/>
+            <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+          </filter>
+          <linearGradient id="trailGrad" x1="0" y1="0" x2="1" y2="0">
+            <stop offset="0" stop-color="var(--fg3)" stop-opacity="0"/>
+            <stop offset="1" stop-color="var(--fg3)" stop-opacity=".5"/>
+          </linearGradient>
+        </defs>
+        <g id="static"></g><g id="pkts"></g><g id="fx"></g>`;
+    }
+    svgEl.setAttribute("viewBox", `0 0 ${SW} ${SH}`);
+    busLayer.forEach(x => L.push(x));
+    svgEl.querySelector("#static").innerHTML = L.join("");
+    setStage(stageStatus());
+
+    // 事件：點板子斷電、點線拔線
+    const root = svgEl.querySelector("#static");
+    root.querySelectorAll("[data-power]").forEach((r, i) => {
+      r.addEventListener("click", () => {
+        const which = i === 0 ? "master" : SLAVES[i - 1];
+        if (which === "master") masterPower = !masterPower; else which.power = !which.power;
+        note(`[${i === 0 ? "Master" : cidHex(which.cid)}] 電源 ${(i === 0 ? masterPower : which.power) ? "開啟" : "關閉"}`);
+        drawTopo({});
+      });
+      r.addEventListener("mouseenter", () => note("點板子可以斷電／通電", true));
+      r.addEventListener("mouseleave", () => note("提示：點板子斷電／通電，點接線拔線／接回。", true));
+    });
+    const hits = WIRE_KEYS.map(k => {
+      const [x1, y1, x2, y2] = wirePos(k);
+      return `<line class="hit" data-wire="${k}" x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}"
+        stroke="transparent" stroke-width="14" stroke-linecap="round" fill="none"/>`;
+    }).join("");
+    root.insertAdjacentHTML("beforeend", `<g id="hits">${hits}</g>`);
+    root.querySelectorAll("#hits .hit").forEach(ln => {
+      ln.style.cursor = "pointer";
+      ln.addEventListener("click", e => {
+        e.stopPropagation();
+        const k = ln.dataset.wire;
+        if (cutWireSet.has(k)) cutWireSet.delete(k); else cutWireSet.add(k);
+        note(`接線 ${k} ${cutWireSet.has(k) ? "已拔除" : "已接回"}`);
+        drawTopo({ cut: Array.from(cutWireSet) });
+      });
+      ln.addEventListener("mouseenter", () => ln.setAttribute("stroke", "color-mix(in srgb, var(--acc) 25%, transparent)"));
+      ln.addEventListener("mouseleave", () => ln.setAttribute("stroke", "transparent"));
+    });
+  }
+
+  function pktColor(idx) {
+    return ["var(--c-sof)", "var(--c-ver)", "var(--c-addr)", "var(--c-cmd)", "var(--c-len)", "var(--c-data)", "var(--c-crc)"][idx] || "var(--c-data)";
+  }
+  function fieldColorOf(i, ln) {
+    if (i < 2) return pktColor(0);
+    if (i === 2) return pktColor(1);
+    if (i < 5) return pktColor(2);
+    if (i < 7) return pktColor(3);
+    if (i < 9) return pktColor(4);
+    if (i >= 9 + ln) return pktColor(6);
+    return pktColor(5);
+  }
+
+  /* ---------- 封包動畫 ---------- */
+  function setStage(txt) {
+    const el = document.getElementById("stageTitle");
+    if (el) el.textContent = txt;
+  }
+  // 依目前狀態組出舞台標題（誰在線、哪條線斷了、匯流排是否忙）
+  function stageStatus() {
+    const parts = ["匯流排"];
+    parts.push(paused ? "⚠ 忙線中" : "空閒");
+    const off = SLAVES.filter(x => !x.power).map(x => cidHex(x.cid));
+    const cut = WIRE_KEYS.filter(k => cutWireSet.has(k)).length;
+    if (off.length) parts.push("斷電 " + off.join("/"));
+    if (cut) parts.push(`斷線 ${cut} 條`);
+    if (masterCid !== BCAST) parts.push("master=" + cidHex(masterCid));
+    else parts.push("未配對");
+    return parts.join(" · ");
+  }
+
+  /* ══════════════════════════════════════════════════════════════
+     送訊號的動畫：**不做沿線移動**。
+     只做兩件事：
+       ① 發射端的 TX 接腳亮起（送出）
+       ② 同一條匯流排上「每一位收方」的 RX 接腳同時亮起（收到）
+     誰在 TX、誰在 RX 完全由角色決定；發送與回覆共用這一段程式。
+     ══════════════════════════════════════════════════════════════ */
+  function sendPacket(frame) {
+    return new Promise(res => {
+      const up = frame.dir === "up";
+      const fromCid = frame.from || SLAVES[0].cid;
+      const si = Math.max(0, SLAVES.findIndex(x => x.cid === fromCid));
+      const sIdx = up ? si : -1;                       // -1 = Master 發射
+
+      const col = frame.collide ? "var(--bad)" : (up ? RX_COLOR : TX_COLOR);
+      const tag = frame.collide ? "碰撞" : "0x" + frame.cmd.toString(16).toUpperCase();
+      const busSideX = (fromLeft) => fromLeft ? BUS_X - 5 : BUS_X + 5;   // 板子在左/右
+
+      // 發射端接腳
+      const sPin = sIdx < 0 ? MPIN.tx : pinAt(sIdx, "tx");
+      const sLeft = (sIdx < 0) ? (MBOARD.x > BUS_X) : (SBOARD[sIdx].x < BUS_X);
+      const sBusX = sLeft ? BUS_X - 5 : BUS_X + 5;
+
+      // 收方：Master ＋ 在線上的 Slave（自己不算）
+      const recv = [];
+      if (sIdx !== -1 && !cutWireSet.has("m-rx")) recv.push({ i: -1, pin: MPIN.rx,
+        left: MBOARD.x < BUS_X, ok: true, master: true });
+      SLAVES.forEach((sl, i) => {
+        if (i === sIdx) return;
+        if (!sl.power) return;
+        if (cutWireSet.has(i + "-rx")) return;
+        recv.push({ i: i, pin: pinAt(i, "rx"), left: SBOARD[i].x < BUS_X, ok: true, master: false });
+      });
+
+      const g = S().querySelector("#pkts");
+      const mkPkt = (label, k) => {
+        const el = document.createElementNS("http://www.w3.org/2000/svg", "g");
+        const w = 30 * (k || 1), h = 13 * (k || 1);
+        let t = `<rect x="${-w / 2}" y="${-h / 2}" width="${w}" height="${h}" rx="3"
+          fill="${col}" stroke="rgba(0,0,0,.35)" stroke-width=".6" opacity=".95"/>`;
+        for (let i = 0; i < 4; i++)
+          t += `<rect x="${-w / 2 + 2 + i * (w - 4) / 4}" y="${-h / 2 + 2}" width="3" height="${h - 4}"
+            rx="1" fill="${fieldColorOf(i, frame.payload.length)}" opacity=".95"/>`;
+        t += `<path d="M${w / 2 + 7} 0 l-6 -5 l0 10 z" fill="${col}"/>`;
+        if (label) {
+          const tw = Math.max(58, label.length * 7.6 + 12);
+          t += `<rect x="${-tw / 2}" y="${-h / 2 - 22}" width="${tw}" height="17" rx="5"
+            fill="var(--card)" stroke="${col}" stroke-width="1" opacity=".95"/>
+            <text x="0" y="${-h / 2 - 9}" class="ntiny" text-anchor="middle" fill="${col}">${label}</text>`;
+        }
+        el.innerHTML = t;
+        el.setAttribute("filter", "url(#pktGlow)");
+        return el;
+      };
+      const run = (el, x0, y0, x1, y1, ms) => new Promise(done => {
+        const t0 = performance.now();
+        (function st(now) {
+          const k = Math.min(1, (now - t0) / ms);
+          const e = k < .5 ? 2 * k * k : 1 - Math.pow(-2 * k + 2, 2) / 2;
+          el.setAttribute("transform", `translate(${x0 + (x1 - x0) * e},${y0 + (y1 - y0) * e})`);
+          if (k < 1) requestAnimationFrame(st); else done();
+        })(t0);
+      });
+      const pulseAt = (x, y) => {
+        const c = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+        c.setAttribute("cx", x); c.setAttribute("cy", y); c.setAttribute("fill", "none");
+        c.setAttribute("stroke", col); c.setAttribute("stroke-width", "2.4");
+        c.setAttribute("class", "nxpulse");
+        S().querySelector("#fx").appendChild(c);
+        setTimeout(() => c.remove(), 620);
+      };
+
+      /* ── ① 發射：包從自己的 TX 腳跑到匯流排 ── */
+      sendingBoard = up ? fromCid : "master";
+      recvBoard = null; recvWant = null;
+      txLive = true; rxLive = new Set();
+      drawTopo({ cut: Array.from(cutWireSet) });
+
+      const out = mkPkt(tag + (up ? " ↑TX" : " ↓TX"), 1);
+      g.appendChild(out);
+      (async () => {
+        await run(out, sPin.x, sPin.y, sBusX, sPin.y, 420);
+        pulseAt(sBusX, sPin.y);
+        out.remove();
+        txLive = false;
+
+        /* ── ② 接收：包從匯流排跑到每一個 RX 腳（同時）── */
+        rxLive = new Set(recv.map(o => o.master ? -1 : o.i));
+        recvBoard = recv.map(o => o.master ? "master" : o.i + 1);
+        recvWant = frame.want || null;
+        drawTopo({ cut: Array.from(cutWireSet) });
+        setStage(`▸ ${tag} 送出　→　${recv.length} 個 RX 收到`);
+        await Promise.all(recv.map(o => {
+          const el = mkPkt(null, 0.72);
+          const bx = o.left ? BUS_X - 5 : BUS_X + 5;
+          g.appendChild(el);
+          return run(el, bx, o.pin.y, o.pin.x, o.pin.y, 420).then(() => {
+            pulseAt(o.pin.x, o.pin.y);
+            setTimeout(() => el.remove(), 160);
+          });
+        }));
+        await new Promise(r => setTimeout(r, 420));
+        rxLive = new Set(); recvBoard = null; recvWant = null; sendingBoard = null;
+        drawTopo({});
+        res();
+      })();
+    });
+  }
+
+  /* ---------- 流量記錄 ---------- */
+  function hexSpans(bytes, ln, collide) {
+    const PER = 8;
+    const rows = [];
+    for (let i = 0; i < bytes.length; i += PER) {
+      let row = "";
+      for (let j = i; j < Math.min(i + PER, bytes.length); j++) {
+        const c = (collide && j >= 2) ? "var(--bad)" : fieldColorOf(j, ln);
+        row += `<span style="color:${c}">${hex2(bytes[j])}</span> `;
+      }
+      rows.push(`<span style="white-space:nowrap">${row.trim()}</span>`);
+    }
+    return rows.join("<br>");
+  }
+
+  const logEntries = [];
+  // 依「已發生的列」重畫整張流量表（後退重建時用）
+  function renderLog(rows) {
+    const tb = $t("simTbody");
+    seqNo = 0;
+    tb.innerHTML = rows.length ? "" :
+      `<tr><td colspan="5" class="muted" style="padding:22px; text-align:center">還沒有流量。按上面的按鈕送一個封包看看。</td></tr>`;
+    // 最新在最上面 → 反向插入
+    rows.forEach(r => insertRow(r));
+  }
+  function insertRow(f) {
+    const tb = $t("simTbody");
+    if (seqNo === 0) tb.innerHTML = "";
+    seqNo++;
+    // 只有「回覆列」有 f.from，Master 發射列沒有 —— 不要無條件讀它
+    const dest = f.addr === BCAST ? "廣播" : "0x" + (f.addr || 0).toString(16).padStart(4, "0").toUpperCase();
+    const dirCell = f.dir === "up"
+      ? `<span class="chip ${f.collide ? "col" : "yes"}">${f.collide ? "碰撞" : "Slave 回覆"} ← 0x${(f.from || 0).toString(16).padStart(4, "0").toUpperCase()}</span>`
+      : (f.cmd
+          ? `<span class="chip${f.addr === BCAST ? " ff" : " uni"}">Master → ${dest}</span>`
+          : `<span class="chip no">無回應</span>`);
+    const cmdCell = f.cmd
+      ? `<code>0x${f.cmd.toString(16).padStart(4, "0").toUpperCase()}</code>
+         <div class="muted" style="font-size:11px">${f.cmdName}</div>`
+      : `<span class="muted">—</span><div class="muted" style="font-size:11px">${f.cmdName || ""}</div>`;
+    const tr = document.createElement("tr");
+    tr.innerHTML = `
+      <td class="muted">${seqNo}</td>
+      <td>${dirCell}</td>
+      <td>${cmdCell}</td>
+      <td style="font-family:var(--mono); font-size:12.5px; line-height:1.9">${f.bytes.length ? hexSpans(f.bytes, f.payload.length, f.collide) : '<span class="muted">—</span>'}</td>
+      <td style="font-size:12px; color:var(--fg2)">${f.note || ""}</td>`;
+    tb.insertBefore(tr, tb.firstChild);
+    if (tb.children.length > 40) tb.removeChild(tb.lastChild);
+    return tr;
+  }
+  function logRow(f) { insertRow(f); }
+
+  function refreshStats() {
+    $t("simSent").textContent = stats.sent;
+    $t("simReplied").textContent = stats.replied;
+    $t("simCollide").textContent = stats.collide;
+    $t("simDropped").textContent = stats.dropped;
+  }
+
+  /* ---------- 指令表 ---------- */
+  const QUERIES = [
+    { label: "查模式清單", cmd: 0x3101, name: "MODE_LIST_QUERY", note: "撈出可播的燈效 id",
+      fields: [["u8", 1]], addr: "target", resp: 0x3102 },
+    { label: "查模式細節", cmd: 0x3107, name: "MODE_DETAIL_QUERY", note: "撈出模式名稱",
+      fields: [["u8", 1], ["u8", 1]], addr: "target", resp: 0x3108 },
+    { label: "點名（找機）", cmd: 0x100D, name: "IDENTIFY_REQ", note: "唯一例外：回覆用 reply_cid",
+      fields: [["u16", 1], ["u16", 50], ["u8", 0]], addr: "broadcast", resp: 0x100E }
+  ];
+  const CONTROLS = [
+    { label: "模式清單 → 全部", cmd: 0x3101, name: "MODE_LIST_QUERY", note: "廣播查詢（示範用）",
+      fields: [["u8", 1]], addr: "broadcast", resp: 0x3102 },
+    { label: "模式細節 → 全部", cmd: 0x3107, name: "MODE_DETAIL_QUERY", note: "廣播查詢（示範用）",
+      fields: [["u8", 1], ["u8", 1]], addr: "broadcast", resp: 0x3108 },
+    { label: "播放燈效", cmd: 0x3105, name: "MODE_SET", note: "沒有回覆，看燈",
+      fields: [["u8", 1], ["u8", 1], ["u16", 0], ["u8", 255]], addr: "either", noReply: true },
+    { label: "停止（全關）", cmd: 0x3106, name: "MODE_STOP", note: "沒有回覆，看燈",
+      fields: [["u8", 1]], addr: "either", noReply: true },
+    { label: "記住我（定方向）", cmd: 0x1016, name: "SET_MASTER", note: "改 master_cid，會落盤",
+      fields: [["u16", 1]], addr: "broadcast", resp: null, setsMaster: true }
+  ];
+
+  /* ---------- 系統 / 身分指令（③） ---------- */
+  const SYSTEM = [
+    { label: "問它是誰", cmd: 0x100D, name: "IDENTIFY_REQ", note: "唯一例外：回覆用 reply_cid", pkt: true,
+      fields: [["u16", 1], ["u16", 50], ["u8", 0]], addr: "broadcast", resp: 0x100E },
+    { label: "查任務清單", cmd: 0x1005, name: "SYS_TASK_QUERY", note: "回 JSON 清單",
+      fields: [], addr: "either", resp: 0x1006 },
+    { label: "查 IP", cmd: 0x1014, name: "GET_IP", note: "回一張網卡表",
+      fields: [], addr: "either", resp: 0x1015 },
+    { label: "查 WebREPL 狀態", cmd: 0x1010, name: "WREPL_CTRL", note: "0=查 1=開 2=關",
+      fields: [["u8", 0]], addr: "either", resp: 0x1011 },
+    { label: "查 WebUI 狀態", cmd: 0x1017, name: "WEBUI_CTRL", note: "0=查 1=開 2=關",
+      fields: [["u8", 0]], addr: "either", resp: 0x1018 },
+    { label: "記住我（定方向）", cmd: 0x1016, name: "SET_MASTER", note: "改 master_cid，會落盤",
+      fields: [["u16", 1]], addr: "broadcast", resp: null, setsMaster: true },
+    { label: "WiFi 開 / 關", cmd: 0x1008, name: "WIFI_CTRL", note: "0=關 1=開",
+      fields: [["u8", 1]], addr: "broadcast", resp: null, noReply: true, onOff: "wifi" },
+    { label: "系統控制", cmd: 0x1004, name: "SYS_CTRL", note: "wifi + 核心控制",
+      fields: [["u8", 1], ["u8", 1]], addr: "broadcast", resp: null, noReply: true },
+    { label: "重開機", cmd: 0x100F, name: "REBOOT", note: "延遲後重啟（危險）",
+      fields: [["u32", 1000]], addr: "either", resp: null, noReply: true, onOff: "reboot" },
+    { label: "啟動網路介面", cmd: 0x1012, name: "NET_START", note: "0=lan 1=wifi 2=ap 3=espnow",
+      fields: [["u8", 1]], addr: "either", resp: 0x1013 }
+  ];
+
+  /* ---------- 狀態與設定（④） ---------- */
+  const STATUS = [
+    { label: "查全部狀態", cmd: 0x1101, name: "STATUS_GET", note: "keys 空 = 全部",
+      fields: [["str_u16len", ""]], addr: "either", resp: 0x1102, respKind: "status" },
+    { label: "查指定幾個值", cmd: 0x1101, name: "STATUS_GET", note: "逗號分隔的 key",
+      fields: [["str_u16len", "System.cID,System.dual_core_mode"]], addr: "either",
+      resp: 0x1102, respKind: "status" },
+    { label: "改設定（只寫快取）", cmd: 0x1103, name: "STATUS_SET", note: "persist=0 不落盤",
+      fields: [["str_u16len", '{"System.cID":"0001"}'], ["u8", 0]], addr: "either", resp: 0x1104 },
+    { label: "改設定（寫快取+落盤）", cmd: 0x1103, name: "STATUS_SET", note: "persist=1 會寫 flash",
+      fields: [["str_u16len", '{"System.cID":"0001"}'], ["u8", 1]], addr: "either", resp: 0x1104 }
+  ];
+
+  /* ---------- 回覆內容 ---------- */
+  function rspList(sl, req) {
+    const ids = [];
+    sl.modes.forEach(m => { if (m.type === 1) ids.push((m.type << 8) | m.id); });
+    ids.sort((a, b) => a - b);
+    const rest = [];
+    ids.forEach(v => { rest.push(v & 0xFF, (v >>> 8) & 0xFF); });
+    const f = mk(0x3102, [["u8", 1], ["u8", ids.length], ["bytes_rest", rest]], replyAddr(req));
+    f.from = sl.cid; return f;
+  }
+  function rspDetail(sl, req) {
+    const m = sl.modes.find(x => x.type === req.mt && x.id === req.mid);
+    const f = mk(0x3108, [["u8", req.mt], ["u8", req.mid], ["u32", m ? m.total : 0],
+                       ["str_u16len", m ? m.name : ""]], replyAddr(req));
+    f.from = sl.cid; return f;
+  }
+  function rspIdentify(sl, req) {
+    const ip = "192.168.1." + (10 + sl.cid);
+    const f = mk(0x100E, [["u16", sl.cid], ["str_u16len", sl.mac.map(b => b.toString(16).padStart(2, "0").toUpperCase()).join("")],
+                       ["str_u16len", ip]], req.replyCid);
+    f.from = sl.cid; return f;
+  }
+  const clip = (s2, n) => { s2 = String(s2); return s2.length > n ? s2.slice(0, n) + "…" : s2; };
+
+  function rspTaskRsp(sl, req) {
+    const tasks = ["network", "circuit", "bus_decode", "pixel", "stream", "web_ui"];
+    const f = mk(0x1006, [["str_u16len", JSON.stringify(tasks)]], replyAddr(req));
+    f.from = sl.cid; return f;
+  }
+  function rspIp(sl, req) {
+    const j = JSON.stringify({ lan: `192.168.1.${10 + sl.cid}`, wifi: "", ap: "" });
+    const f = mk(0x1015, [["str_u16len", j]], replyAddr(req));
+    f.from = sl.cid; return f;
+  }
+  function rspWrepl(sl, req) {
+    const on = req.enab ? 1 : 0;
+    const f = mk(0x1011, [["u8", on], ["str_u16len", on ? "WebREPL active on :8266" : "WebREPL disabled"]], replyAddr(req));
+    f.from = sl.cid; return f;
+  }
+  function rspWebui(sl, req) {
+    const on = req.enab ? 1 : 0;
+    const f = mk(0x1018, [["u8", on], ["str_u16len", on ? "http://" + "192.168.1." + (10 + sl.cid) + "/" : "WebUI disabled"]], replyAddr(req));
+    f.from = sl.cid; return f;
+  }
+  function rspNetStart(sl, req) {
+    const names = ["lan", "wifi", "ap", "espnow"];
+    const f = mk(0x1013, [["u8", 1], ["str_u16len", names[req.iface] || "wifi"],
+                          ["str_u16len", `192.168.1.${10 + sl.cid}`]], replyAddr(req));
+    f.from = sl.cid; return f;
+  }
+  function rspStatus(sl, req) {
+    const j = JSON.stringify({
+      "System.cID": cidHex(sl.cid).slice(2),
+      "System.dual_core_mode": "0", "System.num_pixels": 336,
+      "Pixel.mode_id": sl.on ? sl.mode : 0, "Pixel.brightness": sl.bri,
+      "Network.wifi.enable": 0, "node.master_cid": cidHex(masterCid).slice(2)
+    });
+    const f = mk(0x1102, [["str_u16len", clip(j, 120)]], replyAddr(req));
+    f.from = sl.cid; return f;
+  }
+  function rspStatusAck(sl, req, applied) {
+    const f = mk(0x1104, [["u8", 1], ["str_u16len", clip(applied, 60)]], replyAddr(req));
+    f.from = sl.cid; return f;
+  }
+
+  function replyAddr(req) {
+    // _reply(addr=None) → bus.master_cid；0x100E 例外，用請求帶的 reply_cid
+    return masterCid;
+  }
+
+  /* ---------- 撞線 ---------- */
+  function collide(frames, ln) {
+    // 兩台同時驅動同一條線 → 位元級競爭。這裡模擬成「兩份位元組疊在一起」：
+    // 取短的那份當骨架，再用 AND 疊上另一份（線路被拉扯），最後強制把 CRC 區間弄壞。
+    const n = Math.min(24, Math.max(...frames.map(f => f.bytes.length)));
+    const a = frames[0].bytes, b = frames[1].bytes;
+    const out = new Uint8Array(n);
+    for (let i = 0; i < n; i++) {
+      out[i] = ((a[Math.min(i, a.length - 1)] & b[Math.min(i, b.length - 1)]) ^ (i & 0x3F)) & 0xFF;
+    }
+    for (let i = Math.max(0, 9 + ln - 2); i < n; i++) out[i] ^= 0xA5;   // 尾端（含 CRC）必壞
+    return out;
+  }
+
+  /* ---------- 主流程 ----------
+     一次指令 = 一串「步驟（step）」。每步自己帶著：
+       · 要播的封包動畫
+       · 拓撲要顯示什麼（誰收到、哪條線斷、哪台沒電）
+       · 要寫進流量記錄的那一列
+       · 要改的裝置狀態（燈、master_cid）
+     把「跑」拆成「記錄 → 播放」之後，才能單步前進/後退與自動播放：
+     記錄時不寫 log、不動統計；播放時才真的發生。                        */
+  let timeline = [];
+  let cursor = 0;
+  let recordMode = false;
+  let sendingBoard = null;   // "master" 或 slave cid：正在發射
+  let recvBoard = null;      // 正在接收的（可能是多台 → 用陣列）
+  let recvWant = null;       // 這一幀真正要給誰（用來區分「收到並執行 / 收到但丟棄」）
+  let reactions = {};        // cid → { kind, text, why }：每台「做了什麼、為什麼」
+  let txLive = false;        // 發射端 TX 是否正在送
+  let rxLive = new Set();    // 正在收的接腳（-1 = Master，其餘為 slave index）
+  let playing = false;
+  let playTimer = null;
+  let realStats = null;
+
+  function rec(o) { timeline.push(o); }
+
+  function withStage(st, inner) {
+    return `<g class="stagebox"><rect x="${st.x}" y="${st.y}" width="${st.w}" height="${st.h}" rx="11"
+      fill="var(--bg)" stroke="var(--acc)" stroke-width="2"/>
+      <text x="${st.x + st.w / 2}" y="${st.y + st.h / 2 + 4}" class="nval" text-anchor="middle">${st.text}</text></g>`;
+  }
+
+  /* ── 記錄：把一次指令變成 timeline（不播出、不寫 log、不動統計）── */
+  function record(def, targetCid) {
+    timeline = []; cursor = 0;
+    recordMode = true;
+    realStats = stats;
+    // 用假的統計物件，避免記錄階段就把數字加上去
+    stats = { sent: 0, replied: 0, collide: 0, dropped: 0 };
+    try {
+      const req = mk(def.cmd, def.fields, def.addr === "target" ? targetCid : BCAST);
+      req.payload = req.payload || new Uint8Array(0);
+      req.mt = 1; req.mid = 1; req.replyCid = 1;
+
+      const want = (def.addr === "target" || (def.addr === "either" && targetCid !== BCAST))
+        ? SLAVES.filter(s => s.cid === targetCid)
+        : SLAVES.slice();
+      const receivers = want.filter(s => {
+        const i = SLAVES.indexOf(s);
+        return s.power && !cutWireSet.has(i + "-rx") && !masterPinsOff();
+      });
+      const blocked = want.filter(s => receivers.indexOf(s) < 0);
+
+      if (paused) {
+        reactions = {};
+        SLAVES.forEach(x => { reactions[x.cid] = { kind: "silent", text: "沒收到任何東西", why: "匯流排被佔用，這幀根本沒發出去" }; });
+        rec({ stage: "⚠ 匯流排忙線 · 這封被丟棄",
+              topo: { act: ["master"], reactions: reactions },
+              log: { dir: "down", cmd: req.cmd, cmdName: def.name, addr: req.addr,
+                     bytes: req.bytes, payload: req.payload,
+                     note: "⚠ 匯流排忙線中 → 這封被丟棄（listen-before-talk）" } });
+        return;
+      }
+
+      const where = def.addr === "broadcast" ? "廣播：所有節點都收到" : `只給 ${cidHex(req.addr)}`;
+      const wentOut = !masterPinsOff();
+      const hitWait = receivers.slice();   // 這一幀真正要執行的是這幾台
+      // 每台的「收到後怎麼判」——這是位址過濾的實際結果
+      reactions = {};
+      SLAVES.forEach(x => {
+        const i = SLAVES.indexOf(x);
+        const cut = cutWireSet.has(i + "-rx");
+        if (masterPinsOff()) reactions[x.cid] = { kind: "silent", text: "沒收到任何東西", why: "Master 斷電，封包沒送出去" };
+        else if (!x.power) reactions[x.cid] = { kind: "nopower", text: "板子沒通電，不參與", why: "沒過電 → 不收也不回" };
+        else if (cut) reactions[x.cid] = { kind: "nocable", text: "線被拔掉，收不到", why: "RX 線斷 → 位元組到不了這台" };
+        else if (hitWait.indexOf(x) >= 0) reactions[x.cid] = { kind: "run", text: "收到，要處理", why: "位址符合（" + (def.addr === "broadcast" ? "廣播" : cidHex(x.cid)) + "）" };
+        else reactions[x.cid] = { kind: "dropped", text: "收到，但位址不符 → 丟棄", why: "位址是 " + cidHex(req.addr) + "，不是它 → ADDR 過濾丟掉" };
+      });
+
+      // 步驟 1：Master 發射
+      rec({ stage: `▸ 送出 0x${req.cmd.toString(16).toUpperCase()} ${def.name}` +
+                   (def.addr === "broadcast" ? "（廣播）" : `（→ ${cidHex(req.addr)}）`),
+            packets: [{ cmd: req.cmd, bytes: req.bytes, payload: req.payload, dir: "down",
+                        want: hitWait.map(x => x.cid) }],
+            topo: { act: ["master"], cut: Array.from(cutWireSet), reactions: reactions },
+            log: { dir: "down", cmd: req.cmd, cmdName: def.name, addr: req.addr,
+                   bytes: req.bytes, payload: req.payload, note: where } });
+
+      if (!wentOut) {
+        rec({ stage: "✗ Master 已斷電 · 沒送出去", dropped: true,
+              topo: { cut: Array.from(cutWireSet) },
+              log: { dir: "down", cmd: 0, cmdName: "（無回應）", addr: req.addr,
+                     bytes: [], payload: new Uint8Array(0),
+                     note: "Master 自己斷電 → 封包根本沒送出去" } });
+        return;
+      }
+
+      // 步驟 2：誰收到
+      const hit = receivers.slice();
+      const miss = SLAVES.filter(s => hit.indexOf(s) < 0);
+      rec({ stage: hit.length
+              ? `✓ ${hit.map(x => cidHex(x.cid)).join(" / ")} 收到`
+              : "✗ 沒有任何節點收到",
+            topo: { hot: hit.map(x => x.cid), miss: miss.map(x => x.cid),
+                    cut: Array.from(cutWireSet), nopower: blocked.map(x => x.cid),
+                    reactions: reactions } });
+
+      if (!hit.length) {
+        const why = blocked.length
+          ? `${cidHex(blocked[0].cid)} `
+            + (!blocked[0].power ? "沒通電 → 板子不跑，完全沒反應"
+                                 : "的線被拔掉了 → 收不到，完全沒反應")
+          : "沒有任何節點認領這個位址 → 完全沒反應（位址打錯時就是這樣）";
+        // 把「為什麼不回」寫清楚（每一台各自的理由）
+        SLAVES.forEach(x => {
+          const i = SLAVES.indexOf(x);
+          if (masterPinsOff()) reactions[x.cid] = { kind: "silent", text: "沒收到，當然不回", why: "Master 斷電" };
+          else if (cutWireSet.has(i + "-rx")) reactions[x.cid] = { kind: "nocable", text: "收不到，無法回應", why: "RX 線被拔掉" };
+          else if (!x.power) reactions[x.cid] = { kind: "nopower", text: "沒通電，無法回應", why: "板子沒過電" };
+          else reactions[x.cid] = { kind: "dropped", text: "收到但位址不符，不回", why: "位址過濾後丟棄（位址打錯時就是這樣）" };
+        });
+        rec({ stage: "✗ 沒有回應", dropped: true,
+              topo: { cut: Array.from(cutWireSet), nopower: blocked.map(x => x.cid), reactions: reactions },
+              log: { dir: "down", cmd: 0, cmdName: "（無回應）", addr: req.addr,
+                     bytes: [], payload: new Uint8Array(0), note: why } });
+        return;
+      }
+
+      // 步驟 3：改方向（0x1016）
+      if (def.setsMaster) {
+        rec({ stage: "master_cid ← 0x0001（已落盤）",
+              topo: { hot: hit.map(x => x.cid), cut: Array.from(cutWireSet) },
+              apply: () => { masterCid = 0x0001; },
+              log: { dir: "down", cmd: req.cmd, cmdName: def.name, addr: req.addr,
+                     bytes: [], payload: new Uint8Array(0),
+                     note: "master_cid ← 0x0001（落盤）。之後所有回覆都改寄 0x0001" } });
+        return;
+      }
+
+      // 步驟 3'：控制類 —— 沒有回覆
+      if (def.noReply) {
+        const noReplyText = def.cmd === 0x3105 ? "燈亮了 · 沒有回覆"
+          : def.cmd === 0x3106 ? "燈熄了 · 沒有回覆"
+          : def.onOff === "reboot" ? "已排程重啟 · 沒有回覆"
+          : "已套用 · 沒有回覆";
+        rec({ stage: noReplyText,
+              topo: { act: hit.map(x => x.cid), cut: Array.from(cutWireSet),
+                      reactions: (() => {
+                        const r = Object.assign({}, reactions);
+                        hit.forEach(x => { r[x.cid] = { kind: "run", text: "已執行（這條不回覆）", why: def.name + " 是單向指令，沒有 ACK" }; });
+                        return r;
+                      })() },
+              apply: () => {
+                hit.forEach(x => {
+                  if (def.cmd === 0x3105) { x.on = true; x.paused = false; x.mode = req.mid || 1; x.bri = 255; }
+                  else if (def.cmd === 0x3106) { x.on = false; x.paused = false; }
+                  else if (def.onOff === "wifi") { x.wifi = !!req.enab; }
+                  else if (def.onOff === "reboot") { x.on = false; x.rebooting = true; }
+                });
+              },
+              log: { dir: "down", cmd: req.cmd, cmdName: def.name, addr: req.addr,
+                     bytes: [], payload: new Uint8Array(0),
+                     note: `✗ 無回覆。${noReplyText.replace(" · 沒有回覆", "")}（看板子上的標示）` } });
+        return;
+      }
+
+      // 步驟 3''：查詢 —— 組回覆
+      req.enab = def.fields && def.fields[0] ? def.fields[0][1] : 0;
+      req.iface = def.fields && def.fields[0] ? def.fields[0][1] : 1;
+      const frames = hit.map(x => {
+        switch (def.resp) {
+          case 0x3102: return rspList(x, req);
+          case 0x3108: return rspDetail(x, req);
+          case 0x100E: return rspIdentify(x, req);
+          case 0x1006: return rspTaskRsp(x, req);
+          case 0x1015: return rspIp(x, req);
+          case 0x1011: return rspWrepl(x, req);
+          case 0x1018: return rspWebui(x, req);
+          case 0x1013: return rspNetStart(x, req);
+          case 0x1102: return rspStatus(x, req);
+          case 0x1104: return rspStatusAck(x, req, def.fields[0][1]);
+          default: return rspIdentify(x, req);
+        }
+      });
+      const RSP_NAME = {
+        0x3102: "MODE_LIST_RSP", 0x3108: "MODE_DETAIL_RSP", 0x100E: "IDENTIFY_RSP",
+        0x1006: "SYS_TASK_RSP", 0x1015: "IP_RSP", 0x1011: "WREPL_RSP",
+        0x1018: "WEBUI_RSP", 0x1013: "NET_START_RSP", 0x1102: "STATUS_RSP", 0x1104: "STATUS_ACK"
+      };
+
+      if (frames.length >= 2) {
+        const ln = frames[0].payload.length;
+        const bytes = collide(frames, ln);
+        rec({ stage: `✗ 碰撞：${frames.length} 台同時回覆`,
+              packets: [{ cmd: def.resp || 0, bytes, payload: new Uint8Array(0), dir: "up", collide: true }],
+              topo: { act: hit.map(x => x.cid), cut: Array.from(cutWireSet),
+                      reactions: (() => {
+                        const r = Object.assign({}, reactions);
+                        hit.forEach(x => { r[x.cid] = { kind: "collided", text: "想回覆，但撞線了", why: hit.length + " 台同時回，位元組互相蓋掉 → CRC 失敗" }; });
+                        return r;
+                      })() },
+              log: { dir: "up", cmd: def.resp || 0, cmdName: "（碰撞）", addr: masterCid,
+                     from: null, bytes, payload: { length: 0 }, collide: true,
+                     note: `⚠ ${frames.length} 台同時回覆，位元組互相蓋掉 → CRC 必失敗、整幀丟棄` } });
+      } else {
+        const f = frames[0];
+        rec({ stage: `◂ ${cidHex(f.from)} 回覆 0x${f.cmd.toString(16).toUpperCase()} → ` +
+                     (f.addr === BCAST ? "廣播" : cidHex(f.addr)),
+              packets: [{ cmd: f.cmd, bytes: f.bytes, payload: f.payload, dir: "up", from: f.from }],
+              topo: { act: hit.map(x => x.cid), cut: Array.from(cutWireSet),
+                      reactions: (() => {
+                        const r = Object.assign({}, reactions);
+                        SLAVES.forEach(x => {
+                          const i2 = SLAVES.indexOf(x);
+                          if (x.cid === f.from) {
+                            r[x.cid] = { kind: "run", text: "已回覆 " + "0x" + f.cmd.toString(16).toUpperCase(),
+                                         why: "回覆寄到 " + (f.addr === BCAST ? "0xFFFF（未配對）" : cidHex(f.addr)) };
+                          } else if (!x.power) {
+                            r[x.cid] = { kind: "nopower", text: "沒通電，不參與", why: "沒過電 → 不收也不回" };
+                          } else if (cutWireSet.has(i2 + "-rx")) {
+                            r[x.cid] = { kind: "nocable", text: "線被拔掉，收不到", why: "RX 線斷 → 位元組到不了這台" };
+                          } else {
+                            // 共用匯流排：回覆每一台的 RX 都看得到，但位址不是它 → 無視
+                            r[x.cid] = { kind: "dropped", text: "收到回覆，但不是給我的 → 無視",
+                                         why: "位址是 " + (f.addr === BCAST ? "0xFFFF" : cidHex(f.addr)) + "，不是它 → 丟棄" };
+                          }
+                        });
+                        return r;
+                      })() },
+              log: { dir: "up", cmd: f.cmd, cmdName: RSP_NAME[f.cmd] || "RSP", addr: f.addr,
+                     from: f.from, bytes: f.bytes, payload: f.payload,
+                     note: (f.addr === BCAST
+                       ? "ADDR=0xFFFF（master_cid 未設定 → 回覆變廣播）"
+                       : "ADDR=" + cidHex(f.addr)) +
+                       (def.resp === 0x3108 ? "；帶模式名稱（UTF-8）" : "") } });
+      }
+    } finally {
+      stats = realStats;
+      recordMode = false;
+    }
+  }
+
+  /* ── 播放：把第 i 步做出來 ── */
+  async function perform(i) {
+    const st = timeline[i];
+    if (!st) return;
+    if (st.apply) { st.apply(); syncLeds(); }
+    if (st.packets) {
+      for (const f of st.packets) {
+        stats[f.dir === "down" ? "sent" : (f.collide ? "collide" : "replied")]++;
+        refreshStats();
+        await sendPacket(f);
+      }
+    }
+    if (st.topo) drawTopo(st.topo);
+    if (st.log) {
+      if (st.dropped) stats.dropped++;
+      logRow(st.log);
+      refreshStats();
+    }
+    if (st.stage) setStage(st.stage);
+    syncLeds();
+    updateCtlUI();
+  }
+
+  function cursorLabel() {
+    const el = $t("simCursor");
+    if (el) el.textContent = timeline.length ? `${cursor} / ${timeline.length}` : "0 / 0";
+  }
+  function setPlaying(on) {
+    playing = on;
+    const b = $t("simPlay");
+    if (b) {
+      b.textContent = on ? "⏸ 播放中" : "▶ 繼續播放";
+      b.classList.toggle("on", on);
+      b.title = on ? "播放中，點一下暫停" : "已暫停，點一下繼續";
+    }
+    if (playTimer) { clearTimeout(playTimer); playTimer = null; }
+    if (on) autoAdvance();
+  }
+  function autoAdvance() {
+    if (!playing) return;
+    if (cursor >= timeline.length) {
+      // 播完：停掉，狀態列回到待機摘要
+      setPlaying(false);
+      setStage(stageStatus());
+      note("播完了。要重看可以按 ⏮ 或 ◀ 一步步回放。", true);
+      return;
+    }
+    stepNext();
+    playTimer = setTimeout(autoAdvance, timeline.length > 8 ? 1050 : 1400);
+  }
+  async function stepNext() {
+    if (cursor >= timeline.length) return;
+    cursor++;
+    cursorLabel();
+    await perform(cursor - 1);
+  }
+  async function stepPrev() {
+    if (cursor <= 0) return;
+    cursor--;
+    cursorLabel();
+    await rebuildTo(cursor);
+  }
+  // 後退 = 重建（狀態不能「倒帶」，重建才正確）
+  async function rebuildTo(k) {
+    resetDeviceState();
+    cursor = 0; cursorLabel();
+    for (let i = 0; i < k; i++) {
+      cursor++;
+      // 重建時不播動畫，只把狀態與記錄補到那一點
+      const st = timeline[i];
+      if (st.apply) st.apply();
+      if (st.packets) st.packets.forEach(f => { stats[f.dir === "down" ? "sent" : (f.collide ? "collide" : "replied")]++; });
+      if (st.dropped) stats.dropped++;
+    }
+    // 記錄只留到第 k 步
+    const rows = timeline.slice(0, k).filter(x => x.log).map(x => x.log);
+    renderLog(rows);
+    const last = timeline[k - 1];
+    if (last && last.topo) drawTopo(last.topo); else drawTopo({});
+    if (last && last.stage) setStage(last.stage);
+    syncLeds(); refreshStats(); updateCtlUI();
+  }
+
+  function resetDeviceState() {
+    stats.sent = stats.replied = stats.collide = stats.dropped = 0;
+    masterCid = BCAST;
+    SLAVES.forEach(x => { x.on = false; x.paused = false; x.mode = 1; x.bri = 255; });
+  }
+  function updateCtlUI() {
+    const has = timeline.length > 0;
+    const set = (id, dis) => { const b = $t(id); if (b) b.disabled = dis || busy; };
+    set("simFirst", !has || cursor === 0);
+    set("simPrev", !has || cursor === 0);
+    set("simNext", !has || cursor >= timeline.length);
+    set("simPlay", !has || cursor >= timeline.length);
+    cursorLabel();
+  }
+
+  /* ── 主流程：記錄 → 從第一步開始播 ── */
+  function run(def, targetCid) {
+    if (busy) return;
+    busy = true;
+    setPlaying(false);
+    record(def, targetCid);
+    rebuildTo(0).then(() => {
+      busy = false;
+      updateCtlUI();
+      if (timeline.length) setPlaying(true);   // ★ 預設自動播放，不必再按
+    }).catch(e => { console.error("[sim] " + (e && e.stack || e)); busy = false; });
+  }
+
+  const wait = ms => new Promise(r => setTimeout(r, ms));
+
+  /* ---------- 控制盤 ---------- */
+  function mkBtn(def, targetCid, cls) {
+    const b = document.createElement("button");
+    b.className = "cmdbtn" + (cls ? " " + cls : "");
+    const to = def.addr === "target" ? " → " + cidHex(targetCid)
+             : def.addr === "either" ? " → " + cidHex(targetCid)
+             : (def.setsMaster || def.cmd === 0x100D) ? " → 廣播" : " → 兩台一起";
+    b.innerHTML = `${def.label} <code>0x${def.cmd.toString(16).toUpperCase()}</code>
+      <span class="cm">${def.name}${to}${def.noReply ? "　✗ 無回覆" : ""}</span>`;
+    b.addEventListener("click", () => run(def, targetCid));
+    return b;
+  }
+  function buildCtl() {
+    const q = $t("grpQuery");
+    q.innerHTML = "";
+    const wireLabels = ["指定 0x0001", "指定 0x0002"];
+    [0x0001, 0x0002].forEach((cid, i) => {
+      const h = document.createElement("div");
+      h.className = "gh"; h.style.margin = "2px 0 6px";
+      h.innerHTML = `<span style="text-transform:none; letter-spacing:0">${wireLabels[i]}</span>`;
+      q.appendChild(h);
+      QUERIES.forEach(d => q.appendChild(mkBtn(d, cid, "uni")));
+    });
+    const c = $t("grpControl");
+    c.innerHTML = "";
+    CONTROLS.forEach(d => c.appendChild(mkBtn(d, BCAST, d.noReply ? "no" : "")));
+
+    const sys = $t("grpSystem");
+    if (sys) {
+      sys.innerHTML = "";
+      ["指定 0x0001", "指定 0x0002"].forEach((lab, i) => {
+        const cid = [0x0001, 0x0002][i];
+        const h = document.createElement("div");
+        h.className = "gh"; h.style.margin = "6px 0 6px";
+        h.innerHTML = `<span style="text-transform:none; letter-spacing:0">${lab}</span>`;
+        sys.appendChild(h);
+        SYSTEM.forEach(d => {
+          if (d.addr === "broadcast" && i === 1) return;   // 廣播類只列一次
+          sys.appendChild(mkBtn(d, cid, d.noReply ? "no" : ""));
+        });
+      });
+    }
+    const stt = $t("grpStatus");
+    if (stt) {
+      stt.innerHTML = "";
+      ["指定 0x0001", "指定 0x0002"].forEach((lab, i) => {
+        const cid = [0x0001, 0x0002][i];
+        const h = document.createElement("div");
+        h.className = "gh"; h.style.margin = "6px 0 6px";
+        h.innerHTML = `<span style="text-transform:none; letter-spacing:0">${lab}</span>`;
+        stt.appendChild(h);
+        STATUS.forEach(d => stt.appendChild(mkBtn(d, cid, "")));
+      });
+    }
+
+    const wp = $t("wirePick");
+    wp.innerHTML = "";
+    [["未配對", BCAST], ["已配對（master_cid=0x0001）", 0x0001]].forEach(([lab, v]) => {
+      const b = document.createElement("button");
+      b.className = "wbtn" + (masterCid === v ? " on" : "");
+      b.textContent = lab;
+      b.addEventListener("click", () => { masterCid = v; buildCtl(); drawTopo({}); });
+      wp.appendChild(b);
+    });
+    $t("wireNote").innerHTML = masterCid === BCAST
+      ? "未配對：<code>master_cid = 0xFFFF</code>。<br>查詢的回覆會變成<b>廣播幀</b>（只有 <code>0x100E</code> 例外）。"
+      : "已配對：查詢的回覆寄到 <code>0x0001</code>。<br>按「記住我」以外的指令都不會改這個值。";
+    $t("ledRow").innerHTML = ledHTML();
+  }
+
+  /* ---------- 情境 ---------- */
+  function scenario(name) {
+    if (busy) return;
+    if (name === "reset") {
+      setPlaying(false);
+      timeline = []; cursor = 0;
+      masterPower = true; paused = false; cutWireSet.clear();
+      SLAVES.forEach(s => { s.power = true; });
+      resetDeviceState();
+      renderLog([]);
+      refreshStats(); buildCtl(); drawTopo({}); setStage(stageStatus());
+      updateCtlUI();
+      note("已重置（含時間軸）。", true);
+      return;
+    }
+    if (name === "normal") { run(QUERIES[1], 0x0001); return; }
+    if (name === "broadcast") { run(CONTROLS[1], BCAST); return; }
+    if (name === "pair") {
+      // 一次記錄 6 個封包 → 從頭自動播放（可用控制器單步看）
+      busy = true;
+      setPlaying(false);
+      const list = [
+        [QUERIES[0], 0x0001], [QUERIES[0], 0x0002],
+        [QUERIES[1], 0x0001], [QUERIES[1], 0x0002],
+        [CONTROLS[2], 0x0001], [CONTROLS[2], 0x0002]
+      ];
+      timeline = []; cursor = 0;
+      list.forEach(([d, cid]) => {
+        const keep = timeline.slice();
+        record(d, cid);
+        timeline = keep.concat(timeline);
+      });
+      rebuildTo(0).then(() => { busy = false; updateCtlUI(); setPlaying(true); });   // 自動播放
+      return;
+    }
+  }
+
+  /* ---------- 初始化 ---------- */
+  buildCtl();
+  drawTopo({});
+  note("提示：點板子斷電／通電，點接線拔線／接回。", true);
+  // 分頁切換後才量得到尺寸 → 讓分頁切換器能叫我們重畫
+  window.__simActivate = () => { drawTopo({}); };
+  refreshStats();
+  $t("snNormal").addEventListener("click", () => scenario("normal"));
+  $t("snBroadcast").addEventListener("click", () => scenario("broadcast"));
+  $t("snPair").addEventListener("click", () => scenario("pair"));
+  $t("snReset").addEventListener("click", () => scenario("reset"));
+  $t("simPlay").addEventListener("click", () => {
+    if (playing) { setPlaying(false); return; }
+    if (cursor >= timeline.length) { rebuildTo(0).then(() => setPlaying(true)); return; }
+    setPlaying(true);
+  });
+  // 手動單步 → 暫停自動播放（使用者要自己慢慢看）
+  $t("simNext").addEventListener("click", async () => {
+    if (busy) return;
+    setPlaying(false); busy = true;
+    await stepNext();
+    busy = false; updateCtlUI();
+  });
+  $t("simPrev").addEventListener("click", async () => {
+    if (busy) return;
+    setPlaying(false); busy = true;
+    await stepPrev();
+    busy = false; updateCtlUI();
+  });
+  $t("simFirst").addEventListener("click", async () => {
+    if (busy) return;
+    setPlaying(false); busy = true;
+    await rebuildTo(0);
+    busy = false; updateCtlUI();
+  });
+  $t("failOne").addEventListener("click", () => {
+    const i = SLAVES.findIndex(s => s.cid === 0x0002);
+    cutWireSet.add(i + "-rx"); cutWireSet.add(i + "-tx");
+    note(`${cidHex(0x0002)} 的 RX/TX 都拔掉了 → 它收不到、也回不了`);
+    drawTopo({ cut: Array.from(cutWireSet), nopower: [0x0002] });
+  });
+  $t("failPower").addEventListener("click", () => {
+    SLAVES[1].power = false;
+    note("0x0002 斷電 → 位址還在，但板子不跑，完全沒反應");
+    drawTopo({ cut: Array.from(cutWireSet) });
+  });
+  $t("failBusy").addEventListener("click", () => {
+    paused = !paused;
+    note(paused ? "匯流排被佔用中 → 這時送出的封包會被 LBT 丟棄" : "匯流排恢復空閒");
+    drawTopo({ cut: Array.from(cutWireSet) });
+  });
+  $t("failFix").addEventListener("click", () => {
+    cutWireSet.clear(); paused = false; masterPower = true;
+    SLAVES.forEach(s => { s.power = true; });
+    note("線都接回去了、電都通了、匯流排空閒");
+    drawTopo({});
+  });
+})();
+</script>
+</body>
+</html>
