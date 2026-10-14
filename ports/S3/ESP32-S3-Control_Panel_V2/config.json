@@ -4,10 +4,8 @@
     "System": {
         "dual_core_mode": 0,
         "boot_strict": 0,
-        "c_lum": 1.0,
         "hostname": "s3-cpanel",
         "cID": "0001",
-        "refresh_rate_ms": 1,
         "debug_level": 1,
         "master_IP": "",
         "master_port": 0,
@@ -16,7 +14,6 @@
         "heartbeat_interval": 10000,
         "frame_interval_ms": 20,
         "num_pixels": 336,
-        "buffer_frames": 1,
         "log_interval_ms": 1000,
         "watchdog": {
             "enable": 0,
@@ -26,13 +23,9 @@
         }
     },
     "Buffer": {
-        "size": 16384,
-        "rx_hub_buffers": 16,
         "drop_on_full": 1,
         "drain_reads": 1,
-        "fb_mode": "auto",
-        "u8_rx_slots": 8,
-        "pixel_stream_slots": 10
+        "u8_rx_slots": 8
     },
     "Network": {
         "priority": ["lan", "wifi"],
@@ -43,7 +36,7 @@
             "phy_addr": 1,
             "phy_type": "IP101",
             "GPIO": {
-                "mdc": 31, "mdio": 52, "ref_clk": 50,
+                "mdc": -1, "mdio": -1, "ref_clk": -1,
                 "spi": -1, "cs": -1, "rst": -1, "int": -1
             }
         },
@@ -104,7 +97,6 @@
     "SDcard": {
         "enable": 1,
         "phat": "/sd",
-        "LDO": { "id": 4, "mv": 3300 },
         "config": { "slot": 0, "width": 4, "freq": 40000000 },
         "GPIO": {
             "_comment": "sck=CLK/SCK, cmd=CMD/MOSI, [D0/MISO, D1/IRQ, D2/NC, D3/CS]",

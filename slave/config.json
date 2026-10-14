@@ -1,47 +1,47 @@
 {
-  "scan_ignore": [
-    "/sd"
-  ],
+  "_comment": "slave/config.json — 基礎框架範本（不綁任何板子）。所有服務 enable=0、所有腳位未設定。實際項目請在 ports/<板子>/config.json 覆蓋本檔（同名路徑最後覆蓋者勝）。",
+  "_gpio_convention": "兩種『未設定』寫法不能混用：-1 = 未設定／不啟用（driver 以 >= 0 判斷）；null = 沒接這條線（driver 以 is not None 判斷，寫 -1 會變成 Pin(-1) 而爆掉）。標 -1 的欄位可以安全留著；標 null 的欄位要填真實腳位才 enable。",
+  "scan_ignore": ["/sd"],
+
   "System": {
-    "dual_core_mode": "0",
+    "dual_core_mode": 0,
     "boot_strict": 0,
-    "c_lum": 1.0,
     "hostname": "",
     "cID": "",
-    "refresh_rate_ms": 1,
     "debug_level": 1,
     "master_IP": "",
     "master_port": 0,
     "discovery_port": 9000,
     "heartbeat_interval": 10000,
     "frame_interval_ms": 20,
-    "num_pixels": 336,
-    "buffer_frames": 1,
+    "num_pixels": 0,
     "log_interval_ms": 1000,
+    "ws_stale_ms": 30000,
     "watchdog": {
       "enable": 0,
       "timeout_ms": 8000,
       "btn_bypass_gpio": -1,
-      "auto_rearm_ms": 60000
+      "auto_rearm_ms": 0
     }
   },
+
   "Buffer": {
-    "rx_hub_buffers": 16,
     "drop_on_full": 0,
     "drain_reads": 1,
-    "fb_mode": "auto",
-    "u8_rx_slots": 8
+    "u8_rx_slots": 8,
+    "now_rx_slots": 2
   },
+
   "Network": {
-    "priority": ["lan","wifi"],
+    "priority": ["lan", "wifi"],
     "lan": {
       "enable": 0,
       "active_mode": 1,
       "driver": "RMII",
       "phy_addr": 1,
       "phy_type": "IP101",
-      "GPIO": {"mdc": 31,"mdio": 52,"ref_clk": 50,
-              "spi": -1,"cs": -1,"rst": -1,"int": -1
+      "GPIO": {"mdc": -1, "mdio": -1, "ref_clk": -1,
+               "spi": -1, "cs": -1, "rst": -1, "int": -1
       }
     },
     "wifi": {
@@ -52,94 +52,109 @@
       "ssid_pw": "",
       "mdns_name": "esp32-led-"
     },
-    "ESP_now": {"enable": 0,"channel": 6}
+    "ESP_now": {"enable": 0, "channel": 6}
   },
+
   "CircuitDecode": {
     "enable": 0,
     "list": [
-      {"GPIO": {"uart": 0}}
+      {"GPIO": {"uart": -1}}
     ]
   },
+
   "Router": {
     "enable": 0,
     "routes": []
   },
+
   "SPI": {
-    "enable": 1,
+    "enable": 0,
     "list": [
-      {"id": 1,"baudrate": 80000000,
-        "phase": 0,
-        "polarity": 0,
-        "GPIO": {"sck": 21,"mosi": null,"miso": null},
-        "data_pins": [14]
+      {"id": 1, "baudrate": 80000000, "phase": 0, "polarity": 0,
+       "GPIO": {"sck": null, "mosi": null, "miso": null},
+       "data_pins": []
       }
     ]
   },
+
   "I2C": {
-    "enable": 1,
+    "enable": 0,
     "list": [
-      {"id": 0,"freq": 400000,"GPIO": {"scl": 40,"sda": 38}}
+      {"id": 0, "freq": 400000, "GPIO": {"scl": null, "sda": null}}
     ]
   },
+
   "UART": {
-    "enable": 1,
+    "enable": 0,
     "list": [
-      {"id": 1,"baudrate": 115200,"GPIO": {"tx": 39,"rx": 41}}
+      {"id": 1, "baudrate": 115200, "rxbuf": 16384, "txbuf": 16384,
+       "en_settle_ms": 1,
+       "GPIO": {"tx": null, "rx": null, "en": -1}
+      }
     ]
   },
+
   "PWM": {
     "enable": 0,
     "list": [
-      {"GPIO": 0,"dStay": 0,"type": 0}
+      {"GPIO": null}
     ]
   },
+
   "I2S": {
     "enable": 0,
     "list": [
       {
-        "GPIO": {"sck": 9, "ws": 10, "sd": 11, "xsmt": 12,
-                 "_comment": "S3 Octal-SPIRAM 33-37 不可用；與 TFT/其他外設同板衝突時另挑，見 doc/02_guides/14_audio_bringup.md"},
+        "GPIO": {"sck": null, "ws": null, "sd": null,
+                 "_comment": "sck/ws/sd 是必填（driver 直接 Pin()）；S3 Octal-SPIRAM 的 33-37 不可用，見 doc/02_guides/14_audio_bringup.md。xsmt 不在這裡設定——它在 PCM5102 區塊"},
         "config": {"mode": "tx", "bits": 16, "format": "stereo", "rate": 44100, "ibuf": 40000}
       }
     ]
   },
+
   "PCM5102": {
     "enable": 0,
     "list": [
-      {"GPIO": {"i2s": 0, "xsmt": 12}}
+      {"GPIO": {"i2s": -1, "xsmt": null}}
     ]
   },
+
   "Audio": {
     "mode": "block"
   },
+
   "SDcard": {
-    "enable": 1,
+    "enable": 0,
     "phat": "/sd",
-    "config": {"slot": 0,"width": 4,"freq": 40000000},
+    "config": {"slot": 0, "width": 4, "freq": 40000000},
     "GPIO": {
-      "_comment": "sck=CLK/SCK, cmd=CMD/MOSI, [D0/MISO, D1/IRQ, D2/NC, D3/CS]",
-      "sck": 7,"cmd": 6,"data": [15,16,4,5]
+      "_comment": "sck=CLK/SCK, cmd=CMD/MOSI, [D0/MISO, D1/IRQ, D2/NC, D3/CS]；data 內未用的腳位填 -1",
+      "sck": null, "cmd": null, "data": [-1, -1, -1, -1]
     }
   },
+
   "PIN": {
-    "enable": 1,
+    "enable": 0,
     "list": [
-      {"GPIO": 11,"label": "tft_cs","mode": "OUT","initial": 1},
-      {"GPIO": 12,"label": "tft_dc","mode": "OUT","initial": 0},
-      {"GPIO": 13,"label": "tft_rst","mode": "OUT","initial": 1},
-      {"GPIO": 10,"label": "tft_bl","mode": "OUT","initial": 0},
-      {"GPIO": 17,"label": "encC","mode": "IN","initial": 0,"pull": "UP"},
-      {"GPIO": 42,"label": "btn","mode": "IN","initial": 0,"pull": "UP"}
+      {"GPIO": null, "label": "tft_dc",  "mode": "OUT", "initial": 0},
+      {"GPIO": null, "label": "tft_cs",  "mode": "OUT", "initial": 1},
+      {"GPIO": null, "label": "tft_rst", "mode": "OUT", "initial": 1},
+      {"GPIO": null, "label": "tft_bl",  "mode": "OUT", "initial": 0},
+      {"GPIO": null, "label": "btn",     "mode": "IN",  "initial": 0, "pull": "UP"},
+      {"GPIO": null, "label": "touch_int", "mode": "IN", "initial": 0, "pull": "UP",
+       "_note": "GT1151Q.GPIO.int 預設就找這個 label；不填 GPIO 也能跑（驅動會退回輪詢）"}
     ]
   },
+
   "ENC": {
-    "enable": 1,
+    "enable": 0,
     "list": [
-      {"id": 0,"GPIO": {"a": 18,"b": 8}}
+      {"id": 0, "GPIO": {"a": null, "b": null}}
     ]
   },
+
   "TFT": {
-    "enable": 1,
+    "enable": 0,
     "driver": "ST7789",
     "width": 240,
     "height": 320,
@@ -149,42 +164,67 @@
     "spi_id": 1,
     "pixel_format": "RGB565_BE",
     "variant": 0,
-    "pins": {"dc": "tft_dc","cs": "tft_cs","rst": "tft_rst","bl": "tft_bl"}
+    "pins": {"dc": "tft_dc", "cs": "tft_cs", "rst": "tft_rst", "bl": "tft_bl"},
+    "_pins_note": "pins 的值是 PIN.list 的 label；I80 並列面板改用 dcx，且 rst/bl 由 XL9555 管理（xl9555 子樹填 IO 編號，不是 label）"
   },
+
+  "I80": {
+    "enable": 0,
+    "data": [],
+    "wr": -1,
+    "cs": -1,
+    "freq": 80000000
+  },
+
+  "XL9555": {
+    "enable": 0,
+    "addr": "0x20",
+    "GPIO": {"i2c": -1},
+    "list": [
+      {"IO": 0, "label": "LCD_RST", "mode": "OUT", "initial": 1},
+      {"IO": 1, "label": "BL_CTR",  "mode": "OUT", "initial": 0}
+    ]
+  },
+
+  "GT1151Q": {
+    "enable": 0,
+    "addr": "0x5D",
+    "GPIO": {"i2c": -1, "int": "touch_int"}
+  },
+
   "HUSB238": {
     "enable": 0,
     "addr": "0x08",
     "default_voltage": null,
-    "GPIO": {"i2c": 0}
+    "GPIO": {"i2c": -1}
   },
+
   "WS2812": {
     "enable": 0,
     "list": [
-      {"GPIO": 15,"Q": 10,"order": "GRB","dStay": 0},
-      {"GPIO": 16,"Q": 10,"order": "GRB","dStay": 0},
-      {"GPIO": 17,"Q": 10,"order": "GRB","dStay": 0}
+      {"GPIO": null, "Q": 10, "order": "GRB", "dStay": 0}
     ]
   },
+
   "APA102": {
     "enable": 0,
     "list": [
-      {"GPIO": {"spi": 0},"Q": 290,"order": "BGRW","dStay": 0}
+      {"GPIO": {"spi": -1}, "Q": 10, "order": "BGRW", "dStay": 0}
     ]
   },
+
   "PCA9685": {
     "enable": 0,
     "list": [
-      {
-        "GPIO": {"i2c": 0,"type": 0},"address": ["0x40"],"dStay": 0
-      }
+      {"GPIO": {"i2c": -1}, "address": ["0x40"], "dStay": 0,
+       "_address_note": "0xFF = 掃描匯流排上全部並建 0x70 廣播；0x70 = 直接廣播（僅確定 ALLCALL 已開時用）"}
     ]
   },
+
   "uartMotor": {
     "enable": 0,
     "list": [
-      {"GPIO": {"uart": 1},"address": ["51"],"version": 1,"dStay": 2048},
-      {"GPIO": {"uart": 1},"address": ["66"],"version": 1,"dStay": 2048}
-      
+      {"GPIO": {"uart": -1}, "address": [], "version": 1, "dStay": 2048}
     ]
   }
 }

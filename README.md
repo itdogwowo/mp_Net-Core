@@ -51,7 +51,7 @@ ESP32-S3 MicroPython slave 專案 — 高效能 Server ⇄ MCU 傳輸控制系�
 - [統一渲染輸出中心（TxCenter）](doc/03_notes/17_tx_render_center_plan.md) — PLAN，做法待設計
 - [遙控器強化計劃](doc/03_notes/19_remote_control_plan.md) — 配對 / 綁定 / 分階段
 
-> `doc/03_notes/` 共 20 份（含兩份編號同為 17 的歷史遺留），完整清單見 [doc/README.md](doc/README.md)。
+> `doc/03_notes/` 共 24 份（含兩組同號的歷史遺留），完整清單見 [doc/README.md](doc/README.md)。
 > 舊版文件保留在 `doc/_archive/`，內容以分類目錄下的新版為準。
 
 ## Skills（AI 開發輔助）

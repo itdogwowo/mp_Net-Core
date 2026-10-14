@@ -4,6 +4,8 @@
 mp_Net-Core/
 ├── slave/                    ← 乾淨基礎框架(不綁任何實際項目)
 │     • 通用韌體程式、lib、schedule/vBus 框架、基礎 config.json
+│     • config.json 是「範本」: 20 個服務全 enable=0、腳位全未設定
+│       (改寫原因、以及 -1 與 null 的用法差異見 doc/03_notes/23_config_audit.md §6)
 │     • pixel 只留基礎效果 + 一支馬達正弦波效果範本（uart_motor_sine / motor_sine）
 │     • registry.json: auto_play=false（開機不自動播放，純框架）
 │
@@ -20,12 +22,23 @@ mp_Net-Core/
 ## 規則
 
 1. **slave/ 永遠保持可單獨使用的基礎**: 不加項目專用內容。
+   「可單獨使用」= 燒進去能正常開機、不會因為缺設定而報錯；
+   **不是**「開機就有功能」。範本全服務關閉，要功能就得套用一個 port delta。
 2. **實際項目要跑什麼**,一律以 delta 形式放 `ports/<板子|專案名>/`,檔案的
    相對路徑 = 燒錄到裝置上的路徑(slave 根 = 裝置根)。
 3. 燒錄 = 先上傳完整 `slave/`,再以 ports 內的 delta 檔**覆蓋**同名路徑
-   (最後覆蓋者勝)。
+   (最後覆蓋者勝)。`ports/<板子>/config.json` 會**整份取代** `slave/config.json`。
 4. 不同項目各自一個資料夾,互不干擾;基礎升級 = 改 slave,項目 = 只改自己的
    ports delta。
+5. **一個板子只留一份 `config.json`**。調校變體(不同像素數 / baudrate 等)不要
+   留成 `config-1.json` 這種檔案,那會隨時間腐化;要留就記在該 port 的 `README.md`。
+
+## 改完 config 一定要驗
+
+```bash
+python -B tools/PC/config_dryrun.py --live   # 模擬 boot.py: 0 個 KEYERROR / CONFLICT
+python -B tools/PC/config_audit.py --live    # 0 個失效鍵
+```
 
 ## 範例(S3 電機 bench 板)
 

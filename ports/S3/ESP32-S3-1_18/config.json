@@ -5,24 +5,19 @@
   "System": {
     "dual_core_mode": "0",
     "boot_strict": 0,
-    "c_lum": 1.0,
     "hostname": "",
     "cID": "62C0",
-    "refresh_rate_ms": 1,
     "master_IP": "",
     "master_port": 0,
     "discovery_port": 9000,
     "heartbeat_interval": 10000,
     "frame_interval_ms": 20,
     "num_pixels": 336,
-    "buffer_frames": 1,
     "log_interval_ms": 1000
   },
   "Buffer": {
-    "rx_hub_buffers": 16,
     "drop_on_full": 0,
     "drain_reads": 1,
-    "fb_mode": "auto",
     "u8_rx_slots": 8
   },
   "Network": {
@@ -37,9 +32,9 @@
       "phy_addr": 1,
       "phy_type": "IP101",
       "GPIO": {
-        "mdc": 31,
-        "mdio": 52,
-        "ref_clk": 50,
+        "mdc": -1,
+        "mdio": -1,
+        "ref_clk": -1,
         "spi": -1,
         "cs": -1,
         "rst": -1,
@@ -131,10 +126,7 @@
     "enable": 0,
     "list": [
       {
-        "GPIO": 0,
-        "dStay": 0,
-        "type": 0
-      }
+        "GPIO": 0}
     ]
   },
   "I2S": {
@@ -283,9 +275,7 @@
     "list": [
       {
         "GPIO": {
-          "i2c": 0,
-          "type": 0
-        },
+          "i2c": 0        },
         "address": [
           "0x40"
         ],

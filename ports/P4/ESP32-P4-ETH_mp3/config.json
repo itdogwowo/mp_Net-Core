@@ -4,7 +4,6 @@
     "list": [
       {
         "GPIO": {
-          "type": 0,
           "i2c": 0
         },
         "dStay": 0,
@@ -103,9 +102,9 @@
       "phy_type": "IP101",
       "GPIO": {
         "rst": -1,
-        "mdc": 31,
-        "mdio": 52,
-        "ref_clk": 50,
+        "mdc": -1,
+        "mdio": -1,
+        "ref_clk": -1,
         "cs": -1,
         "int": -1,
         "spi": -1
@@ -184,18 +183,15 @@
     "frame_interval_ms": 33,
     "discovery_port": 9000,
     "master_IP": "",
-    "refresh_rate_ms": 1,
     "dual_core_mode": "0",
     "num_pixels": 676,
-    "buffer_frames": 1,
     "log_interval_ms": 1000,
     "watchdog": {
       "enable": 1,
       "auto_rearm_ms": 60000,
       "btn_bypass_gpio": null,
       "timeout_ms": 8000
-    },
-    "c_lum": 1.0
+    }
   },
   "ENC": {
     "enable": 0,
@@ -212,10 +208,8 @@
   "Buffer": {
     "drain_reads": 1,
     "drop_on_full": 0,
-    "rx_hub_buffers": 16,
     "u8_rx_slots": 8,
-    "now_rx_slots": 4,
-    "fb_mode": "auto"
+    "now_rx_slots": 4
   },
   "HUSB238": {
     "enable": 0,
