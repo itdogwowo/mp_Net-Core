@@ -146,6 +146,37 @@ class PCA9685:
         except Exception as e:
             print(f"PCA9685 Show Error: {e}")
 
+    def set_channel(self, ch, val):
+        """設定單一通道 (0-4095)，只寫該通道的 4 bytes（LEDn_ON_L..OFF_H）。
+
+        為什麼不直接 show()：
+          show() 每次寫 64 bytes（16 通道），100 kHz 下約 6 ms；UI 手動調一格
+          就寫一次會讓畫面頓。單通道 4 bytes 約 0.5 ms。
+          串流播放仍用 show()（一次推全部，效率最高）。
+
+        暫存器規則與 `_prepare_reg_buf` 完全一致（含 invert）：
+          0     → OFF_H = 0x10（Full OFF）
+          4095  → ON_H  = 0x10（Full ON）
+          其他  → ON=0, OFF=val（12-bit）
+        """
+        if not (0 <= ch < self.n):
+            return
+        val = int(val)
+        if val < 0:
+            val = 0
+        elif val > 4095:
+            val = 4095
+        # _buf 存邏輯值（與 show() 的來源一致）；invert 只在寫暫存器時套用
+        self._buf[ch] = val
+        v = (4095 - val) if self.invert else val
+        if v <= 0:
+            b = bytes((0, 0, 0, 0x10))       # Full OFF
+        elif v >= 4095:
+            b = bytes((0, 0x10, 0, 0))       # Full ON
+        else:
+            b = bytes((0, 0, v & 0xFF, (v >> 8) & 0x0F))
+        self.i2c.writeto_mem(self.address, 0x06 + (ch << 2), b)
+
 # ==================== 用法範例 ====================
 # i2c = machine.I2C(0, scl=machine.Pin(9), sda=machine.Pin(8))
 # pwm_board = PCA9685极速版(i2c)

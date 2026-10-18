@@ -116,8 +116,11 @@ def launcher():
     #   core0（播放核）RenderTask：固定 fps（20ms/50fps）從 hub 取幀推硬體（tasks/render.py）──
     from tasks.pixel_task import PixelTask
     from tasks.render import RenderTask
+    from tasks.pixel_lab_task import PixelLabTask
     tm.register_task("pixel", PixelTask, default_affinity=(1, 0), layer=2)
     tm.register_task("render", RenderTask, default_affinity=(0, 1), layer=2)
+    # PixelLab：低優先測試源（APA/RGB 走 hub；PCA 直接寫 pca9685_ctl）
+    tm.register_task("pixel_lab", PixelLabTask, default_affinity=(1, 0), layer=2)
 
     # ── 音訊子系統（兩任務：合成端 dj + 播放端 audio_player，對稱 pixel）──
     #   dj（_thread core1）= 合成端：playlist + 讀檔 + 混音 → audio_stream hub

@@ -372,6 +372,8 @@ class PixelTask(Task):
     def _start(self):
         self._playing = True
         self._paused = False
+        # 輸出源仲裁：燈效模式 = "pixel"（PixelLab 測試看到不是 "test" 會讓位）
+        bus.shared["pixel_owner"] = "pixel"
         self._pass = 1
         self._mode_idx = 0
         self._cur_repeat = 1
@@ -394,6 +396,8 @@ class PixelTask(Task):
 
     def _stop(self):
         self._playing = False
+        if bus.shared.get("pixel_owner") == "pixel":
+            bus.shared["pixel_owner"] = None
         self._release_player(self._cur)
         self._cur = None
         self._cur_mode = None

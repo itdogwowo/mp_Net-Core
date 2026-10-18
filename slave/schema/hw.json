@@ -75,6 +75,16 @@
         {"name": "target_speed", "type": "u32"},
         {"name": "remain_ms", "type": "u32"}
       ]
+    },
+    {
+      "cmd": "0x1409",
+      "name": "HW_QUERY_RSP",
+      "payload": [
+        {"name": "ok", "type": "u8"},
+        {"name": "type", "type": "u8"},
+        {"name": "id", "type": "u8"},
+        {"name": "json", "type": "str_u16len"}
+      ]
     }
   ]
 }

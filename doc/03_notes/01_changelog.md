@@ -2111,3 +2111,122 @@ ANNOUNCE_EVERY_MS = 10000      # 週期性公告（0 = 只廣播一次）
   掃描有 `0x100D`，兩者都比一直廣播精準，而且不佔空中時間。
 - 想試：把它改成 `0`（一行），但**代價是「在線」要改成主動查**，
   否則節點清單的顏色永遠停在灰／紅。
+
+---
+
+## 39) PCA9685 頁改成「遙控器式」：左目標清單 / 右 16 通道（2026-10）
+
+### 39.1 使用者要的是什麼
+
+上一輪的 PCA9685 頁是「一顆掃描鈕 + 兩個 enum（模式/目標）+ 16 個小方格」：
+16 通道只有 16 個 14×14 的點，沒有數值、沒有分組；目標只能用 confirm 循環；
+而且 `start` / `stop` 根本沒有消費端 —— 也就是**看得到、不能操作**。
+使用者定案：
+
+- 版面要像 `remote.py`：**左邊是列表、右邊才是「哪顆燈亮」的顯示**。
+- **有層次**：先選控制目標（列表）→ 再選通道（方格）→ 再調數值（最下面）。
+- **保留廣播位址**：廣播和單板是同一個入口，廣播時只顯示一組 16 通道（比較簡單）。
+
+### 39.2 新頁面 `ui/lvgl/page/pca9685.py`
+
+```
+頂列  PCA9685 控制器
+左欄  控制目標（lv.list）                右欄  目標卡 0x70 廣播   同步 3 台
+        0x70 廣播                             通道卡 00 ▓▓▓▓▓ 2048  08 ░░░ 0
+        ● 0x40                                       ...（左 0-7 / 右 8-15）
+        ○ 0x41（離線）                        數值卡 CH0  ───●───  2048
+      [全熄] [掃描]
+```
+
+- 導覽層次：`nav` 的 5 個項 = 目標清單 → 通道方格 → 數值卡 → 全熄 → 掃描。
+  - **目標清單走「游標模式」**（不進 nav 的 ITEM_LIST 編輯態）：enc 只移動游標
+    （琥珀底），confirm 才套用成 `_sel`（藍底）並把焦點移到通道方格；返回鍵在
+    游標未套用時先取消，再按一次才回 launcher。
+  - 通道方格是 `ITEM_LIST`（confirm 進編輯、enc 選 CH）；數值卡是 `ITEM_SLIDER`
+    （confirm 進編輯、enc 調值）；兩顆按鈕是 `ITEM_BUTTON`。
+  - `nav.focus(0)`（新增的小方法）讓每次進頁都從「控制目標」開始。
+- 顯示：每列 = 編號 + 長條（12-bit 比例）+ 數值；選中的列有底色/藍字。
+- 兩顆動作鈕（全熄 / 掃描）放在**左下角**，不是頂列：nav 的焦點框是
+  outline 3px + pad 3px，貼著螢幕上緣/右緣會被切掉；放在左下才完整。
+- 控制：單通道 `pca.set_channel(ch, v)`（**只寫 4 B**，100 kHz 下約 0.5 ms）；
+  全熄用 `pca.show()`（一次 64 B）。舊驅動沒有 `set_channel` 時自動退回
+  `pca.buf[ch] = v; pca.show()`。廣播時同時更新 `boards` 對應的單板快取，
+  切回單板看到的值不會是上一個畫面。
+- 離開頁面**不熄燈**（舊版的 stop/alloff 沒有消費端，而且控制器頁應該保留設定）。
+
+### 39.3 driver：新增 `pca9685_ctl`（和播放端分開）
+
+`pca9685_list` 是 **PixelStreamer 的控制器清單**，每幀全部輸出一次；它不能
+「同一顆晶片同時有廣播 controller 和單板 controller」（每幀會多寫一次）。
+但 UI 需要同時有「廣播」和「每一顆實體板」：
+
+| 服務 | 消費者 | 內容 |
+|---|---|---|
+| `pca9685_list` | `driver/pixel_drv.init_pixel()` → PixelStreamer | 行為與舊版完全相同（auto = 只有 0x70；explicit = 各自） |
+| **`pca9685_ctl`** | `page/pca9685.py`（新） | 每條 bus 的 0x70 廣播 + 每顆實體板，各一個原始 `PCA9685` |
+
+- **控制表的 PCA 物件不共用播放端 controller**：`0xFF` 模式重用
+  `_scan_and_register()` 喚醒時建的原始 `PCA9685`（不多寫 I2C）；explicit /
+  沒給 address / 只設 0x70 模式另建控制用物件。兩邊各有自己的 `_buf` / `reg_buf` ——
+  共用的話 UI 與播放端同時 `show()` 會互相蓋掉 reg_buf，可能送出半張錯的
+  64-byte 幀。分開之後最壞只是燈光 last-write-wins。
+- `refresh_pca_ctl()`：掃描後依新的 `_i2c_devices` 增減控制表（熱插拔的板子
+  可以手動控制；播放端仍不重建 → `todo/10_i2c_scan.md` 的已知限制）。
+- `_pca_actions` 現在只剩 `scan`；`pixel_control_panel._consume_pca_actions()`
+  掃完會呼叫 `refresh_pca_ctl(bus)`。
+- `hw_manager.list_all()` 加了 `pca9685_ctl`（除錯看得到）。
+
+### 39.4 一併更新
+
+- `lib/hw/pca9685.py`：新增 `set_channel(ch, val)`（只寫該通道 4 bytes；規則與
+  `_prepare_reg_buf` 一致，含 invert；已用 `reg_buf` 逐通道比對驗過）。
+- `ui/lvgl/nav.py`：新增 `Nav.focus(i)`（頁面 on_enter 重設焦點）。
+- `page/__init__.py` 不用改（頁面 id 不變）。
+- `doc/02_guides/06_lvgl_ui.md`：頁面說明＋操作方式。
+- `doc/03_notes/24_hw_status_query_plan.md`：加「頁面改版」註記（掃描/0x1409 不變）。
+- `todo/10_i2c_scan.md`：`start`/`stop` 改為已淘汰、`pca9685_ctl` 的用法。
+
+### 39.5 控制目標：轉動只預覽、確認才套用（2026-10 使用者追加）
+
+- **問題**：原本清單用 nav 的 ITEM_LIST 編輯態，轉動就直接改 `_sel`、右欄立刻
+  跟著換；使用者要求「點一下確認才是真正的選擇」。
+- **做法**：
+  - `_sel` = 已套用的目標（右欄顯示、寫入的對象）；`_cursor` = 游標候選。
+  - 焦點在清單時 `on_enc` **攔截**，只移動 `_cursor`（琥珀底 `CURSOR_BG`）；
+    `_sel` 那一列保持藍底 `SEL_BG`。右欄/標題完全不動。
+  - confirm：`_cursor` 套用成 `_sel`，`nav.focus(1)` 把焦點移到通道方格。
+    只按一次就完成選擇（不進 ITEM_LIST 編輯態）。
+  - exit：游標還沒套用 → 先取消（留在頁面）；再按一次才回 launcher。
+  - 清單聚焦時狀態列顯示「按確認選擇」（琥珀）；離開清單恢復
+    「同步 N 台 / 在線 / 離線」。
+  - 清單空的時候不攔截 encoder（`_targets` 為空就讓焦點移到方格/掃描鈕）。
+- **驗證**：假的 LVGL 互動測試覆蓋「轉動不換目標、確認才換 + 焦點跳到方格、
+  返回先取消、廣播/單板寫入、多 bus 標籤」。
+
+
+---
+
+### 40) PixelLab 三頁測試源（2026-10）
+
+- **需求**：把 PCA 手動頁升級為 APA／RGB／PCA 三頁測試源；不再用 mode/mapping
+  JSON，直接操作 buffer（APA/RGB）或選中的 PCA（PCA 頁）。
+- **低優先仲裁**：`bus.shared["pixel_owner"]` 只是一個字串（`test`／`stream`／
+  `pixel`），沒有 stack、沒有 flags 備份。PixelTask/StreamTask 啟動時設
+  `pixel`/`stream`；PixelLabTask 看到 owner 不是 `test` 就停止、不寫、不備份。
+  頁面返回/離開時把 `pixel_lab.active=0`，owner=test 時才填 0 並釋放。
+- **APA/RGB**：`PixelLabTask` 走 `pixel_stream` hub；整槽先複製 neutral base
+  （燈 0、motor 0x80），再把本頁 type 的 range 用 `wwww` 填呼吸值，選中
+  index 用 `wwww` 填 4095/0（2 Hz）。RenderTask 不變。
+- **PCA**：直接寫 `pca9685_ctl` 選中的 PCA（0x70/0x40/0x41），16 通道呼吸＋
+  選中 channel；RenderTask 用 `is_streaming=False, is_ready=True` 保持不動，
+  避免 buffer 的 0x70 廣播蓋掉直寫值。
+- **UI**：`pixel_lab_apa` / `pixel_lab_rgb` / `pixel_lab_pca` 三頁；APA/RGB
+  兩個垂直亮度方塊（50%/100%）；PCA 固定高度清單（可捲動）＋清單外掃描鈕、
+  直放晶片 2×8、中央 CH/百分比；不顯示 raw 亮度數字、不顯示長亮/閃爍選擇。
+- **預設**：`SEL_MODE = "blink"`（2 Hz）；未來改 constant 即可改 steady。
+- **字型**：`temp/gen_font.py --write` 重生成 `slave/ui/lvgl/src/zh_hant_16.bin`
+  （新增呼吸、選取、使用中、被接手、待機、目標…）。
+- **檔案**：`tasks/pixel_lab_task.py`、`page/pixel_lab_*.py`、`Core_Manager.py`、
+  `tasks/pixel_task.py`/`stream_task.py`（owner gate）。舊 `pca9685` 頁不再註冊。
+- **測試**：`/tmp/test_pixel_lab_task.py`（fake st/hub/layout/PCA）、
+  `/tmp/test_pixel_lab_pages_fake.py`（fake LVGL build/hooks）皆 PASS；未上板。

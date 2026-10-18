@@ -263,6 +263,8 @@ class StreamTask(Task):
             return
 
         self.hub.flush()
+        # 輸出源仲裁：直播 = "stream"（PixelLab 測試看到不是 "test" 會讓位）
+        bus.shared["pixel_owner"] = "stream"
         self._play_mode = play_mode
         self._cur_block = block_id
         self.state = _LOADING
@@ -316,6 +318,7 @@ class StreamTask(Task):
     def _start_playing(self):
         if self.state in (_READY, _PAUSED):
             self.state = _PLAYING
+            bus.shared["pixel_owner"] = "stream"
             bus.shared["is_streaming"] = True
             bus.shared["is_paused"] = False
             stream_actions._STREAM_STATE["streaming"] = True
@@ -400,6 +403,8 @@ class StreamTask(Task):
         """
         self._release_src()
         self.state = _IDLE
+        if bus.shared.get("pixel_owner") == "stream":
+            bus.shared["pixel_owner"] = None
         bus.shared.update({
             "stream_active": False,
             "is_streaming": False,

@@ -86,9 +86,41 @@ class PixelControlPanelTask(Task):
                 self._st_pixel.set_brightness(v)
                 get_log().info("[PixelCtl] ● brightness={}".format(v))
 
+    def _consume_pca_actions(self):
+        """消費 LVGL PCA 頁的請求佇列：`_pca_actions` → 動作。
+
+        目前只實作 {"action":"scan"}：掃描本板 I2C → 寫 bus.shared["_i2c_devices"]，
+        再同步 `pca9685_ctl`（UI 控制表）→ 頁面的左欄清單會跟著增減（熱插拔）。
+
+        ★ 掃描放在 task 而不是 LVGL 執行緒：`I2C.scan()` 最壞數百 ms，會卡畫面。
+        ★ 頁面已改成「直接操作 `pca9685_ctl` 的 PCA9685 物件」：`_pca_actions`
+          不再有 `start` / `stop`（那是舊版頁面留下來的，兩者本來就無人實作）。
+          播放端 `pca9685_list` 不受掃描影響，熱插拔的板子只支援手動控制。
+        """
+        q = bus.shared.get("_pca_actions")
+        if not q:
+            return
+        bus.shared["_pca_actions"] = None      # 一次性消費（讀後清）
+        events = q if isinstance(q, list) else ()
+        for ev in events:
+            if not (isinstance(ev, dict) and ev.get("action") == "scan"):
+                continue
+            try:
+                from driver.i2c_drv import scan_devices
+                get_log().info("[PixelCtl] I2C scan: {}".format(scan_devices()))
+            except Exception as e:
+                get_log().error("[PixelCtl] i2c scan err: {}".format(e))
+                continue
+            try:
+                from driver.pca9685_drv import refresh_pca_ctl
+                refresh_pca_ctl(bus)
+            except Exception as e:
+                get_log().error("[PixelCtl] pca ctl refresh err: {}".format(e))
+
     def loop(self):
         if not self.running:
             return
+        self._consume_pca_actions()
         cmd = bus.shared.get("_pixel_cmd")
         if not cmd:
             return

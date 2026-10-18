@@ -22,7 +22,11 @@ slave/
 │   └── page/
 │       ├── __init__.py  # 集中 import（容錯：單頁失敗不拖垮其他）
 │       ├── control_panel.py  # 控制面板（模式/亮度/倒數/拍攝·可動旗標）
-│       ├── pca9685.py        # PCA9685 I2C 檢查器
+│       ├── pixel_lab_apa.py  # PixelLab APA（IO／index／呼吸＋選中亮度）
+│       ├── pixel_lab_rgb.py  # PixelLab RGB（WS2812）
+│       ├── pixel_lab_pca.py  # PixelLab PCA（目標清單＋掃描／直放晶片 2×8）
+│       ├── pixel_lab_common.py # PixelLab 共用頁面工具
+│       └── pca9685.py        # 舊 PCA 直控頁（legacy，已不註冊）
 │       └── settings.py       # 系統設定
 ├── driver/enc_drv.py    # ★硬體編碼器 driver（config ENC 區塊）
 ├── ui_test_tool.py      # ★獨立測試入口（import 即用，旋鈕+按鈕操作）
@@ -77,6 +81,7 @@ def build():
 def on_enc(d):    nav.enc(d)
 def on_confirm(): nav.confirm()
 def on_exit():    return nav.exit()   # True=消耗(編輯中先退編輯)；False=回 launcher
+def on_enter():   nav.focus(0)        # 選用：進頁重設焦點（screen 是預建的，焦點會留著）
 ```
 
 項型別：`ITEM_INFO`（唯讀聚焦）/ `ITEM_SWITCH` / `ITEM_ENUM` / `ITEM_SLIDER` / `ITEM_BUTTON` / `ITEM_LIST`（新增，可編輯態）。
@@ -251,7 +256,14 @@ control_panel 頁與 `tasks/action_task_1.py` 共享 mode byte：
 ## 9. 常見操作
 
 - 啟動測試：`import ui_test_tool`（旋鈕選/調，encC 確認，btn 返回，Ctrl-C 回 REPL）。
-- 跳頁：`ui_test_tool.goto("pca9685")`。
+- 跳頁：`ui_test_tool.goto("pixel_lab_apa")` / `"pixel_lab_rgb"` / `"pixel_lab_pca"`。
+- PixelLab APA/RGB：encoder 選 index；兩個亮度方塊（呼吸／選中）顯示即時
+  百分比；選中燈預設 2 Hz 方波（後台 `SEL_MODE` 可改 steady）。
+- PixelLab PCA：左邊目標清單固定高度、可捲動；**掃描按鈕在清單外**，清單再長
+  也不會擋到。encoder 在清單上移動游標，確認套用並跳到 CH；再確認到掃描。
+  右邊直放晶片、左右各 8 格、中央 CH/百分比。
+- 三頁互斥；返回／離開＝停止＋填 0；低優先，直播／模式在跑時顯示「被接手」，
+  不寫、不備份。
 - 看/設 bus 值：`ui_test_tool.peek("_display_mode")`、`ui_test_tool.set("_display_time", 120)`。
 - 加新頁：建 `page/xxx.py`（`@register` + `nav`）+ `__init__.py` 加兩行（import + `_PAGES_MOD`）。
 - 換螢幕方向：改 `lvgl_init._MADCTL`（0x60 橫 / 0x00 直）。

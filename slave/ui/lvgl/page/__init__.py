@@ -27,10 +27,20 @@ except Exception as _e:
     print("[page] control_panel import skip:", _e)
     control_panel = None
 try:
-    from ui.lvgl.page import pca9685
+    from ui.lvgl.page import pixel_lab_apa
 except Exception as _e:
-    print("[page] pca9685 import skip:", _e)
-    pca9685 = None
+    print("[page] pixel_lab_apa import skip:", _e)
+    pixel_lab_apa = None
+try:
+    from ui.lvgl.page import pixel_lab_rgb
+except Exception as _e:
+    print("[page] pixel_lab_rgb import skip:", _e)
+    pixel_lab_rgb = None
+try:
+    from ui.lvgl.page import pixel_lab_pca
+except Exception as _e:
+    print("[page] pixel_lab_pca import skip:", _e)
+    pixel_lab_pca = None
 try:
     from ui.lvgl.page import settings
 except Exception as _e:
@@ -48,7 +58,9 @@ _PAGES_MOD = [
     ("remote", remote),
     ("now_setting", now_setting),
     ("control_panel", control_panel),
-    ("pca9685", pca9685),
+    ("pixel_lab_apa", pixel_lab_apa),
+    ("pixel_lab_rgb", pixel_lab_rgb),
+    ("pixel_lab_pca", pixel_lab_pca),
     ("settings", settings),
     ("pixel_controller", pixel_controller),
 ]

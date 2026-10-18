@@ -124,7 +124,8 @@ class SerialREPL:
         self.exec("f.close()")
         self.exec("import ubinascii")
         self.exec("d=ubinascii.a2b_base64(open('/_up.b64').read())")
-        self.exec("open(%r,'wb').write(d)" % remote_path)
+        # 必須顯式 close：板上檔案物件若只寫不關，fs 可能停在 0/舊長度。
+        self.exec("f=open(%r,'wb'); f.write(d); f.close()" % remote_path)
         self.exec("import os; os.remove('/_up.b64')")
         self.exec("print('WROTE', len(d))")
         self.drain(0.4)

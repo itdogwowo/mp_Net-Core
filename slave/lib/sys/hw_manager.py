@@ -242,6 +242,7 @@ def list_all():
     rows = []
     for name in ("pin_list", "pwm_list", "spi_list", "i2c_list",
                  "pixel_list", "ws2812_list", "apa1022_list", "pca9685_list",
+                 "pca9685_ctl",
                  "lcd", "data_Phat", "circuit_bus_list", "st_pixel"):
         svc = bus.get_service(name)
         if svc is not None:

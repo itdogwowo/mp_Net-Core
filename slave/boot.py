@@ -128,6 +128,9 @@ def _init(name, fn):
 _init("spi",     init_spi)
 _init("pin",     init_pin)
 _init("i2c",     init_i2c)
+# ↑ 位址掃描在 driver 裡（i2c_drv.init_i2c 建好 bus 就掃一次 → bus.shared["_i2c_devices"]）。
+#   ★ 不放這裡的理由：port 的 boot.py 是「整檔 delta 覆蓋」，寫這裡就得每個 port 手動同步；
+#     而且掃描是「掃我自己這條 bus」，屬 driver 職責，不是裝配層政策。
 _init("uart",    init_uart)
 # _init("pwm",   init_pwm)
 _init("i2s",     init_i2s)

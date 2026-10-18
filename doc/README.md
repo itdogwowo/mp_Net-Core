@@ -12,7 +12,7 @@
 | **02_guides** 使用教學 | 要在 slave 上寫功能 / 用模組的人 | 各模組 API、怎麼接、怎麼跑、踩坑 |
 | **03_notes** 筆記 | 維護者 / 想了解設計脈絡的人 | 調查記錄、架構筆記、計劃、變更紀錄 |
 
-**數量**：`01_protocol` 9 份、`02_guides` 18 份、`03_notes` 24 份。
+**數量**：`01_protocol` 9 份、`02_guides` 18 份、`03_notes` 26 份（含兩組同號）。
 
 ---
 
@@ -82,6 +82,7 @@
 | [21_uart_test_quick.md](03_notes/21_uart_test_quick.md) | **速查卡**｜同一組單線 UART 測試的短版（現場照著打） |
 | [22_nc4_simulator_audit.md](03_notes/22_nc4_simulator_audit.md) | **稽核紀錄**｜`00_nc4_illustrated.html` 匯流排模擬器 vs 協議文件：已修清單、程式端待辦（回覆位址 / MODE_STOP）、協議文件自身矛盾、重跑方式 |
 | [23_config_audit.md](03_notes/23_config_audit.md) | **稽核紀錄**｜全部 `config.json` 對照韌體程式碼的健檢：失效參數清單、服務 enable／GPIO 總表、4 個真實錯誤、整合方案與執行狀態（含 `config_audit` / `config_dryrun` / `config_prune` 三支工具） |
+| [24_hw_status_query_plan.md](03_notes/24_hw_status_query_plan.md) | 🟢 **已實作（上板待驗）**｜**I2C 地址掃描**：開機掃一次 ＋ `0x1402{type=I2C}` 再掃，結果存 `bus.shared["_i2c_devices"]`（**per-bus**）；**PCA 初始化改讀清單、不重複掃**；`_pca_devices` → `_i2c_devices`；新指令 `0x1409 HW_QUERY_RSP`。§9 附錄保存九種 `type` 設計（本輪不做），§10 實作結果與已知限制 |
 
 > 📌 **`03_notes/` 有兩組同號**：`17_esp_stream_controller.md` / `17_tx_render_center_plan.md`，
 > 以及 `21_uart_bench_test_plan.md` / `21_uart_test_quick.md`（手冊與速查卡，同一主題）。

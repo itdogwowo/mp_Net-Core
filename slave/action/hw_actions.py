@@ -1,3 +1,5 @@
+import json
+
 from lib.sys.sys_bus import bus
 from lib.sys.hw_manager import HW
 from lib.sys.proto import Proto
@@ -64,9 +66,33 @@ def on_hw_ctl(ctx, args):
     print("[HW] unknown type=0x{:02X}".format(hw_type))
 
 
+def _query_i2c(ctx, hw_id):
+    """0x1402{type=I2C}: 掃描 → 更新 bus.shared["_i2c_devices"] → 回 0x1409。
+
+    ★ 更新那一格才是重點：本地（UI / task / REPL）直接讀，完全不需要通訊。
+      回覆只是給外部的順便 —— 內部呼叫（disp.exec_cmd）的 ctx 沒有 "send"，
+      `_reply()` 自己會跳過。
+    """
+    from driver.i2c_drv import scan_devices
+    d = scan_devices()
+    _reply(ctx, 0x1409, {
+        "ok": 0,
+        "type": HW.I2C,
+        "id": hw_id,
+        "json": json.dumps({str(k): ["0x{:02X}".format(a) for a in v]
+                            for k, v in d.items()}),
+    })
+    print("[HW] I2C scan: {}".format(d))
+
+
 def on_hw_query(ctx, args):
     hw_type = int(args.get("type", 0) or 0)
     hw_id   = int(args.get("id", 0) or 0)
+
+    # 本輪實作 I2C：掃描 → 寫 _i2c_devices → 回 0x1409（§3.3）
+    if hw_type == HW.I2C:
+        _query_i2c(ctx, hw_id)
+        return
 
     if hw_type == HW.PIN:
         try:
