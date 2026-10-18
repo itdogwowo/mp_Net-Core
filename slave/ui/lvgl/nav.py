@@ -20,6 +20,7 @@
 #   def on_enc(d):     nav.enc(d)
 #   def on_confirm():  nav.confirm()
 #   def on_exit():     return nav.exit()
+#   def on_enter():    nav.focus(0)        # 選用:進頁重設焦點(否則沿用上次)
 #
 # 支援的項型別常數:
 #   ITEM_INFO    唯讀聚焦,confirm 無動作
@@ -71,6 +72,19 @@ class Nav:
             "w": w, "kind": kind,
             "on_change": on_change, "on_focus": on_focus,
         })
+
+    def focus(self, i=0):
+        """把焦點移到第 i 項（頁面 on_enter 用）。順便退出編輯態。
+
+        ★ 頁面每次進來都從「第一個項」開始：LVGL 的 screen 是預建的，
+          上次離開時的焦點會留著；不重置的話，使用者再進來可能直接停在
+          最後一顆按鈕上，不知道要從哪裡開始。
+        """
+        if not self._items:
+            return
+        self._fi = max(0, min(int(i), len(self._items) - 1))
+        self._editing = False
+        self.paint()
 
     # ── 焦點視覺 ──
 

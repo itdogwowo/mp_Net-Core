@@ -116,6 +116,8 @@ def _init(name, fn):
 _init("spi",     init_spi)
 _init("pin",     init_pin)
 _init("i2c",     init_i2c)
+# ↑ 位址掃描在 driver 裡（i2c_drv.init_i2c），不在 boot —— port delta 不會漏掉這個功能。
+
 _init("uart",    init_uart)
 # _init("pwm",   init_pwm)
 _init("i2s",     init_i2s)

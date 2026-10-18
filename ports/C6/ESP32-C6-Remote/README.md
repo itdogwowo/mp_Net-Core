@@ -50,12 +50,17 @@ python3 -B -m mpremote connect /dev/cu.usbmodemXXXX repl
 ## 2. 硬體接線
 
 ```
-按鈕1（可動模式）  GPIO2 ──┤ ├── GND      內部上拉：按下 = 低電位（BTN_ACTIVE_LOW=True）
-按鈕2（下一個）    GPIO3 ──┤ ├── GND      去抖 30ms（DEBOUNCE_MS）
-                   C6
-回饋 LED（可選）   LED_PIN = None 預設關閉
-                   C6-DevKitC 板載 RGB 在 GPIO8 → 設 LED_PIN=8 / LED_TYPE="ws2812"
+                    ┌──────────────── C6 ────────────────┐
+按鈕1（可動模式）   │  BTN_MOVABLE_PIN = 2  ──┤ ├── GND   │  內部上拉：按下 = 低電位
+按鈕2（下一個）     │  BTN_NEXT_PIN    = 3  ──┤ ├── GND   │  （BTN_ACTIVE_LOW = True）
+                    │                                    │  去抖 DEBOUNCE_MS = 30
+回饋 LED（可選）    │  LED_PIN = None（預設不用）        │
+                    └────────────────────────────────────┘
+   C6-DevKitC 板載 RGB 在 GPIO8 → 設 LED_PIN=8 / LED_TYPE="ws2812"
 ```
+
+> ★ 兩個 GPIO 就是檔頭 **A. 按鈕接線** 那兩行（`main.py` 第 63–64 行附近），
+> 兩顆都接 GND、不需要外部電阻；接錯腳或兩顆接同一支腳，開機的參數檢查會直接報 ❌。
 
 - 兩顆按鈕**直接接 GND**，不需要外部電阻（用 MCU 內部上拉）。
 - 腳位請避開 strapping（GPIO8/9/15）與 USB（GPIO12/13）。GPIO9 是 BOOT 鍵。
@@ -66,6 +71,18 @@ python3 -B -m mpremote connect /dev/cu.usbmodemXXXX repl
 ---
 
 ## 3. 檔頭參數（① 使用者參數）
+
+> **參數區有目錄**：`main.py` 的『① 使用者參數』按 **A→F** 排
+> （**A 按鈕接線** → B 射頻與對象 → C 模式指令 → D 手動探索 → E LED → F 時序），
+> 一開頭就有目錄註解，不用往上翻。
+> **最常改的四個都在最上面**：
+>
+> | 參數 | 在哪 | 意思 |
+> |---|---|---|
+> | `BTN_MOVABLE_PIN` | **A** | 按鈕1「進入可動模式」的 GPIO（預設 2） |
+> | `BTN_NEXT_PIN` | **A** | 按鈕2「下一個模式」的 GPIO（預設 3） |
+> | `PEER_MAC` | B | 對方的射頻 MAC（`None` = 廣播） |
+> | `PEER_CID` | B | 對方的協議 cid（`None` = 廣播） |
 
 ### 3.1 廣播還是單播？（**先看這張表**）
 
@@ -152,6 +169,20 @@ python3 -B -m mpremote connect /dev/cu.usbmodemXXXX repl
 > `True` → `0x0001`、`1.5` → `0x0001`，而且 `[CFG]` 那行還會**印 0xFFFF 騙你**。
 
 ## 4. 手動探索／配對（**不自動配對**）
+
+### 4.0 掃描送出的指令是什麼
+
+| | 內容 |
+|---|---|
+| **CMD** | `0x100D` `IDENTIFY_REQ`（Master → **廣播**） |
+| **Payload** | `reply_cid(u16) timeout_ms(u16) force(u8)` = 5B |
+| **射頻** | `dst = ff:ff:ff:ff:ff:ff`、幀頭 `addr = 0xFFFF`（**永遠廣播**：它是「問全部你是誰」） |
+| **預設值** | `reply_cid=0xFFFF`、`window=800`、`force=1` |
+| **完整幀** | `4e4304ffff0d100500ffff200301bda4652c`（18 B） |
+| **回覆** | `0x100E IDENTIFY_RSP`：`cid(u16) slave_id(str_u16len) ip(str_u16len)` |
+
+拆解：`4e43`=SOF`NC`、`04`=VER、`ffff`=addr、`0d10`=CMD `0x100D`(LE)、`0500`=LEN 5、
+`ffff`=`reply_cid`、`2003`=`window 800`(LE)、`01`=`force`、`bda4652c`=CRC32。
 
 ### 4.1 三個入口
 

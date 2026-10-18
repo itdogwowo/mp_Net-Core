@@ -2,9 +2,10 @@
 
 > **用途**：單一查詢表，收錄本專案全部指令域的完整指令定義。對接/新增指令前先查這裡。
 > **分類**：協議層（01_protocol）
-> **最後更新**：2026-10（補列 `0x32xx` audio 域；更正域數 11 → 12；移除 0x16xx router；0x11xx 改為狀態與設定）
+> **最後更新**：2026-10（補列 `0x32xx` audio 域；更正域數 11 → 12；移除 0x16xx router；0x11xx 改為狀態與設定；
+> `0x1402` 實作 I2C 掃描 ＋ 新增 `0x1409 HW_QUERY_RSP`）
 > **權威來源**：`slave/schema/*.json`；本文件是整理後的說明，衝突以 schema 為準。
-> **指令碼分配**（**12 個域、112 條指令**）：
+> **指令碼分配**（**12 個域、113 條指令**）：
 
 ```
 0x10xx — sys         系統發現/控制/任務管理/定址/遠端更新
@@ -162,8 +163,19 @@
 
 | CMD | 名稱 | 方向 | Payload | 說明 |
 |-----|------|------|---------|------|
-| 0x1401 | HW_CTL | Server → MCU | `type(u8)` `id(u8)` `label(str)` `value(u16)` | 硬體控制 |
-| 0x1402 | HW_QUERY | Server → MCU | `type(u8)` `id(u8)` | 硬體查詢 |
+| 0x1401 | HW_CTL | Server → MCU | `type(u8)` `id(u8)` `label(str)` `value(u16)` | 硬體控制（type：PIN / PWM / VBTN ＋ `label` 逃生門） |
+| 0x1402 | HW_QUERY | Server → MCU | `type(u8)` `id(u8)` | 硬體查詢。**本輪只實作 `type=I2C(3)`**：現場掃描 → 寫 `bus.shared["_i2c_devices"]` → 回 0x1409 |
+| 0x1409 | HW_QUERY_RSP | MCU → Server | `ok(u8)` `type(u8)` `id(u8)` `json(str)` | 查詢結果（目前只有 I2C）。其餘 type 維持只印 log、不回覆 |
+
+> **`0x1402` 的 I2C 分支（`type=3`）**
+> - **一律掃全部已啟用的匯流排**；`id` 只是回音（保留欄位，不影響行為）。
+> - 結果**同時**寫進 `bus.shared["_i2c_devices"] = {bus_idx: [addr, ...]}`（per-bus）。
+>   **本地（UI / task / REPL）直接讀那一格**，不需要通訊；`0x1409` 只是給外部的順便。
+> - 回覆 `json`：`{"0": ["0x40", "0x70"]}`（只有位址；實測 41 B）。
+> - 掃到空也會覆蓋舊值（`{0: []}`）。
+> - ⚠️ `I2C.scan()` **無法中途打斷**：單一死線最壞約 5.6s（I2C timeout × 112 位址），
+>   仍低於 `System.watchdog.timeout_ms`（預設 8000）→ 會卡住但不會重開機。
+> - ⚠️ 熱插拔後查詢會更新清單，但 **PCA 的 controller 不會重新註冊**（reinit 尚未實作）。
 
 ### 臨時提速（協商式 UART 提速 + 超時回滾）
 

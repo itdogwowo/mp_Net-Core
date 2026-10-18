@@ -51,8 +51,23 @@ except ImportError:                      # pragma: no cover
 # ══════════════════════════════════════════════════════════════════
 #  ① 使用者參數 —— 只改這一區
 # ══════════════════════════════════════════════════════════════════
+#  目錄（依「你會依序需要」排；每一項都只有一個住址）：
+#    A. 按鈕接線      BTN_MOVABLE_PIN / BTN_NEXT_PIN / BTN_ACTIVE_LOW / DEBOUNCE_MS / BTN_LONG_PRESS_MS
+#    B. 射頻與對象    CHANNEL / PEER_MAC / PEER_CID / MY_CID / SEND_TARGET / PAIR_AS_MASTER
+#    C. 模式指令      MOVABLE_MODE / BOOT_MODE / STEP / STEP_BASE_IF_UNKNOWN / BRIGHTNESS / START_DELAY_MS
+#    D. 手動探索      SCAN_REPLY_DIRECTED / SCAN_WINDOW_MS / SCAN_FORCE
+#    E. 回饋 LED      LED_PIN / LED_TYPE / LED_SHOW_MODE
+#    F. 時序與除錯    CONFIRM_AFTER_SET / CONFIRM_DELAY_MS / RSP_TIMEOUT_MS / RETRIES / ADDR_FILTER / DEBUG
 
-# ── 射頻 ────────────────────────────────────────────────────────
+# ══ A. 按鈕接線（兩顆都接 GND：內部上拉、按下＝低電位）══════════
+BTN_MOVABLE_PIN = 2         # ★ 按鈕1「進入可動模式」接哪個 GPIO ← 改成你實際接的
+BTN_NEXT_PIN    = 3         # ★ 按鈕2「下一個模式 +1」接哪個 GPIO ← 改成你實際接的
+BTN_ACTIVE_LOW  = True      # 接 GND → True（內部上拉，按下讀到 0）
+DEBOUNCE_MS     = 30        # 去抖時間（ms）。太小會連發、太大會漏短按
+BTN_LONG_PRESS_MS = 3000    # 按住按鈕1 幾 ms = 觸發 scan()（None = 停用長按）
+                            #   短按＝放開才成立；長按＝按住達標就觸發（不會同時切成模式）
+
+# ══ B. 射頻與對象 ══════════════════════════════════════════════
 CHANNEL = 6                 # Wi-Fi 頻道 1~13。**必須與對方完全相同**，否則一幀都收不到
 
 # ── 對方（要控制的執行裝置）——**沒確認過就保持 None，不要填猜的值** ──
@@ -63,7 +78,7 @@ PEER_MAC = None             # 對方的 STA MAC（12 個 hex，可含 : - 或空
 PEER_CID = None             # 對方的協議位址（cid）→ 填進 NC4 幀頭 addr（對方用它判斷
                             #   「這幀是給我的」）。★ None（**預設**）= 還沒確認 → 不能單播
                             #   （會自動走廣播）；scan() 會把該填的值印出來
-MY_CID   = 0x0101             # 自己的協議位址 —— **這是你自己挑的，不是掃出來的**。
+MY_CID   = 0x0101           # 自己的協議位址 —— **這是你自己挑的，不是掃出來的**。
                             #   只有「要當 master（PAIR_AS_MASTER）」或「要對方定向回覆
                             #   （SCAN_REPLY_DIRECTED=True）」才需要（別跟對方撞號）。
                             #   None = 不用這些功能（＝只收廣播）
@@ -85,7 +100,19 @@ PAIR_AS_MASTER = False      # 開機時額外送 0x1016 SET_MASTER{MY_CID}（＝
                             #   ⚠️ 與 SCAN_REPLY_DIRECTED 是**不同機制**：這個是「以後都回給我」
                             #      （會寫進對方 flash、可能被拒絕），那個只影響「這一次掃描的回信」
 
-# ── 手動探索（掃描）——只印出來，不自動套用 ──────────────────────
+# ══ C. 模式指令參數（0x3105 MODE_SET）══════════════════════════
+MOVABLE_MODE   = 0x0200     # 按鈕1：可動模式＝ mode_type 2(SERVO) / mode_id 0 → 合併 id 0x0200
+BOOT_MODE      = 0x0000     # 開機時「本地預設」模式（GET 有回覆就被覆蓋）
+STEP           = 1          # 按鈕2 的增量（16-bit 合併 id 直接 +1）
+STEP_BASE_IF_UNKNOWN = MOVABLE_MODE
+                            # 從未同步成功（高 byte = 0，type 0 是系統模式、不可 MODE_SET）時，
+                            # +1 改以這個為基準 → 0x0201 而不是無用的 0x0001。設 None = 純 +1
+BRIGHTNESS     = 255        # 0~254 = 設定亮度；**255 = 不改**（協議規定，0 是合法值）
+START_DELAY_MS = 0          # 對方收到後延遲幾 ms 才起播（0=立即）
+
+# ══ D. 手動探索（掃描）——只印出來，不自動套用 ══════════════════
+#   觸發：長按按鈕1（BTN_LONG_PRESS_MS）／REPL 打 scan()／REPL 打 listen(15)
+#   送出的指令：0x100D IDENTIFY_REQ（廣播），payload = reply_cid(u16) window(u16) force(u8)
 SCAN_REPLY_DIRECTED = False # 對方那封回信要「只有我們收」嗎？（0x100D 的 reply_cid）
                             #   False（預設）= 回信用 0xFFFF → **射頻廣播**
                             #        → 我們還沒跟任何人配對也收得到（只需 add_peer(BCAST)）
@@ -97,15 +124,7 @@ SCAN_REPLY_DIRECTED = False # 對方那封回信要「只有我們收」嗎？�
 SCAN_WINDOW_MS = 800        # 抖動視窗：對方會隨機延遲 0~此值才回（避免同時回話碰撞）
 SCAN_FORCE = True           # 每次掃描都要求重新自我介紹（對方對同一個問的人只回第一次）
 
-# ── 按鈕（直接接 GND：內部上拉、按下＝低電位）────────────────────
-BTN_MOVABLE_PIN = 2         # 按鈕1：進入可動模式 MOVABLE_MODE
-BTN_NEXT_PIN    = 3         # 按鈕2：下一個模式（+1）
-BTN_ACTIVE_LOW  = True      # 接 GND → True（內部上拉，按下讀到 0）
-DEBOUNCE_MS     = 30        # 去抖時間（ms）。太小會連發、太大會漏短按
-BTN_LONG_PRESS_MS = 3000    # 按住按鈕1 幾 ms = 觸發 scan()（None = 停用長按）
-                            #   短按＝放開才成立；長按＝按住達標就觸發（不會同時切成模式）
-
-# ── 回饋 LED（不用就設 LED_PIN = None）──────────────────────────
+# ══ E. 回饋 LED（不用就設 LED_PIN = None）══════════════════════
 LED_PIN = None              # 例：8 = C6-DevKitC 板載 RGB；None = 完全不使用
 LED_TYPE = "gpio"           # 燈的電氣型態 —— **一個參數講完，不會有前後矛盾**：
                             #   "gpio"     = 一般 LED，高電位亮
@@ -113,17 +132,7 @@ LED_TYPE = "gpio"           # 燈的電氣型態 —— **一個參數講完，�
                             #   "ws2812"   = 板載可定址 RGB（neopixel）
 LED_SHOW_MODE = True        # 開機/切換後用閃燈回報模式（無顯示時唯一的確認手段）
 
-# ── 模式指令參數（0x3105 MODE_SET）─────────────────────────────
-MOVABLE_MODE   = 0x0200     # 可動模式＝ mode_type 2(SERVO) / mode_id 0 → 合併 id 0x0200
-BOOT_MODE      = 0x0000     # 開機時「本地預設」模式（GET 有回覆就被覆蓋）
-STEP           = 1          # 按鈕2 的增量（16-bit 合併 id 直接 +1）
-STEP_BASE_IF_UNKNOWN = MOVABLE_MODE
-                            # 從未同步成功（高 byte = 0，type 0 是系統模式、不可 MODE_SET）時，
-                            # +1 改以這個為基準 → 0x0201 而不是無用的 0x0001。設 None = 純 +1
-BRIGHTNESS     = 255        # 0~254 = 設定亮度；**255 = 不改**（協議規定，0 是合法值）
-START_DELAY_MS = 0          # 對方收到後延遲幾 ms 才起播（0=立即）
-
-# ── 確認時序 ────────────────────────────────────────────────────
+# ══ F. 時序與除錯 ═══════════════════════════════════════════════
 CONFIRM_AFTER_SET = True    # MODE_SET 後再 GET 一次確認（MODE_SET 本身無 ACK）
 CONFIRM_DELAY_MS  = 80      # 送 SET 後等幾 ms 再 GET（給對方時間套用，避免讀到舊值）
 RSP_TIMEOUT_MS    = 300     # 等一次回覆的時間
