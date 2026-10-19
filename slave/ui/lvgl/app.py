@@ -72,7 +72,12 @@ def go(name, back=False):
 
 
 def step():
-    """單幀處理。"""
+    """單幀處理。
+
+    ★ 三段各自 try：`ex` 是「讀後即清」的消費式邊緣，一旦取走就沒了。
+      以前 on_enc / on_confirm 任一拋例外，這一幀的返回鍵就整個消失
+      （畫面停在原頁、再按也沒用），症狀跟「返回鍵壞掉」一模一樣。
+    """
     global _run
     d = platform["enc_delta"]()
     c = platform["confirm"]()
@@ -80,14 +85,32 @@ def step():
     m = _page()
 
     if d != 0 and hasattr(m, "on_enc"):
-        m.on_enc(d)
+        try:
+            m.on_enc(d)
+        except Exception as e:
+            print("[nav] on_enc err:", e)
     if c and hasattr(m, "on_confirm"):
-        target = m.on_confirm()
+        target = None
+        try:
+            target = m.on_confirm()
+        except Exception as e:
+            print("[nav] on_confirm err:", e)
         if target:
             go(target)
     if ex and cur != "launcher":
-        # 先讓頁面 on_exit 處理(例如退出編輯態);回 True=消耗,不回 launcher
-        consumed = hasattr(m, "on_exit") and m.on_exit()
+        # 重新取當前頁：on_confirm 可能已經 go() 到別頁，退出要作用在新的那一頁。
+        p = _page()
+        consumed = False
+        if hasattr(p, "on_exit"):
+            try:
+                # 先讓頁面 on_exit 處理(例如退出編輯態);回 True=消耗,不回 launcher
+                consumed = p.on_exit()
+            except Exception as e:
+                # on_exit 自己炸掉 = 這一頁沒處理掉 → 照樣回 launcher，不要卡死。
+                print("[nav] on_exit err:", e)
+                consumed = False
+        # 有收到返回鍵才會印；沒印 = 按鍵根本沒進到 UI（看 board 的 [btn] log）
+        print("[nav] exit ->", cur, "consumed" if consumed else "")
         if not consumed:
             go("launcher", back=True)
 

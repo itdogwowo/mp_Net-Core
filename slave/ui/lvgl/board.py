@@ -37,7 +37,29 @@ def _make_inputs():
     from lib.sys.hw_manager import consume_input
 
     print("[board] inputs: via hw_manager snapshot (encC/btn)")
+    _dump_input_pins()
     return _make_snapshot_inputs(consume_input)
+
+
+def _dump_input_pins():
+    """開機印一次「實際接上的按鈕腳位」。
+
+    ★ 返回鍵失效時先看這三行：
+        [board]   encC -> Pin(2)
+        [board]   btn  -> Pin(1)
+      出現 "(not built)" = config PIN 段沒有這個 label（或 init_pin 中途失敗），
+      UI 再怎麼按都不會有邊緣。這是最常見的「返回鍵沒反應」原因。"""
+    try:
+        from lib.sys.sys_bus import bus
+        pb = bus.get_service("pin_by_label") or {}
+        for label in ("encC", "btn"):
+            p = pb.get(label)
+            if p is None:
+                print("[board]   {} -> (not built!)".format(label))
+            else:
+                print("[board]   {} -> {}".format(label, p))
+    except Exception as e:
+        print("[board] input pin dump err:", e)
 
 
 def _make_snapshot_inputs(consume_input):
@@ -51,7 +73,11 @@ def _make_snapshot_inputs(consume_input):
         return consume_input("pin", key="encC") != 0
 
     def exit_pressed():
-        return consume_input("pin", key="btn") != 0
+        n = consume_input("pin", key="btn")
+        if n:
+            # 有印 = 按鍵訊號有進到 UI；沒印就代表問題在腳位/接線，不在 LVGL。
+            print("[board] btn edge -> exit")
+        return n != 0
 
     return enc_delta, confirm, exit_pressed
 

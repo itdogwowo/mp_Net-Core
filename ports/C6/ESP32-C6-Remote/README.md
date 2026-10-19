@@ -6,7 +6,7 @@
 > **可直接複製的兩行**（`PEER_MAC` / `PEER_CID`）——**不自動配對**，暫時預設廣播。
 > **分類**：port（實體板子 delta）／**獨立固件**
 > **最後更新**：2026-10
-> **狀態**：✅ 協議層＋配對層＋開機流程已離線驗證（`test/protocol/test_c6_remote.py`，186 項全過，
+> **狀態**：✅ 協議層＋配對層＋開機流程已離線驗證（`test/protocol/test_c6_remote.py`，196 項全過，
 > 含用假射頻跑完整 `main()`）；⏳ 真機（C6 + 對方裝置）尚未驗證
 > **相關文件**：
 > - `doc/01_protocol/01_nc4_protocol.md` — NC4 幀格式、定址詞彙表（cid vs MAC）
@@ -63,7 +63,15 @@ python3 -B -m mpremote connect /dev/cu.usbmodemXXXX repl
 > 兩顆都接 GND、不需要外部電阻；接錯腳或兩顆接同一支腳，開機的參數檢查會直接報 ❌。
 
 - 兩顆按鈕**直接接 GND**，不需要外部電阻（用 MCU 內部上拉）。
-- 腳位請避開 strapping（GPIO8/9/15）與 USB（GPIO12/13）。GPIO9 是 BOOT 鍵。
+- **腳位避雷**（換晶片時最容易踩）：
+
+  | 晶片 | 目前設定 | 要避開 |
+  |---|---|---|
+  | **ESP32-S3** | 依實際接線（目前 可動=`11`、下一個=`12`） | `0/3/45/46`（strapping）、`19/20`（USB D-/D+）、`33–37`（八線 PSRAM 的模組） |
+  | **ESP32-C6** | 可動=`2`、下一個=`3` | `8/9/15`（strapping）、`12/13`（USB D-/D+）；GPIO9 是 BOOT 鍵 |
+
+  → 同一份程式在 S3/C6 都能跑（ESP-NOW 與 MicroPython 行為相同），**只有 GPIO 編號要改**。
+  C6 的 `12/13` 是 USB，但 S3 的 `12` 是普通 GPIO —— 所以「同一支腳」在不同晶片上意思不同，換板時一定重看這張表。
 - 按鈕事件是**去抖後的邊緣觸發**，且等待回覆期間仍在輪詢 → 不會因為「正在等 GET 回覆」而漏按。
 - **短按＝放開時成立；長按（`BTN_LONG_PRESS_MS`，預設 3 秒）＝按住達標立刻觸發**，
   且長按會吃掉那一次短按 → 同一顆鈕不會又掃描又切模式。
@@ -129,6 +137,8 @@ python3 -B -m mpremote connect /dev/cu.usbmodemXXXX repl
 | `SCAN_REPLY_DIRECTED` | `False` | 對方那封掃描回信要「只有我們收」嗎？`False` → 回信用 `0xFFFF`（**廣播回覆**，不需配對就收得到）；`True` → 用 `MY_CID` 定向（**cid 的值來自 `MY_CID`，不在這裡再填一次**；沒填會自動退回廣播並警告） |
 | `SCAN_WINDOW_MS` | `800` | 點名的抖動視窗：對方隨機延遲 0~此值才回（避免 N 台同時回話碰撞）。★ 一個值兩個角色：既是協議欄位 `timeout_ms`，也是本地收件視窗（再多等 600ms 收尾） |
 | `SCAN_FORCE` | `True` | 每次掃描都要求重新自我介紹（對方對同一個問的人只回第一次） |
+| `HELLO_WINDOW_MS` | `400` | 開機「破冰點名」（`0x100D`）的收件視窗；不用像手動掃描那麼久 |
+| `PEER_PROBE_MS` | `5000` | 對端**已知不回覆**時，待機每隔幾 ms 偷偷試一次它是否恢復（`0` = 停用）。探測失敗不印任何東西，只有成功才印 `[PROBE] 對端恢復回應` |
 | `MOVABLE_MODE` | `0x0200` | 按鈕1 的目標模式 = `mode_type 2(SERVO)` / `mode_id 0` |
 | `BOOT_MODE` | `0x0000` | 開機的**本地預設**模式（GET 有回覆就被覆蓋） |
 | `STEP` | `1` | 按鈕2 的增量（16-bit 合併 id 直接 +1） |
@@ -210,6 +220,54 @@ python3 -B -m mpremote connect /dev/cu.usbmodemXXXX repl
 [SCAN] 共 1 台。…→ 綠閃×1（掃到 1 台）／紅閃×5（沒人回）
 ```
 
+### 4.1.1 真機實例（面板那一側的 log → 你該填什麼）
+
+`0x100D/0x100E` 已在真機上驗證（面板 ↔ 節點）：
+
+```text
+[now_set] 掃描 已送出
+🔹 [NOW-Bus] IDENTIFY_RSP (0x100E)
+[INFO] [Peers] ＋ A0F262EAEB04 cid=None mac=A0F262EAEB04 via=frame iface=NOW-Bus
+[INFO] [Peers] ↻ A0F262EAEB04 cid=60164 mac=A0F262EAEB04 via=identify_rsp iface=NOW-Bus
+```
+
+逐行解讀：
+
+| log | 意思 |
+|---|---|
+| `掃描 已送出` | 面板廣播了 `0x100D`（`reply_cid` = 面板自己的 cid → **定向回覆**） |
+| `＋ … cid=None via=frame` | 先在射頻層認識了 MAC（**這一刻還不知道 cid**） |
+| `↻ … cid=60164 via=identify_rsp` | `0x100E` 回來，補上 cid：`60164 = 0xEB04` |
+
+**`cid` 是 MAC 末四碼**（`ConfigManager.ensure_cID()` 在 `System.cID` 空著時自動填）：
+`A0:F2:62:EA:EB:04` → `EB04` → `0xEB04` → 60164。
+
+→ 要控制這台節點，遙控器檔頭就填這兩個值（`scan()` 印出來的就是同一組）：
+
+```python
+PEER_MAC = "a0f262eaeb04"
+PEER_CID = 0xEB04         # 寫 60164 也接受（_parse_cid 認十進位/0x/字串）
+```
+
+> ⚠️ 面板那次掃描用了**定向回覆**（`reply_cid` = 面板 cid），所以那封 `0x100E`
+> 只有面板收得到，遙控器不會看到 —— 自己跑 `scan()` 才拿得到。
+> 反之遙控器預設用 `0xFFFF`（**廣播回覆**），所以兩者可以各自掃、互不干擾。
+> 想要好認的 cid（例如 `0x0101`）就改那台節點的 `config.json` → `System.cID`。
+
+**遙控器自己跑 `scan()` 的實測輸出**（2026-10，ESP32-S3 `e4:b3:23:f9:32:00`）：
+
+```text
+[SCAN] 廣播 0x100D IDENTIFY_REQ{reply_cid=0xFFFF, window=800ms, force=1} …
+[TX] cmd=0x100D addr=0xFFFF dst=ffffffffffff len=18 ok (強制廣播)
+[RX] cmd=0x100E addr=0xFFFF src=a0:f2:62:ea:eb:04 len=18 04eb0c004130463236324541454230340000
+  [0x100E] cid=0xEB04  slave_id=A0F262EAEB04  ip=-  ← src=a0:f2:62:ea:eb:04
+        PEER_MAC = "a0f262eaeb04"
+        PEER_CID = 0xEB04
+```
+
+用 `reply_cid = MY_CID(0x0101)` 也驗過：對方會**單播**回給我們，而 `ADDR_FILTER` 收得到
+（`[RX] … addr=0x0101`）—— 也就是「定向回覆 + 自己的 cid」這條路在真機上成立。
+
 ### 4.2 掃描用到／看到的四個指令
 
 | CMD | 名稱 | 方向 | Payload | 這支遙控器怎麼用 |
@@ -257,6 +315,70 @@ python3 -B -m mpremote connect /dev/cu.usbmodemXXXX repl
 > 那就只能靠 `listen()` 等它自己講話（公告／心跳），或直接從對方那一側拿 MAC。
 
 ---
+
+### 4.6 對端能力探測（2026-10 真機實測）
+
+同一塊對端（`a0:f2:62:ea:eb:04`）逐一探測的結果：
+
+| 指令 | 名稱 | 結果 |
+|---|---|---|
+| `0x100D` | `IDENTIFY_REQ` | ✅ 回 `0x100E`（`cid`、`slave_id` 有；`ip` 欄位是**空的**） |
+| `0x1014` | `GET_IP` | ❌ 無回應 |
+| `0x3101` | `MODE_LIST_QUERY` | ❌ 無回應 |
+| `0x3103` | `MODE_GET` | ❌ 無回應 |
+| `0x1101` | `STATUS_GET`（其他 key） | ❌ 無回應（`slave_id`／`?`／多 key 都不答） |
+| `0x1101{node.master_cid}` | `STATUS_GET`（單一 key） | ✅ 回 `{"node.master_cid":1}` |
+| `0x1016` | `SET_MASTER` | ❌ **被忽略**：送 `{master_cid=2}` 後再查，`node.master_cid` 仍是 `1` |
+| （被動監聽 5s） | — | ❌ 沒有任何主動幀（不發公告/心跳） |
+
+→ **這塊對端只實作了 discovery**（`0x100D/0x100E`）。
+而且它的 `0x100E` 把 `ip` 回成空字串，本樹的 `_ips_json()` 永遠至少回 `"{}"`
+→ 可以確定它**不是**本樹固件，是另一套系統。
+
+> ★ **2026-10 再測：頻道上有兩台**（第一次掃描只看到一台，是因為另一台回得慢）：
+>
+> | 節點 MAC | cid | 支援 |
+> |---|---|---|
+> | `a0:f2:62:ea:eb:04` | `0xEB04` | `0x100D`＋`0x1101{node.master_cid}`（master=1） |
+> | `1c:db:d4:80:99:a8` | `0x99A8` | **只有** `0x100D` |
+>
+> 兩台都實測過 `0x3103`／`0x3101{0,2}`／`0x3107`／`0x1014`（單播與廣播都試）→ **全部無回覆**。
+> 所以「模式查詢」在這兩台上都不存在；`scan()` 想抓到回得慢的節點，就把 `SCAN_WINDOW_MS` 調大。
+
+**對遙控器的影響**：
+
+- `scan()`／`listen()` 可用 ✅（位址抓得到，所以 §3.2 那兩個值填得出來）
+- `0x3103` 拿不到目前模式 → 開機同步會逾時，走 §6 的 16-bit +1 後備 ✅（設計本來就這樣）
+- `0x3101` 拿不到模式清單 → 「下一個」只能靠 +1，不能依清單跳 ✅（也已是後備路徑）
+- `MODE_SET(0x3105)` **尚未驗證**（會真的驅動機構，沒有在實機上送過）
+
+要讓「GET 模式」真的成立，**對端必須補上 `0x3103/0x3104`**（請求空 payload；
+回覆 11 bytes：`mode_type u8` + `mode_id u8` + `elapsed_ms u32 LE` + `total_ms u32 LE` + `running u8`）。
+
+### 4.7 逐個指令取得的參數（2026-10 真機原始位元組）
+
+> 做法：**不用任何 helper**，在 REPL 用原生 NC4 逐條送出、逐條看回覆。
+> 這比「跑一支腳本」可靠 —— 每一條指令的 TX/RX 都在眼前，錯在哪一行一目了然。
+
+| # | 指令 | 位址 | TX 幀 | RX 幀 | 得到什麼 |
+|---|---|---|---|---|---|
+| 1 | `0x100D` | `addr=0xFFFF` 廣播 | `4e4304ffff0d100500ffff200301bda4652c` | `4e4304ffff0e1012 00 04eb0c00 413046323632454145423034 0000 cf121226` | `cid=0xEB04`、`slave_id=A0F262EAEB04`、`ip` 空；射頻來源 `a0f262eaeb04` |
+| 2 | `0x1101{node.master_cid}` | **`addr=0xEB04` 單播** | `4e430404eb011111000f006e6f64652e6d61737465725f6369645d365d29` | `4e4304ffff0211 1700 1500 7b226e6f64652e6d61737465725f636964223a317d 9e7f90a5` | **`{"node.master_cid":1}`** ← master 的 ID ＝ **1** |
+| 3 | `0x3103` | `addr=0xEB04` | `4e430404eb03310000fc6faa9a` | — 無回覆 | MODE_GET **未實作** |
+| 4 | `0x3101{0}` / `{2}` | `addr=0xEB04` | … | — 無回覆 | MODE_LIST **未實作** |
+| 5 | `0x1101{?}` / `{slave_id}` / `{System.cID}` / 多 key | `addr=0xEB04` | … | — 無回覆 | 這塊對端**只認得 `node.master_cid` 一個 key** |
+
+**三個關鍵教訓（都是真機才會發現）**：
+
+1. **`ADDR` 必須是對方的 cid**。用 `0x0001`（＝它的 *master_cid*，不是它的 cid）
+   送 `0x1101` 會**完全靜默** —— 同一個 key、同一塊板，只有 addr 不同，結果天差地遠。
+   → 這也是為什麼 `PEER_CID` 填錯時「按了沒反應」卻沒有任何錯誤。
+2. **`0x100D` 是唯一可以純廣播的**（它的回覆用 `reply_cid` 指定）。
+   其餘指令的回覆會依 `master_cid`/廣播策略走，請求本身通常要定址。
+3. **「對端的 master id」是查出來的**：`0x1101{keys="node.master_cid"}` → `1`。
+   ★ 但那是**對方**的資料（它目前回話的對象＝面板，cid `0x0001`），
+   **不是我們的 id**。我們自己的 cid 由 `MY_CID=None` 自動推導（本機 `0x3200`）。
+   把 `1` 填進 `MY_CID` 等於冒充面板 —— 這是曾犯過的錯，已改回自動。
 
 ## 5. 行為流程
 
@@ -334,6 +456,25 @@ python3 -B -m mpremote connect /dev/cu.usbmodemXXXX repl
 | `[TX] ... FAIL` | `PEER_MAC` 格式錯（長度不是 12 hex）或對方不在射程 |
 | `[GET] 沒有回覆` ×3 | 對方沒實作 `0x3103`／對方只在單播回、但你用廣播問／掉幀 |
 | `[RX] 丟棄（addr 不是本機）` | 對方回覆的 `addr` 不是 `MY_CID` 也不是 `0xFFFF` → 檢查 `MY_CID` 或把 `ADDR_FILTER=False` |
+| Traceback 停在 `pump()` 的 `_sleep_ms(2)` | 那行是主迴圈裡 CPU 待最久的地方 —— 幾乎都是 **`KeyboardInterrupt`**（Ctrl-C／`mpremote` 斷線）。看 traceback 最後一行：若是 `KeyboardInterrupt:` 就不是 bug。若是別的例外，現在會印出來並計入 `_STATS`，程式會繼續跑 |
+
+### 7.1 主迴圈不會因為例外而死
+
+無顯示、無人看守的裝置最怕「停在 traceback 上，使用者只看到按了沒反應」。所以：
+
+**按鍵路徑不等一個不回話的對端**（實測：那塊對端沒實作 `0x3103`）：
+
+| 情況 | 按鍵時的行為 |
+|---|---|
+| `_PEER_RESPONDS` 未知／`True` | `MODE_SET` → 等 `CONFIRM_DELAY_MS` → `GET` 確認（約 300ms） |
+| `_PEER_RESPONDS is False`（已知沉默） | **只送 `MODE_SET` 就完成**（毫秒級），輸出仍只有一行：`[SET] 0x0201 …（對方不回覆→不確認）` |
+| 待機背景 | 每 `PEER_PROBE_MS` 用 `quiet` 模式試一次；恢復時印 `[PROBE] 對端恢復回應 → 目前模式 0x…` 並把 `_MODE` 同步成對方的值 |
+
+| 位置 | 行為 |
+|---|---|
+| `loop()` | 每一輪都經過 `_guard()`：任何例外 → 印一次 `❌ [RUN]` ＋ `sys.print_exception`，計數 `_STATS["loop_err"]`，睡 50ms 後**繼續跑** |
+| `pump()` | 單幀處理出錯 → 只跳過那一幀（`_STATS["rx_err"]`），接收路徑不停擺；壞資料不會被放進結果 |
+| 查詢 | REPL 打 `_STATS` 看兩個計數器；`_STATS["loop_err"] > 0` 就代表有東西在出錯 |
 
 ---
 
@@ -357,7 +498,7 @@ python3 -B -m mpremote connect /dev/cu.usbmodemXXXX repl
 python3 -B test/protocol/test_c6_remote.py
 ```
 
-186 項，全部不需要硬體：
+196 項，全部不需要硬體：
 
 | 節 | 覆蓋 |
 |---|---|
@@ -368,6 +509,7 @@ python3 -B test/protocol/test_c6_remote.py
 | §7 | MAC 字串 → bytes（espnow 只吃 6-byte） |
 | §8 | 與權威 `StreamParser` **雙向**互解 |
 | §9 | **配對層**：`0x100D`/`0x3105` payload 與權威 `SchemaCodec` 比對、`0x100E`/`0x1002` 解碼（UTF-8／空字串／截斷）、`str_u16len` 邊界、`None` 安全（`_cid_or_bcast`/`_addr_ok`）、廣播/單播判定、掃描預設值 |
+| §12 | **韌性**：`_guard()` 吞掉例外並計數、`_loop_step()` 在按鈕未建好時安全返回、`pump()` 遇到壞幀只跳過那一幀且不污染結果 |
 | §11 | **參數驗證**：`_parse_cid` 的合法/非法寫法（含 `"0x0002"`、`65536`、`True`、`1.5`）、`resolve_target` 遇到看不懂的 cid 會退回廣播、`_validate_config()` 對 21 種壞設定的抓錯、⚠️ 與 ❌ 的分界、有 ❌ 時拒絕啟動 |
 | §10 | **端到端（假射頻）**：真的跑 `radio_init()`/`boot_sync()`/`on_button_*`/`scan()`/`listen()`/`main()` —— 驗證送出的位元組、`_MODE` 狀態、逾時後備、單播切換、定向回覆與 `ADDR_FILTER`、按鈕去抖／短按／長按、以及**全預設（三個位址都 None）開機不丟例外** |
 
@@ -439,3 +581,22 @@ python3 -B test/protocol/test_c6_remote.py
 原則：**熱路徑不做轉換、開機一次講清楚。**
 （舊版 `_cid_or_bcast()` 用 `int(v)` 硬吞，等於把錯誤延後到最不方便的時刻，
 或更糟 —— 讓它永遠不出現。）
+
+### 10.5 「CPython 可以、MicroPython 不行」——離線測試抓不到的那一類
+
+真機抓到、離線全綠也看不到的 bug：
+
+| 寫法 | CPython | MicroPython | 後果 |
+|---|---|---|---|
+| `del buf[:n]`（bytearray slice 刪除） | ✅ | ❌ `TypeError: 'bytearray' object doesn't support item deletion` | **收到任何一幀都炸** → 開機同步永遠逾時、掃描永遠掃不到（而且 log 只有一行） |
+
+修法：照 `slave/lib/sys/proto.py`（已在真機驗證）的作法 —— **緩衝區只增不刪**，
+用 `start`/`end` 兩個偏移表示有效範圍，`feed()` 時把未消費的尾巴搬到前面（slice 賦值）。
+
+防復發（`test/protocol/test_c6_remote.py`）：
+
+1. **portability lint**：FrameRx 內不允許出現以 `del ` 開頭的程式行（註解不算）。
+2. **兩個最大幀一次餵入**：走緩衝區擴充 + 搬移路徑，證明不靠刪除也能解。
+
+> 教訓：離線測試證明的是「邏輯對」，不是「MicroPython 跑得動」。
+> 凡是碰到 `bytearray`/`memoryview`/切片/`del`，都要假設 CPython 與 MicroPython 不一樣。

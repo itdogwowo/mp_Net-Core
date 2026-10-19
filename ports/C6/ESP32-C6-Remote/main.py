@@ -1,4 +1,5 @@
-# main.py — ESP32-C6 無顯示兩鍵遙控器（NC4 協議 / ESP-NOW 傳輸）
+# main.py — 無顯示兩鍵遙控器（NC4 協議 / ESP-NOW 傳輸）
+#    實測平台：ESP32-S3（MicroPython 1.29）；ESP32-C6 亦可用，只有 GPIO 編號不同
 # ══════════════════════════════════════════════════════════════════════
 # 角色：**遙控器**。只發指令，不執行任何模式（不跑 slave 框架、不跑 Router、
 #       不跑 UI）。整個固件就是這一個檔案。
@@ -33,6 +34,8 @@
 # 檔案：ports/C6/ESP32-C6-Remote/main.py（獨立固件，不覆蓋 slave/）
 # ══════════════════════════════════════════════════════════════════════
 
+import os
+import sys
 import time
 import struct
 import binascii
@@ -60,8 +63,10 @@ except ImportError:                      # pragma: no cover
 #    F. 時序與除錯    CONFIRM_AFTER_SET / CONFIRM_DELAY_MS / RSP_TIMEOUT_MS / RETRIES / ADDR_FILTER / DEBUG
 
 # ══ A. 按鈕接線（兩顆都接 GND：內部上拉、按下＝低電位）══════════
-BTN_MOVABLE_PIN = 2         # ★ 按鈕1「進入可動模式」接哪個 GPIO ← 改成你實際接的
-BTN_NEXT_PIN    = 3         # ★ 按鈕2「下一個模式 +1」接哪個 GPIO ← 改成你實際接的
+BTN_MOVABLE_PIN = 11        # ★ 按鈕1「進入可動模式」接哪個 GPIO ← 改成你實際接的
+BTN_NEXT_PIN    = 12        # ★ 按鈕2「下一個模式 +1」接哪個 GPIO ← 改成你實際接的
+                            #   S3 要避開：0/3/45/46（strapping）、19/20（USB）、33–37（八線 PSRAM）
+                            #   C6 要避開：8/9/15（strapping）、12/13（USB）
 BTN_ACTIVE_LOW  = True      # 接 GND → True（內部上拉，按下讀到 0）
 DEBOUNCE_MS     = 30        # 去抖時間（ms）。太小會連發、太大會漏短按
 BTN_LONG_PRESS_MS = 3000    # 按住按鈕1 幾 ms = 觸發 scan()（None = 停用長按）
@@ -71,17 +76,20 @@ BTN_LONG_PRESS_MS = 3000    # 按住按鈕1 幾 ms = 觸發 scan()（None = 停�
 CHANNEL = 6                 # Wi-Fi 頻道 1~13。**必須與對方完全相同**，否則一幀都收不到
 
 # ── 對方（要控制的執行裝置）——**沒確認過就保持 None，不要填猜的值** ──
-PEER_MAC = None             # 對方的 STA MAC（12 個 hex，可含 : - 或空白）。
-                            #   ★ None（**預設**）= 還沒確認 → 廣播（保證一定送得到）
-                            #   要單播才填：先 scan()，它會把該填的值直接印出來給你複製
-                            #   （填 "ffffffffffff" 等於明寫「射頻廣播」）
-PEER_CID = None             # 對方的協議位址（cid）→ 填進 NC4 幀頭 addr（對方用它判斷
-                            #   「這幀是給我的」）。★ None（**預設**）= 還沒確認 → 不能單播
-                            #   （會自動走廣播）；scan() 會把該填的值印出來
-MY_CID   = 0x0101           # 自己的協議位址 —— **這是你自己挑的，不是掃出來的**。
-                            #   只有「要當 master（PAIR_AS_MASTER）」或「要對方定向回覆
-                            #   （SCAN_REPLY_DIRECTED=True）」才需要（別跟對方撞號）。
-                            #   None = 不用這些功能（＝只收廣播）
+PEER_MAC = "a0f262eaeb04"   # 對方的 STA MAC（12 個 hex，可含 : - 或空白）
+                            #   ★ 目前值＝2026-10 真機 scan() 掃到的節點 A0:F2:62:EA:EB:04
+                            #   None = 沒確認 → 廣播；"ffffffffffff" = 明寫射頻廣播
+PEER_CID = 0xEB04           # 對方的協議位址（cid）→ 填進 NC4 幀頭 addr
+                            #   ★ 目前值＝該節點的 cid（＝MAC 末四碼 EB04，scan() 印出來的）
+                            #   None = 沒確認 → 不能單播（會自動走廣播）
+MY_CID   = None             # **我們自己的**協議位址（跟「對方認誰當 master」無關）
+                            #   ★ None（預設）= 照專案規則自動決定：自己 MAC 末 4 碼
+                            #     （`ConfigManager.ensure_cID()` 用的就是這條）。
+                            #     本機 e4:b3:23:f9:32:00 → "3200" → 0x3200（開機會印出來）。
+                            #   ★ 要覆寫才填（0..0xFFFF）。
+                            #   ⚠️ **不要把 `0x1101{node.master_cid}` 查到的值填進來**！
+                            #     那是「對端目前回話的對象」（＝面板，cid 0x0001）——是**對方的**
+                            #     資料，不是我們的 id。填進去等於冒充面板。
                             #   ★ 這是「我們自己的 cid」**唯一**的存放處，沒有第二個地方要填
 
 # ── 「這一幀送給誰」——**只有這一個地方決定** ────────────────────
@@ -122,6 +130,10 @@ SCAN_REPLY_DIRECTED = False # 對方那封回信要「只有我們收」嗎？�
                             #   ★ 這裡只決定「要不要定向」；**cid 的值一律來自 MY_CID**，
                             #     不在這裡再填一次（同一個事實只有一個家）
 SCAN_WINDOW_MS = 800        # 抖動視窗：對方會隨機延遲 0~此值才回（避免同時回話碰撞）
+HELLO_WINDOW_MS = 400       # 開機「破冰點名」的視窗（不用像手動掃描那麼久）
+PEER_PROBE_MS = 5000        # 對端已知不回覆時，背景每隔幾 ms 試探一次它是否恢復
+                            #   （0 = 停用）。目的：按鍵路徑不要為了一個不說話的
+                            #   對端每次卡 RSP_TIMEOUT_MS；探測改在待機時做。
 SCAN_FORCE = True           # 每次掃描都要求重新自我介紹（對方對同一個問的人只回第一次）
 
 # ══ E. 回饋 LED（不用就設 LED_PIN = None）══════════════════════
@@ -207,49 +219,87 @@ def nc4_pack(cmd, payload=b"", addr=ADDR_BROADCAST):
 
 
 class FrameRx:
-    """NC4 串流解析（SOF 重同步 + CRC 驗證），只留這台遙控器需要的部分。
+    """NC4 串流解析（SOF 重同步 + CRC 驗證）。**零刪除**，用 start/end 偏移。
 
-    與 proto.py 的 StreamParser 同策略：找不到 SOF 就前移 1 byte 續找、
-    長度不足就等更多資料、CRC 錯就當前移 1 byte（視為錯位資料）。
+    ══════════════════════════════════════════════════════════════════
+    ★★ 為什麼不能用 `del buf[:n]`（**真機實測**，2026-10）
+    ══════════════════════════════════════════════════════════════════
+    CPython 的 bytearray 支援 slice 刪除，所以離線測試全綠；但 **MicroPython
+    的 bytearray 不支援**：
+
+        TypeError: 'bytearray' object doesn't support item deletion
+
+    後果是**收到任何一幀都炸**（pop() 無法丟棄已消費的位元組）→ 開機同步永遠
+    逾時、掃描永遠掃不到東西，而且 log 只有一行看不出所以然。
+    → 照 `slave/lib/sys/proto.py`（已在真機驗證）的作法：緩衝區只增不刪，
+      用 `start`/`end` 兩個偏移表示「有效範圍」，`feed()` 時把未消費的尾巴
+      搬到前面（slice 賦值，不是刪除）。
     """
 
     def __init__(self, max_len=MAX_PAYLOAD):
-        self.buf = bytearray()
+        self.buf = bytearray(max_len + HDR_LEN + CRC_LEN + 8)
+        self.start = 0          # 有效資料起點
+        self.end = 0            # 有效資料終點
         self.max_len = max_len
 
+    def _compact(self):
+        """把未消費的尾巴搬到緩衝區前面（**不刪除**，只覆寫）。"""
+        if self.start:
+            keep = self.end - self.start
+            if keep:
+                self.buf[0:keep] = self.buf[self.start:self.end]
+            self.start = 0
+            self.end = keep
+
     def feed(self, data):
-        self.buf.extend(data)
+        self._compact()
+        n = len(data)
+        need = self.end + n
+        if need > len(self.buf):                 # 單幀上限內不會發生，防禦性擴充
+            nb = bytearray(need)
+            nb[0:self.end] = self.buf[0:self.end]
+            self.buf = nb
+        self.buf[self.end:need] = data
+        self.end = need
 
     def pop(self):
         """撈出一個完整幀 → (ver, addr, cmd, payload)；沒有完整幀回 None。"""
-        b = self.buf
-        while True:
-            i = b.find(SOF)
-            if i < 0:
-                if len(b) > 1:               # 留最後 1 byte（可能是 'N'）
-                    del b[:len(b) - 1]
+        buf = self.buf
+        while (self.end - self.start) >= HDR_LEN:
+            idx = buf.find(SOF, self.start, self.end)
+            if idx < 0:
+                self.start = 0
+                self.end = 0
                 return None
-            if i > 0:
-                del b[:i]
-            if len(b) < HDR_LEN:
-                return None
-            ver = b[2]
-            ln = b[7] | (b[8] << 8)
+            if idx != self.start:
+                self.start = idx
+                if (self.end - self.start) < HDR_LEN:
+                    return None
+            s = self.start
+            ver = buf[s + 2]
+            ln = buf[s + 7] | (buf[s + 8] << 8)
             if ver != VER or ln > self.max_len:
-                del b[:1]                    # 錯位 → 前移 1 byte 續找
+                self.start += 1                  # 錯位：前移 1 byte 續找
                 continue
             total = HDR_LEN + ln + CRC_LEN
-            if len(b) < total:
-                return None
-            crc = b[9 + ln] | (b[10 + ln] << 8) | (b[11 + ln] << 16) | (b[12 + ln] << 24)
-            if crc != _crc32(b[2:HDR_LEN + ln]):
-                del b[:1]
+            if (self.end - self.start) < total:
+                return None                      # 等更多資料
+            pe = s + HDR_LEN + ln
+            crc = (buf[pe] | (buf[pe + 1] << 8) | (buf[pe + 2] << 16) | (buf[pe + 3] << 24))
+            if crc != _crc32(buf[s + 2:pe]):
+                self.start += 1                  # CRC 錯：視為錯位資料
                 continue
-            addr = b[3] | (b[4] << 8)
-            cmd = b[5] | (b[6] << 8)
-            payload = bytes(b[HDR_LEN:HDR_LEN + ln])
-            del b[:total]
+            addr = buf[s + 3] | (buf[s + 4] << 8)
+            cmd = buf[s + 5] | (buf[s + 6] << 8)
+            payload = bytes(buf[s + HDR_LEN:pe])
+            s += total
+            if s == self.end:
+                self.start = 0
+                self.end = 0
+            else:
+                self.start = s
             return (ver, addr, cmd, payload)
+        return None
 
 
 def mode_set_payload(mode16, brightness=None, start_delay_ms=None):
@@ -423,6 +473,29 @@ def _cid_str(v):
     return "未填" if n is None else "0x{:04X}".format(n)
 
 
+def _derive_my_cid(mac_bytes_6=None):
+    """自己的 cid → `(值, 來源說明)`。**照專案規則，不猜**。
+
+    規則（`slave/lib/sys/ConfigManager.py::ensure_cID`）：
+      `System.cID` 空著 → 用 `machine.unique_id()` 的 hex **末 4 碼**，
+      例：`e4b323f93200` → `"3200"` → `0x3200`。
+    這裡多一個選擇：`MY_CID` 有填就覆寫（例如要跟另一台 master 區分）。
+    """
+    n, err = _parse_cid(MY_CID)
+    if n is not None:
+        return n, "MY_CID 指定"
+    if err:
+        return ADDR_BROADCAST, "MY_CID 看不懂：" + err
+    if mac_bytes_6 is None:
+        mac_bytes_6 = _MY_MAC
+    if mac_bytes_6:
+        try:
+            return int(bytes(mac_bytes_6).hex().upper()[-4:], 16), "自己 MAC 末 4 碼"
+        except Exception:
+            pass
+    return ADDR_BROADCAST, "取不到自己的 MAC"
+
+
 def _addr_ok(addr):
     """這一幀是不是「給本機」的？＝ `ADDR_FILTER` 的判定（抽出來才測得到）。
 
@@ -430,7 +503,7 @@ def _addr_ok(addr):
     """
     if not ADDR_FILTER:
         return True
-    return addr == ADDR_BROADCAST or addr == _cid_or_bcast(MY_CID)
+    return addr == ADDR_BROADCAST or addr == _MY_CID16
 
 
 def _validate_config():
@@ -512,10 +585,7 @@ def _validate_config():
                         .format(name, val))
 
     # ── 交叉檢查（型別都對，但組合起來是空轉）──
-    if PAIR_AS_MASTER and _parse_cid(MY_CID)[0] is None:
-        warns.append("PAIR_AS_MASTER=True 但 MY_CID 沒填 → 開機不會送 0x1016")
-    if SCAN_REPLY_DIRECTED and _parse_cid(MY_CID)[0] is None:
-        warns.append("SCAN_REPLY_DIRECTED=True 但 MY_CID 沒填 → 掃描會用廣播回覆")
+    # MY_CID=None 是**正常**的（＝照專案規則由自己的 MAC 推導），不是缺漏。
     if PEER_MAC not in (None, "") and mac_bytes(PEER_MAC) is not None \
             and _parse_cid(PEER_CID)[0] is None:
         warns.append("PEER_MAC 填了但 PEER_CID 沒填 → 還是廣播（單播要兩層齊備）")
@@ -700,9 +770,16 @@ _RX = FrameRx()
 _BTNS = []
 _LED = Led(None)        # 空物件（不點燈）：REPL 直接呼叫 scan()/do_set_mode() 也不會炸
 _PEER_MAC_B = None
+_PEER_MAC_ERR = "沒填"   # PEER_MAC 不可用的原因（radio_init 更新）；"" = 可用
 _MY_MAC = None
+_MY_CID16 = ADDR_BROADCAST   # 解析後的自己的 cid（radio_init 決定；未決定前＝只收廣播）
 _MODE = BOOT_MODE
 _HELLO_DONE = False     # 「破冰」（SEND_TARGET="first" 的第一幀）做過了沒
+_STATS = {"loop_err": 0, "rx_err": 0}   # 被護欄吞掉的例外數（REPL 打 _STATS 可查）
+_LAST_PROBE = 0         # 上次背景探測的 ticks_ms
+_PEER_RESPONDS = None   # 對端最近一輪有沒有回覆：None=未知 / True / False
+                        #   → False 時每次 GET 只試 1 次（不要為了一個已知不回話的
+                        #     對端，每按一次鈕就卡 3×RSP_TIMEOUT_MS）
 
 
 def mac_bytes(s):
@@ -731,7 +808,7 @@ def radio_init():
     ★ ESP-NOW 綁的是 **STA** 介面（不是 AP）。沒開 STA 時 add_peer/send 都可能
       「成功」但其實送不出去 —— 典型的靜默失敗。
     """
-    global _RADIO, _PEER_MAC_B, _MY_MAC
+    global _RADIO, _PEER_MAC_B, _PEER_MAC_ERR, _MY_MAC
     if espnow is None or network is None:
         print("❌ 這個固件沒有 espnow/network 模組（請換含 ESP-NOW 的 MicroPython 版本）")
         return False
@@ -749,26 +826,59 @@ def radio_init():
         e = espnow.ESPNow()
         e.active(True)
         e.add_peer(BCAST_MAC)                       # 收廣播必須註冊廣播位址
-        _PEER_MAC_B = mac_bytes(PEER_MAC)
-        if _PEER_MAC_B is None:
-            if PEER_MAC in (None, ""):
-                print("ℹ️  PEER_MAC 沒填 → 走廣播（先 scan() 找對方，再填進來改單播）")
-            else:
-                print("⚠️ PEER_MAC 格式不合法：{!r} → 退回廣播"
-                      "（不會靜默單播到不存在的位址）".format(PEER_MAC))
-        elif _PEER_MAC_B == BCAST_MAC:
-            print("ℹ️  PEER_MAC = 廣播位址 → 走廣播")
-        else:
-            e.add_peer(_PEER_MAC_B)                 # 單播前必須先把對方加進 peer 表
-        if _PEER_MAC_B is not None and _PEER_MAC_B != BCAST_MAC \
-                and _parse_cid(PEER_CID)[0] is None:
-            print("⚠️ PEER_MAC 填了但 PEER_CID 沒填 → 還是廣播（單播要兩層齊備；"
-                  "掃描時 cid 才會印出來）")
-        _RADIO = e
-        try:
+        try:                                        # ★ 先讀自己的 MAC：下面要用它擋「填到自己」
             _MY_MAC = bytes(sta.config("mac"))
         except Exception:
             _MY_MAC = None
+
+        # ── 自己的 cid（master 的 ID）：照專案規則由 MAC 推導，不猜 ──────
+        global _MY_CID16
+        _MY_CID16, _cid_src = _derive_my_cid(_MY_MAC)
+        print("ℹ️  自己的 cid = 0x{:04X}（{}）".format(_MY_CID16, _cid_src))
+
+        # ── PEER_MAC 的四種情況（單一鏈，最後只有「可用」才 add_peer）────────
+        _PEER_MAC_B = mac_bytes(PEER_MAC)
+        if _PEER_MAC_B is None:
+            if PEER_MAC in (None, ""):
+                _PEER_MAC_ERR = "沒填"
+                print("ℹ️  PEER_MAC 沒填 → 走廣播（先 scan() 找對方，再填進來改單播）")
+            else:
+                _PEER_MAC_ERR = "格式錯"
+                print("⚠️ PEER_MAC 格式不合法：{!r} → 退回廣播"
+                      "（不會靜默單播到不存在的位址）".format(PEER_MAC))
+        elif _PEER_MAC_B == BCAST_MAC:
+            _PEER_MAC_ERR = ""
+            print("ℹ️  PEER_MAC = 廣播位址 → 走廣播")
+        elif _MY_MAC and _PEER_MAC_B == _MY_MAC:
+            # ★ 把自己的 MAC 填進 PEER_MAC 是很容易犯的錯（兩個 MAC 都印在 log 上）：
+            #   單播打到自己 → 自己的幀又被自己收到 → log 一團亂、對方永遠沒收到。
+            #   這是不可能正確的設定，所以直接退回廣播並講清楚。
+            _PEER_MAC_ERR = "是自己的 MAC"
+            print("❌ PEER_MAC = 你自己的 MAC（{}）—— 那是我方，不是對方！"
+                  "→ 退回廣播（請填掃描到的『對方』MAC）".format(_mac_str(_MY_MAC)))
+            _PEER_MAC_B = None
+        else:
+            _PEER_MAC_ERR = ""
+            e.add_peer(_PEER_MAC_B)                 # 單播前必須先把對方加進 peer 表
+
+        _pcid = _parse_cid(PEER_CID)[0]
+        if _PEER_MAC_B is not None and _PEER_MAC_B != BCAST_MAC:
+            # ★ 交叉檢查：cid 通常是 MAC 末四碼（ensure_cID）。不同不一定是錯
+            #   （對方可能設過 System.cID），但**填錯時完全沒症狀**，所以印出來對一眼。
+            try:
+                _suffix = int(_PEER_MAC_B.hex().upper()[-4:], 16)
+            except Exception:
+                _suffix = None
+            if _pcid is None:
+                print("ℹ️  peer = {} ／ cid 未填 → 只能廣播".format(_mac_str(_PEER_MAC_B)))
+            elif _suffix == _pcid:
+                print("ℹ️  peer = {} ／ cid 0x{:04X}（＝MAC 末四碼 ✓）".format(
+                    _mac_str(_PEER_MAC_B), _pcid))
+            else:
+                print("ℹ️  peer = {} ／ cid 0x{:04X}（MAC 末四碼是 0x{:04X}）"
+                      "—— 不同不一定是錯（對方設過 System.cID），但請確認沒填錯".format(
+                          _mac_str(_PEER_MAC_B), _pcid, _suffix or 0))
+        _RADIO = e
         try:
             ch_now = sta.config("channel")
         except Exception:
@@ -796,7 +906,7 @@ def _send_target():
     return t if t in _SEND_TARGETS else "first"
 
 
-def resolve_target(force_broadcast=False):
+def resolve_target(force_broadcast=False, ignore_hello=False, force_unicast=False):
     """決定「這一幀走哪裡」→ `(dst_mac, addr16, why)`。
 
     ★ 這是**唯一**決定廣播/單播的地方（協議 addr 與射頻 dst 一起決定，兩層不可分開想）。
@@ -817,12 +927,15 @@ def resolve_target(force_broadcast=False):
     if force_broadcast:
         return BCAST_MAC, ADDR_BROADCAST, "強制廣播"
     t = _send_target()
-    if t == "all":
-        return BCAST_MAC, ADDR_BROADCAST, 'SEND_TARGET="all"'
-    if t == "first" and not _HELLO_DONE:
-        return BCAST_MAC, ADDR_BROADCAST, "破冰（開機第一幀）"
+    if not force_unicast:                       # 綁定（0x1016）這類指令必須單播
+        if t == "all":
+            return BCAST_MAC, ADDR_BROADCAST, 'SEND_TARGET="all"'
+        if t == "first" and not _HELLO_DONE and not ignore_hello:
+            return BCAST_MAC, ADDR_BROADCAST, "破冰：開機第一幀"
     if mb is None:
-        return BCAST_MAC, ADDR_BROADCAST, "PEER_MAC 沒填/格式錯"
+        # 原因用 radio_init 記下來的（沒填／格式錯／是自己的 MAC）——同樣是廣播，
+        # 但修法完全不同，所以不要從常數猜。
+        return BCAST_MAC, ADDR_BROADCAST, "PEER_MAC " + (_PEER_MAC_ERR or "不可用")
     if mb == BCAST_MAC:
         return BCAST_MAC, ADDR_BROADCAST, "PEER_MAC=廣播位址"
     cid, cid_err = _parse_cid(PEER_CID)
@@ -832,12 +945,12 @@ def resolve_target(force_broadcast=False):
     return mb, cid, "單播"
 
 
-def tx(cmd, payload=b"", force_broadcast=False):
+def tx(cmd, payload=b"", force_broadcast=False, force_unicast=False, quiet=False):
     """送一幀（協議層 addr 與射頻層目的地由 `resolve_target()` 一起決定）。回 True/False。"""
     global _HELLO_DONE
     if _RADIO is None:
         return False
-    dst, addr, why = resolve_target(force_broadcast)
+    dst, addr, why = resolve_target(force_broadcast, force_unicast=force_unicast)
     frame = nc4_pack(cmd, payload, addr)
     try:
         ok = _RADIO.send(dst, frame)
@@ -847,7 +960,7 @@ def tx(cmd, payload=b"", force_broadcast=False):
             print("[TX] 例外：{}".format(ex))
     if ok and not force_broadcast:
         _HELLO_DONE = True      # 破冰只做一次（強制廣播的點名不算，見 scan()）
-    if DEBUG:
+    if DEBUG and not quiet:
         print("[TX] cmd=0x{:04X} addr=0x{:04X} dst={} len={} {} ({})".format(
             cmd, addr, dst.hex(), len(frame), "ok" if ok else "FAIL", why))
     return bool(ok)
@@ -885,16 +998,24 @@ def pump(ms):
         if peer is not None and data:
             _RX.feed(data)
             while True:
-                f = _RX.pop()
-                if f is None:
+                # ★ 一幀的處理出錯不該讓整個接收路徑停擺（無顯示的裝置最怕這個）：
+                #   吞掉、計數、印一次，然後跳過這一幀繼續收。
+                try:
+                    f = _RX.pop()
+                    if f is None:
+                        break
+                    f = (f[0], f[1], f[2], f[3], bytes(peer))
+                    if not _addr_ok(f[1]):       # MY_CID 沒填時只收廣播（見 _addr_ok）
+                        if DEBUG:
+                            print("[RX] 丟棄（addr 不是本機）：0x{:04X}".format(f[1]))
+                        continue
+                    _log_frame(f)
+                    out.append(f)
+                except Exception as ex:
+                    _STATS["rx_err"] += 1
+                    if _STATS["rx_err"] <= 3:    # 只印前 3 次，避免壞資料洗版
+                        print("❌ [RX] 這一幀處理失敗（已跳過）：{!r}".format(ex))
                     break
-                f = (f[0], f[1], f[2], f[3], bytes(peer))
-                if not _addr_ok(f[1]):           # MY_CID 沒填時只收廣播（見 _addr_ok）
-                    if DEBUG:
-                        print("[RX] 丟棄（addr 不是本機）：0x{:04X}".format(f[1]))
-                    continue
-                _log_frame(f)
-                out.append(f)
         _poll_buttons()
         if _ticks_diff(_ticks_ms(), deadline) >= 0:
             break
@@ -918,15 +1039,23 @@ def wait_rsp(cmd, timeout_ms=RSP_TIMEOUT_MS):
             return None
 
 
-def request_mode_get(force_broadcast=False):
-    """0x3103 MODE_GET → 等 0x3104。回 dict 或 None（重試 RETRIES 次）。"""
-    for i in range(max(1, RETRIES)):
+def request_mode_get(force_broadcast=False, quiet=False):
+    """0x3103 MODE_GET → 等 0x3104。回 dict 或 None。
+
+    ★ 重試次數是**自適應**的：對端上一次整輪都沒回覆（`_PEER_RESPONDS is False`）
+      → 這次只試 1 次。理由：已知不回話的對端，重試只是讓按鈕多卡 600ms。
+      它一開口（收到任何回覆）就自動恢復 RETRIES 次。
+    """
+    global _PEER_RESPONDS
+    tries = 1 if _PEER_RESPONDS is False else max(1, RETRIES)
+    for i in range(tries):
         flush_rx()
-        tx(CMD_MODE_GET, b"", force_broadcast=force_broadcast)
+        tx(CMD_MODE_GET, b"", force_broadcast=force_broadcast, quiet=quiet)
         p = wait_rsp(CMD_MODE_GET_RSP)
         if p is not None:
             info = decode_mode_rsp(p)
             if info:
+                _PEER_RESPONDS = True
                 if DEBUG:
                     print("[GET] 模式=0x{:04X} (type={} id={}) elapsed={}ms total={}ms running={}".format(
                         info["mode"], info["mode_type"], info["mode_id"],
@@ -934,8 +1063,13 @@ def request_mode_get(force_broadcast=False):
                 return info
             if DEBUG:
                 print("[GET] 回覆長度不足（{}B），忽略".format(len(p)))
-        if DEBUG:
-            print("[GET] 第 {}/{} 次沒有回覆".format(i + 1, RETRIES))
+        if DEBUG and not quiet:
+            print("[GET] 第 {}/{} 次沒有回覆（這是 0x3103 查詢；MODE_SET 本來就無 ACK）".format(
+                i + 1, tries))
+    if _PEER_RESPONDS is not False:
+        print("[GET] 查詢沒有回覆 → 之後每次只試 1 次查詢（它一開口就自動恢復 {} 次）".format(
+            RETRIES))
+    _PEER_RESPONDS = False
     return None
 
 
@@ -948,10 +1082,13 @@ def do_set_mode(mode16, tag=""):
     global _MODE
     _MODE = mode16
     tx(CMD_MODE_SET, mode_set_payload(mode16))
-    print("[SET] {}0x{:04X} (type={} id={} bri={} delay={}ms)".format(
+    # 對端已知不回覆時，不要在按鍵路徑上等確認 → 併成同一行輸出（按一次鍵 = 一行）
+    _skip = CONFIRM_AFTER_SET and _PEER_RESPONDS is False
+    print("[SET] {}0x{:04X} (type={} id={} bri={} delay={}ms){}".format(
         (tag + " ") if tag else "", mode16, (mode16 >> 8) & 0xFF, mode16 & 0xFF,
-        BRIGHTNESS, START_DELAY_MS))
-    if CONFIRM_AFTER_SET:
+        BRIGHTNESS, START_DELAY_MS,
+        "（已知查詢不回覆→不確認）" if _skip else ""))
+    if CONFIRM_AFTER_SET and _PEER_RESPONDS is not False:
         _sleep_ms(CONFIRM_DELAY_MS)
         info = request_mode_get()
         if info is not None:
@@ -963,7 +1100,8 @@ def do_set_mode(mode16, tag=""):
                 print("[SET] ⚠️ 對方回報 0x{:04X}（不是 0x{:04X}）→ 以對方為準".format(_MODE, mode16))
                 _LED.err()
         else:
-            print("[SET] ⚠️ 確認逾時 → 本地保留 0x{:04X}（16-bit +1 後備）".format(_MODE))
+            print("[SET] ⚠️ 確認查詢逾時（0x3103 無回覆）→ 本地保留 0x{:04X}"
+                  "（16-bit +1 後備）".format(_MODE))
             _LED.err()
     else:
         _LED.tx()
@@ -1026,14 +1164,13 @@ def _print_found(found):
           "（不填就維持廣播：沒對象就對全部講）")
     print("  ★ 單播時對方也要認識我們，把本機 MAC 給對方：my_mac = {}".format(
         _mac_str(_MY_MAC) if _MY_MAC else "?"))
-    if MY_CID is None:
-        print("  ★ MY_CID 是**你自己挑的**（不是掃出來的），只有要當 master"
-              "（PAIR_AS_MASTER）或要定向回覆時才需要：挑一個不等於上面 cid 的值")
+    print("  ★ 我的 cid = 0x{:04X}（{}）—— 綁定（pair()）時會用這個值；"
+          "對方就是記這個來回信".format(_MY_CID16, _derive_my_cid()[1]))
     print("  ★ 本檔只印不套用；改完記得重新上傳 main.py 或按 reset")
     print("─" * 64)
 
 
-def scan(window_ms=SCAN_WINDOW_MS, reply_cid=None, force=None):
+def scan(window_ms=SCAN_WINDOW_MS, reply_cid=None, force=None, quiet=False):
     """手動探索：廣播 0x100D 點名 → 收集 0x100E → 印出可複製的 PEER_MAC / PEER_CID。
 
     ★ reply_cid 預設 0xFFFF（＝**廣播回覆**）：對方回的 0x100E 在射頻層也是廣播，
@@ -1049,18 +1186,18 @@ def scan(window_ms=SCAN_WINDOW_MS, reply_cid=None, force=None):
     if window_ms is None:
         window_ms = SCAN_WINDOW_MS
     if reply_cid is None:
-        if SCAN_REPLY_DIRECTED and MY_CID is not None:
-            reply_cid = _cid_or_bcast(MY_CID)       # 定向：回信只寄給我們
+        if SCAN_REPLY_DIRECTED:
+            reply_cid = _MY_CID16                   # 定向：回信只寄給我們（自己的 cid）
+            if reply_cid == ADDR_BROADCAST:
+                print("⚠️ SCAN_REPLY_DIRECTED=True 但自己的 cid 取不到 → 改用廣播回覆")
         else:
-            if SCAN_REPLY_DIRECTED:
-                print("⚠️ SCAN_REPLY_DIRECTED=True 但 MY_CID 沒填 → 改用廣播回覆")
             reply_cid = ADDR_BROADCAST              # 廣播回覆：不需配對就收得到（預設）
     if force is None:
         force = SCAN_FORCE
     flush_rx()
     print("[SCAN] 廣播 0x100D IDENTIFY_REQ{{reply_cid=0x{:04X}, window={}ms, force={}}} …".format(
         reply_cid, window_ms, 1 if force else 0))
-    if _LED:
+    if _LED and not quiet:
         _LED.blink(2, 30, 60, (0, 255, 255))     # 青閃×2 = 開始掃描（無顯示時的提示）
     # ★ 點名**一律廣播**（force_broadcast）：它是「問全部『你是誰』」，
     #   不是「問我認識的那台還在不在」。少了這個，配對之後掃描會變成單播 →
@@ -1076,8 +1213,16 @@ def scan(window_ms=SCAN_WINDOW_MS, reply_cid=None, force=None):
             info = _report_frame(f)
             if info is not None and f[2] == CMD_IDENTIFY_RSP and src:
                 found[bytes(src)] = info
-    _print_found(found)
-    if _LED:
+    if quiet:
+        # 開機破冰用：只印一行，不要整段「可複製位址」
+        if found:
+            print("[SCAN] 點名 → {} 台：{}".format(len(found), "，".join(
+                "{} cid=0x{:04X}".format(_mac_str(m), i["cid"]) for m, i in found.items())))
+        else:
+            print("[SCAN] 點名 → 沒有回應")
+    else:
+        _print_found(found)
+    if _LED and not quiet:
         if found:                                # 綠閃×N = 掃到 N 台（最多 5 下）
             _LED.blink(min(len(found), 5), 60, 120, (0, 255, 0))
         else:
@@ -1112,6 +1257,69 @@ def listen(sec=15):
 
 
 # ══════════════════════════════════════════════════════════════════
+#  ④·6 查詢與綁定（專案流程：掃描 → **綁定** → 操作）
+# ══════════════════════════════════════════════════════════════════
+#  ★ 為什麼一定要綁定（0x1016）才收得到回覆：專案的 `_reply()` 把回應的 addr
+#    預設填成 `bus.master_cid`（`slave/action/net_actions.py`）—— 也就是「寄給它
+#    認定的 master」。**唯一例外是 0x100E**（用 reply_cid 明確指定），所以
+#    「掃描得到、其他指令沒人回」正是「還沒綁定」的正常症狀。
+
+def query_node(keys="node.master_cid"):
+    """0x1101 STATUS_GET → 0x1102 STATUS_RSP：**用指令**讀對端的具名狀態。
+
+    `node.master_cid` 就是「它現在認誰當 master」—— 這就是「用指令取得 master 的 ID」。
+    `0x1016` 沒有 ACK，所以綁定到底成不成功，也只能靠這條查回來（專案文件 §8.3）。
+
+    ★ 真機實測（2026-10）：這塊對端**只認得 `node.master_cid` 這一個 key**
+      （`slave_id`、`?`、`System.cID`、逗號多 key 全部無回覆）→ 預設只問這一個。
+      回覆是**廣播**（addr=0xFFFF），所以不需要綁定也收得到；
+      但**請求**必須定址到它的 cid（`addr=PEER_CID`），填錯就靜默無回覆。
+    """
+    if _RADIO is None:
+        print("[QUERY] 射頻沒起來")
+        return None
+    flush_rx()
+    data = keys.encode() if hasattr(keys, "encode") else bytes(keys)
+    payload = struct.pack("<H", len(data)) + data
+    tx(0x1101, payload)
+    p = wait_rsp(0x1102, RSP_TIMEOUT_MS * 2)
+    if p is None:
+        print("[QUERY] 沒有回覆 —— 若還沒綁定，這是**正常**的"
+              "（對方的回信寄給它目前的 master，不是寄給我們）")
+        return None
+    txt, _ = decode_str_u16len(p, 0)
+    print("[QUERY] {}".format(txt))
+    return txt
+
+
+def pair(verify=True):
+    """0x1016 SET_MASTER：把**對方**的方向設成「回話回給我」＝專案流程的『綁定』。
+
+    ★ 刻意**只做手動呼叫**（REPL 打 `pair()`）：它會改對方的持久狀態
+      （btree `@node.master_cid`），而且會**搶走它現在的 master**。
+    ★ 必須**單播**：廣播會讓射頻範圍內每一台都認你當 master
+      （專案文件記載過的真實事故，`doc/02_guides/18_node_discovery.md` §3）。
+    ★ 沒有 ACK：所以預設用 `query_node()` 查回來確認。
+    """
+    if _PEER_MAC_B is None or _PEER_MAC_B == BCAST_MAC:
+        print("❌ 綁定必須單播：先填 PEER_MAC/PEER_CID（scan() 會把值印出來）")
+        return False
+    print("[PAIR] 0x1016 SET_MASTER{{master_cid=0x{:04X}}} → {}".format(
+        _MY_CID16, _mac_str(_PEER_MAC_B)))
+    tx(CMD_SET_MASTER, struct.pack("<H", _MY_CID16), force_unicast=True)
+    if not verify:
+        return True
+    _sleep_ms(CONFIRM_DELAY_MS)
+    got = query_node()
+    if got is None:
+        print("[PAIR] ⚠️ 查不到（可能被拒絕：對方本次開機已被別的 master 認領，"
+              "或它沒有 0x1101）")
+        return False
+    print("[PAIR] ✅ 查得到回覆 → 方向已生效")
+    return True
+
+
+# ══════════════════════════════════════════════════════════════════
 #  ⑤ 主流程
 # ══════════════════════════════════════════════════════════════════
 
@@ -1130,20 +1338,34 @@ def boot_sync():
     _MODE = BOOT_MODE
     print("[BOOT] 本地預設模式 = 0x{:04X}".format(_MODE))
     if PAIR_AS_MASTER:
-        my_cid, my_err = _parse_cid(MY_CID)
-        if my_cid is None:
-            print("⚠️ PAIR_AS_MASTER=True 但 MY_CID {}→ 跳過 0x1016 SET_MASTER"
-                  "（不能拿沒填/看不懂的 cid 去告訴對方「回給我」）".format(
-                      "看不懂：" + my_err if my_err else "沒填"))
+        pair()          # 專案流程的『綁定』（單播 + 查回來確認）
+    # ── 破冰：用 0x100D 點名（廣播；**這是對方一定會回的指令**）──────────
+    #   舊版是「把第一條指令偷偷改成廣播」，但如果第一條是指令類（replies 需
+    #   定址到它的 cid），那一條就註定失敗。改成明確的 hello：順便核對它的 cid。
+    global _HELLO_DONE
+    if _send_target() == "first" and not _HELLO_DONE and _PEER_MAC_B is not None \
+            and _PEER_MAC_B != BCAST_MAC:
+        found = scan(window_ms=HELLO_WINDOW_MS, force=True, quiet=True)
+        _HELLO_DONE = True
+        _expect = _parse_cid(PEER_CID)[0]
+        _hit = [i for m, i in found if bytes(m) == _PEER_MAC_B]
+        if _hit:
+            if _expect is not None and _hit[0]["cid"] != _expect:
+                print("⚠️ 對方的 cid 變了：檔頭 0x{:04X} → 實際 0x{:04X}"
+                      "（請更新 PEER_CID）".format(_expect, _hit[0]["cid"]))
+            else:
+                print("[BOOT] 對方在線（{} cid 0x{:04X} ✓）".format(
+                    _mac_str(_PEER_MAC_B), _hit[0]["cid"]))
         else:
-            tx(CMD_SET_MASTER, struct.pack("<H", my_cid))
+            print("[BOOT] ⚠️ 點名沒有回應（對方沒開／頻道不同／射程外）")
+
     info = request_mode_get()
     if info is not None:
         _MODE = info["mode"]
         print("[BOOT] ✅ 取得對方目前模式 0x{:04X}".format(_MODE))
         _LED.ok()
     else:
-        print("[BOOT] ⚠️ 沒有回覆 → 沿用本地預設 0x{:04X}"
+        print("[BOOT] ⚠️ 模式查詢（0x3103）沒有回覆 → 沿用本地預設 0x{:04X}"
               "（之後 +1 以 {} 為基準）".format(
                   _MODE, "0x{:04X}".format(STEP_BASE_IF_UNKNOWN)
                   if STEP_BASE_IF_UNKNOWN is not None else "本地值"))
@@ -1151,23 +1373,72 @@ def boot_sync():
     _LED.show_mode(_MODE)
 
 
+def _loop_step():
+    """主迴圈的**一次**內容（探測 → 按鈕 → 收幀）。例外交給 loop() 的護欄。"""
+    global _LAST_PROBE, _MODE
+    if not _BTNS:
+        _sleep_ms(10)
+        return
+    # ── 背景探測：對端已知沉默時，每隔 PEER_PROBE_MS 試一次它是否恢復 ──
+    #   ★ 為什麼不放在按鍵路徑：按一下鈕要等 RSP_TIMEOUT_MS 才完成，手感很差；
+    #     而「它有沒有回來」跟「你按了什麼」無關 → 放待機時做。
+    if PEER_PROBE_MS and _PEER_RESPONDS is False \
+            and _ticks_diff(_ticks_ms(), _LAST_PROBE) >= PEER_PROBE_MS:
+        _LAST_PROBE = _ticks_ms()
+        info = request_mode_get(quiet=True)     # 探測失敗不洗版，只有成功才出聲
+        if info is not None:
+            _MODE = info["mode"]
+            print("[PROBE] 對端恢復回應 → 目前模式 0x{:04X}".format(_MODE))
+            _LED.ok()
+    if _BTNS[0].long_pressed():              # 長按＝掃描（同一次按壓不會又切模式）
+        scan()
+    elif _BTNS[0].pressed():                 # 短按＝進入可動模式
+        on_button_movable()
+    if len(_BTNS) > 1 and _BTNS[1].pressed():
+        on_button_next()
+    pump(10)                                 # 收下任何主動進來的幀（公告等）
+
+
+def _guard(step):
+    """跑一次 `step`，**任何例外都不讓它冒出去** → 回 True/False。
+
+    ★ 為什麼要這個：這是**無顯示、無人看守**的裝置。一顆按鈕讀取失敗、
+      一幀資料解錯、一次記憶體不足，都不該讓整台遙控器停在 traceback 上
+      （使用者只會看到「按了沒反應」）。吞掉的例外計入 `_STATS["loop_err"]`，
+      第一次會印完整 traceback（REPL 可查），之後只計數不洗版。
+    """
+    try:
+        step()
+        return True
+    except Exception as ex:
+        _STATS["loop_err"] += 1
+        print("❌ [RUN] 主迴圈例外（已忽略並繼續）：{!r}".format(ex))
+        if _STATS["loop_err"] == 1:
+            try:
+                sys.print_exception(ex)      # MicroPython 才有
+            except Exception:
+                pass
+        _sleep_ms(50)                        # 別在錯誤裡空轉燒 CPU
+        return False
+
+
 def loop():
     print("[RUN] 待機中… 按鈕1=可動模式 0x{:04X}（長按 {}s=掃描） / 按鈕2=下一個(+{})".format(
         MOVABLE_MODE, (BTN_LONG_PRESS_MS or 0) / 1000.0, STEP))
-    print("[RUN] REPL 也可直接打：scan() / listen(15) / _MODE（目前模式）")
+    print("[RUN] REPL 也可直接打：scan() / listen(15) / pair()（綁定）/ "
+          "query_node()（查對方認誰當 master）/ _MODE / _STATS")
     while True:
-        if _BTNS[0].long_pressed():          # 長按＝掃描（同一次按壓不會又切模式）
-            scan()
-        elif _BTNS[0].pressed():             # 短按＝進入可動模式
-            on_button_movable()
-        if _BTNS[1].pressed():
-            on_button_next()
-        pump(10)                             # 收下任何主動進來的幀（公告等）
+        _guard(_loop_step)
 
 
 def main():
     global _LED, _BTNS
-    print("=== ESP32-C6 兩鍵遙控器（NC4 / ESP-NOW）===")
+    print("=== 兩鍵遙控器（NC4 / ESP-NOW，無顯示）===")
+    try:
+        _u = os.uname()
+        print("[SYS] {} / MicroPython {}".format(_u.machine, _u.release))
+    except Exception:
+        pass
     if not _report_config():        # ★ 參數先過一次總檢查，有 ❌ 就不跑
         return
     if not radio_init():
@@ -1179,12 +1450,14 @@ def main():
     except Exception as ex:
         print("❌ 按鈕初始化失敗：{}".format(ex))
         return
-    dst, _addr, why = resolve_target()
-    print("[CFG] 可動=GPIO{} / 下一個=GPIO{} / 去抖={}ms / my_cid={} / peer_cid={}".format(
-        BTN_MOVABLE_PIN, BTN_NEXT_PIN, DEBOUNCE_MS, _cid_str(MY_CID), _cid_str(PEER_CID)))
-    print("[CFG] 目前是{}（{}）".format(
-        "單播 → {}".format(dst.hex()) if why == "單播" else "廣播",
-        why))
+    # ignore_hello=True：顯示「穩定狀態」的原因（破冰只是第一幀的暫時策略）
+    dst, _addr, why = resolve_target(ignore_hello=True)
+    print("[CFG] 可動=GPIO{} / 下一個=GPIO{} / 去抖={}ms / my_cid=0x{:04X} / peer_cid={}".format(
+        BTN_MOVABLE_PIN, BTN_NEXT_PIN, DEBOUNCE_MS, _MY_CID16, _cid_str(PEER_CID)))
+    if why == "單播":
+        print("[CFG] 目前是單播 → {}（PEER_MAC + PEER_CID 都齊了）".format(dst.hex()))
+    else:
+        print("[CFG] 目前是廣播 — {}".format(why))
     if why != "單播":
         print("[CFG] 廣播＝同頻道的每一台都會執行 MODE_SET。"
               "要只打一台 → 先 scan()，把印出的 PEER_MAC/PEER_CID 填回檔頭即可"
