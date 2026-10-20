@@ -364,12 +364,22 @@ def _radio_init():
                 pass
         sta.active(True)
         _sleep_ms(100)
-        # 第一次 init 記住原廠 MAC；own 模式要能從 spoof 切回來
+        # 原廠 MAC 一律用 machine.unique_id()：
+        # soft reboot 不會還原 STA MAC，若用 sta.config('mac') 會把冒充值當成原廠。
         try:
-            if _FACTORY_MAC is None:
+            uid = machine.unique_id()
+            if isinstance(uid, (bytes, bytearray)) and len(uid) == 6:
+                _FACTORY_MAC = bytes(uid)
+            else:
                 _FACTORY_MAC = bytes(sta.config("mac"))
         except Exception:
-            _FACTORY_MAC = None
+            try:
+                _FACTORY_MAC = bytes(sta.config("mac"))
+            except Exception:
+                _FACTORY_MAC = None
+        if _FACTORY_MAC:
+            print("[MAC] factory={}  mode={}".format(
+                _mac_str(_FACTORY_MAC), ADDRESS_MODE))
         target = None
         if SPOOF_MAC:
             target = _mac_bytes(SPOOF_MAC)

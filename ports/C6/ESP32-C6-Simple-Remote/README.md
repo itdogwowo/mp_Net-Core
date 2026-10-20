@@ -273,6 +273,9 @@ python3 -B -m mpremote connect /dev/cu.usbmodemXXXX \
 
 REPL 可即時切換（會重啟 ESP-NOW 套用 MAC）：`m.set_address_mode("own"|"spoof"|"ff")`。
 
+> `own` 的原廠 MAC 取自 **`machine.unique_id()`**，不是 `sta.config("mac")`。
+> 這樣 soft reboot 才不會把上一次的 spoof MAC 誤當成原廠（曾發生 `mode=own` 但 `my_mac=58:e6…`）。
+
 
 ### 4.1 誰是幾號（實測）
 
@@ -393,6 +396,7 @@ REPL 可即時切換（會重啟 ESP-NOW 套用 MAC）：`m.set_address_mode("ow
 | 第一次單播 `FAIL（沒 ACK）`，第二次 ok | 對方還沒認識你的 MAC；第二次已進 peer 表。屬正常 |
 | 自動掃頻道停在錯誤的頻道 | `sta.config(channel=...)` 有切換延遲；本版固定 `CHANNEL=6`，並在換頻道後等 120ms |
 | USB 一直重連／燒不進去 | 按鈕接在 GPIO12/13（USB D-/D+）→ 換腳或用 UART 埠 |
+| `mode=own` 但 `my_mac=58:e6…` | soft reboot 保留了 spoof MAC；本版改用 `machine.unique_id()` 還原，重傳 `main.py` 即可 |
 | 舊控制面板上線後行為怪異 | 它已不是 owner；Master 只認目前配對的 Mon。要換回去：目前 owner 解除 → 舊板重新綁 |
 
 ### 換 Mon（不用冒充、不用改 firmware）
