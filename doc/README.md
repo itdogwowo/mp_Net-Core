@@ -29,7 +29,7 @@
 | [07_merge_comparison.md](01_protocol/07_merge_comparison.md) | 兩套系統全景比對（含對方 RS485 catalog 留存） |
 | [08_performance_benchmark.md](01_protocol/08_performance_benchmark.md) | 網路 + 協議性能基準（甜蜜點 / 瓶頸 / 修改方法） |
 | [09_bus_speed_protocol.md](01_protocol/09_bus_speed_protocol.md) | 臨時提速（bus_speed）**完整工作流程**：協商 / 時序 / 失敗處理 / master 整合範例 |
-| [10_mon_master_pairing_contract.md](01_protocol/10_mon_master_pairing_contract.md) | **Mon ↔ Master 配對合約（給 fastLED）**：FF 可認領／解除、任何來源可解除、`pair_claimed` 只存記憶體、重啟可換手、驗收測試 |
+| [10_mon_master_pairing_contract.md](01_protocol/10_mon_master_pairing_contract.md) | **遙控器（Mon）↔ fastLED Master 配對行為（基準：主線 bus/CID）**：Mon 是遙控器（不是螢幕）、CID 可隨時改；**完整 9 步流程＋時序圖**；**0x100D 隨機回覆防撞（抖動／force／節流）**；綁定／解除（任何來源、單播或 FF）／重啟可換手；8 項驗收 |
 
 ## 02_guides — 使用教學
 
