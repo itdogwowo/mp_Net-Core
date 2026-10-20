@@ -228,3 +228,6 @@ tools/PC/mc_script.json
 
 test
 temp/
+*.pxld
+*.wav
+*.mpeg

@@ -2,7 +2,7 @@
 
 > **用途**：Pixel（模式播放）0x31xx 指令域完整定義——指令總表、`mode_type` 語義、byte 佔位、行為約定、時鐘同步。
 > **分類**：協議層（01_protocol）
-> **最後更新**：2026-08-18
+> **最後更新**：2026-10-20（`MODE_GET/RSP` 已補上 handler）
 > **權威 schema**：`slave/schema/pixel.json`（時鐘同步見 `slave/schema/sys.json`）
 > **對象**：兩邊（本專案 + fastLED master_timer_slave）共同閱讀與執行之合約文件；我方為基準，對方遷就我方實作。
 
@@ -158,8 +158,9 @@ entry (固定 2 bytes, little-endian):
   > 本行先前寫「`0`–`30`、`0xFF`=不設置」，範圍錯誤且與實作相反（實作曾把 `0` 當成 falsy 換成最亮，已修正）。
 - 收到 `MODE_SET` 即離開 DEV、離開省電、解除暫停；若在暫停中則**重頭開始**播放新模式。
 - **`MODE_SET` 不回 ACK**（不送 `MODE_GET_RSP`）。Master 若要確認結果，需另外查詢。
-  > 本行先前寫「回 `MODE_GET_RSP` 作為 ACK」，但 `on_mode_set` 只寫 gmode / `bus.shared` 並印 log，
-  > 且 `0x3104 MODE_GET_RSP` **本身尚未實作**。
+  > 2026-10：`0x3104 MODE_GET_RSP` **已實作**；Master 可在 SET 後延遲數十 ms 再送
+  > `0x3103 MODE_GET` 確認（本樹的簡易遙控器就是這樣做，沒有 handler 時自動跳過）。
+  > 本行先前寫「回 `MODE_GET_RSP` 作為 ACK」，但 `on_mode_set` 只寫 gmode / `bus.shared` 並印 log。
 
 ### 2.5 `MODE_STOP`（0x3106）
 
@@ -344,8 +345,8 @@ Master 定期(約 1Hz，異常時 5Hz) round-robin 對每顆 Slave:
 1. ✅ `slave/schema/pixel.json` 已建立（0x3101~0x3108，含 `mode_type`）。
 2. ✅ `slave/schema/sys.json` 已併入時鐘同步（0x100A~0x100C）。
 3. 新增 `slave/action/pixel_actions.py`：
-   - 註冊 `MODE_LIST_QUERY / MODE_LIST_RSP / MODE_SET / MODE_STOP / MODE_DETAIL_QUERY / MODE_DETAIL_RSP` **六個** handler。
-     **`MODE_GET / MODE_GET_RSP` 尚未實作、不在其中**（見 §2.4 註記與 `02_command_index.md`）。
+   - 註冊 `MODE_LIST_QUERY / MODE_LIST_RSP / MODE_GET / MODE_GET_RSP / MODE_SET / MODE_STOP / MODE_DETAIL_QUERY / MODE_DETAIL_RSP` **八個** handler。
+     ✅ `MODE_GET / MODE_GET_RSP` 已於 2026-10 補上（`on_mode_get`，回 `0x3104`）。
    - 串接現有播放控制（WTT／PixelController／story 排程）作為真實模式執行體。
 4. `slave/action/sys_actions.py` 加入 `TIME_SYNC / TIME_SYNC_RSP / TIME_OFFSET_APPLY`（選用）。
 5. `slave/action/registry.py` 加入 `pixel_actions.register(app)`。

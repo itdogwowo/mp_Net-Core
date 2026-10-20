@@ -12,7 +12,7 @@
 | **02_guides** 使用教學 | 要在 slave 上寫功能 / 用模組的人 | 各模組 API、怎麼接、怎麼跑、踩坑 |
 | **03_notes** 筆記 | 維護者 / 想了解設計脈絡的人 | 調查記錄、架構筆記、計劃、變更紀錄 |
 
-**數量**：`01_protocol` 9 份、`02_guides` 18 份、`03_notes` 26 份（含兩組同號）。
+**數量**：`01_protocol` 10 份、`02_guides` 18 份、`03_notes` 26 份（含兩組同號）。
 
 ---
 
@@ -29,6 +29,7 @@
 | [07_merge_comparison.md](01_protocol/07_merge_comparison.md) | 兩套系統全景比對（含對方 RS485 catalog 留存） |
 | [08_performance_benchmark.md](01_protocol/08_performance_benchmark.md) | 網路 + 協議性能基準（甜蜜點 / 瓶頸 / 修改方法） |
 | [09_bus_speed_protocol.md](01_protocol/09_bus_speed_protocol.md) | 臨時提速（bus_speed）**完整工作流程**：協商 / 時序 / 失敗處理 / master 整合範例 |
+| [10_mon_master_pairing_contract.md](01_protocol/10_mon_master_pairing_contract.md) | **Mon ↔ Master 配對合約（給 fastLED）**：FF 可認領／解除、任何來源可解除、`pair_claimed` 只存記憶體、重啟可換手、驗收測試 |
 
 ## 02_guides — 使用教學
 

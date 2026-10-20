@@ -337,10 +337,10 @@
 |-----|------|------|---------|------|
 | 0x3101 | MODE_LIST_QUERY | Master → MCU | `mode_type(u8)` | 查模式清單（0=全部、1=LED、2=SERVO、**3=AUDIO**） |
 | 0x3102 | MODE_LIST_RSP | MCU → Master | `mode_type(u8)` `count(u8)` `entries(bytes_rest)` | 清單（mode_type 回音 query；entries 每筆 = 內部 16-bit 模式 id，u16 LE，見 04_pixel_protocol §2.2） |
-| 0x3103 | ~~MODE_GET~~ | — | (空) | 🚫 **未實作**：schema 有定義，但**無 handler、也未由任何任務發出** |
-| 0x3104 | ~~MODE_GET_RSP~~ | — | — | 🚫 **未實作**：同上。⚠️ 這兩條是取代對方 `STATUS_QUERY/STATUS_REPORT` 的目標，對接前要先補 |
+| 0x3103 | MODE_GET | Master → MCU | (空) | ✅ 查目前模式（2026-10 已補 handler：`pixel_actions.on_mode_get`） |
+| 0x3104 | MODE_GET_RSP | MCU → Master | `mode_type(u8)` `mode_id(u8)` `elapsed_ms(u32)` `total_ms(u32)` `running(u8)` | ✅ 回報目前模式／時間（`total_ms=0` = 不設限；`running=1` = 播放中） |
 | 0x3105 | MODE_SET | Master → MCU | `mode_type(u8)` `mode_id(u8)` `start_delay_ms(u16)` `brightness(u8)` | 切換模式（`brightness` **0–255**；**255 = 不改**，其餘照設。**0 是合法值 = 最暗/關**） |
-| 0x3106 | MODE_STOP | Master → MCU | `action(u8)` | 停止（0=暫停、1=全關閉）。**不回 ACK** |
+| 0x3106 | MODE_STOP | Master → MCU | `action(u8)` | 停止（0=暫停、1=全關閉）。**回 `0x3104 MODE_GET_RSP` 作為 ACK**（2026-10 起） |
 | 0x3107 | MODE_DETAIL_QUERY | Master → MCU | `mode_type(u8)` `mode_id(u8)` | 查單一模式細節 |
 | 0x3108 | MODE_DETAIL_RSP | MCU → Master | `mode_type(u8)` `mode_id(u8)` `total_ms(u32)` `name(str_u16len)` | 模式細節（含名稱 UTF-8） |
 

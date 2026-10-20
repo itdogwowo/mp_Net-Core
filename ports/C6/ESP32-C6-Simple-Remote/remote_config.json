@@ -1,0 +1,36 @@
+{
+  "_help": "只改這幾個。改完上傳到 /remote_config.json，重開機生效。數值可用 0x 開頭。",
+
+  "buttons": { "a_pin": 11, "b_pin": 12 },
+
+  "channel": 6,
+
+  "my_cid": "0x0101",
+  "_my_cid_help": "你的 Mon ID（0x1016 payload）。目前 Master 的 master_cid 會跟著變成 0x0101。",
+
+  "address_mode": "own",
+  "_address_mode_help": "own = 用原廠 MAC（預設）；spoof = 冒充 spoof_mac；ff = FF:FF:FF:FF:FF:FF / addr=0xFFFF 廣播。",
+
+  "spoof_mac": "58e6c56d8a20",
+  "_spoof_mac_help": "只有 address_mode=spoof 時使用：舊 Mon 的真 MAC。舊面板必須關機。",
+
+  "peer": {
+    "mac": "a0f262eaeb04",
+    "cid": "0xEB04"
+  },
+  "_peer_help": "peer = fastLED Master（被控端）。cid 是它的 node CID（0xEB04），不是 0x0101。",
+
+  "mode": {
+    "_help": "a = 按鈕A 的固定模式；step = 按鈕B 的增量（通常 1）。",
+    "a": "0x0200",
+    "step": 1
+  },
+
+  "leds": [
+    { "pin": 48, "brightness": 100, "active_low": false },
+    { "pin": null, "brightness": 50, "active_low": false }
+  ],
+  "_leds_help": "pin = GPIO（null 跳過）；brightness = 0..100。開機暗、準備好亮、失敗閃。",
+
+  "debug": true
+}
