@@ -1,7 +1,7 @@
 {
   "_help": "只改這幾個。改完上傳到 /remote_config.json，重開機生效。數值可用 0x 開頭。",
 
-  "buttons": { "a_pin": 11, "b_pin": 12 },
+  "buttons": { "a_pin": 13, "b_pin": 12 },
 
   "channel": 6,
 

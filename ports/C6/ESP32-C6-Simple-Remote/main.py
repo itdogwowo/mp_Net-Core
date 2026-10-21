@@ -135,13 +135,16 @@ PEER_CID = _num(_p.get("cid"))
 _mo = _sec("mode")
 MOVABLE_MODE = _int(_mo.get("a"), 0x0200) & 0xFFFF
 STEP = _int(_mo.get("step"), 1)
-STEP_BASE_IF_UNKNOWN = MOVABLE_MODE
+# 對方真實起始是 0x0100（LED 組）；0x0000 是 DEV/UNKNOWN。
+# 未知時以 0x0100 為基準，B 第一次送 0x0101（不是 0x0201）。
+STEP_BASE_IF_UNKNOWN = 0x0100
 
 # ── 固定值（不需要設定）──────────────────────────────────────────
 BRIGHTNESS = 255          # MODE_SET 的亮度：255 = 不改
 START_DELAY_MS = 0
-CONFIRM_AFTER_SET = True  # 有 0x3103 handler 才會確認
-CONFIRM_DELAY_MS = 80
+CONFIRM_AFTER_SET = True  # 每次 SET 後都嘗試一次 GET 確認
+CONFIRM_DELAY_MS = 250    # 第一次確認的等待（對方有時要 ~1s 才套用）
+CONFIRM_RETRY_MS = (500, 1000)  # 若第一次仍是舊值，再等這些時間重試
 SCAN_WINDOW_MS = 300
 WAIT_MS = 1000
 SHOW_MODE_LIST = True
@@ -276,7 +279,7 @@ _peer = None            # (6-byte MAC, cid | None) —— None = 還沒有對象
 _channel = None
 _FACTORY_MAC = None     # 第一次 init 時記下的原廠 STA MAC
 _current = MOVABLE_MODE  # 按鈕B 的 +1 起點；每次送出都更新
-_HAS_MODE_GET = False    # 開機探測：對方有沒有 0x3103 handler
+_HAS_MODE_GET = False    # 開機探測結果（僅供顯示；SET 後仍會試一次確認）
 
 
 def _dest(force_bcast=False):
@@ -605,15 +608,47 @@ def get_mode(timeout=500):
 
 
 def next_mode_of(cur, step=STEP):
-    """按鈕B：目前值 + step（環繞）。
+    """按鈕B：只 +1 `mode_id`（低 byte），`mode_type`（高 byte）不變。
 
-    高 byte = 0（系統模式／從未同步）→ 以 STEP_BASE_IF_UNKNOWN 為基準，
+    高 byte = 0（系統模式／從未同步）→ 先以 STEP_BASE_IF_UNKNOWN 為基準，
     避免送出無用的 0x0001。
+
+    例：
+      0x0100 → 0x0101 … 0x010C → 0x010D（不跨到 0x0200）
+      0x0200 → 0x0201 … 0x0203 → 0x0204（不跨到 0x0300）
     """
     base = cur
     if (base >> 8) == 0 and STEP_BASE_IF_UNKNOWN is not None:
         base = STEP_BASE_IF_UNKNOWN
-    return (base + step) & 0xFFFF
+    mt = (base >> 8) & 0xFF
+    mi = ((base & 0xFF) + step) & 0xFF
+    return (mt << 8) | mi
+
+
+def _confirm_set(target, prev):
+    """SET 後確認 → `(mode, kind)`。
+
+    kind：
+      "ok"      有回覆且等於 target
+      "peer"    有回覆且是新的值（不是 target、也不是 prev）→ 以對方為準
+      "old"     重試完仍是 prev → 以對方為準（對方沒套用）
+      "noreply" 完全沒有回覆 → 假設設定成功
+
+    為什麼要重試：這台 peer 的 `0x3104` 有時比 SET 慢（實測 0.25–1s）。
+    只等 250ms 會讀到舊值，把 `_current` 錯誤地拉回去。
+    """
+    for delay in (CONFIRM_DELAY_MS,) + CONFIRM_RETRY_MS:
+        _sleep_ms(delay)
+        info = get_mode(timeout=400)
+        if info is None:
+            return None, "noreply"
+        mode = info["mode"]
+        if mode == target:
+            return mode, "ok"
+        if mode != prev:
+            return mode, "peer"
+        # 還是舊值 → 再等一次
+    return prev, "old"
 
 
 def set_mode(id16, tag=""):
@@ -621,28 +656,39 @@ def set_mode(id16, tag=""):
 
     id16 拆回 (mode_type, mode_id) 兩欄送出。送出後本地 `_current` 更新，
     下一次按鈕B 就從這裡 +1。
-    對方有 0x3103 handler 時（開機探測 `_HAS_MODE_GET`），再用 0x3104 確認一次；
-    沒有 handler 就**不問**（避免像舊版一樣每次逾時）。
+
+    每次 SET 後都嘗試 0x3103 確認（不再依賴開機探測 `_HAS_MODE_GET`）：
+      · 有回覆且等於目標 → 確認成功，`_current` 保持目標值
+      · 有回覆但是新的值 → 以對方回報為準，`_current` 改成對方值
+      · 重試完仍是舊值 → 以對方為準，`_current` 改回舊值
+      · 完全沒有回覆   → 假設設定成功，`_current` 保持目標值
     """
     global _current
-    t = (id16 >> 8) & 0xFF
-    i = id16 & 0xFF
+    target = id16 & 0xFFFF
+    prev = _current
+    t = (target >> 8) & 0xFF
+    i = target & 0xFF
     payload = struct.pack("<BBHB", t, i, START_DELAY_MS & 0xFFFF, BRIGHTNESS & 0xFF)
     ok = _tx(CMD_MODE_SET, payload)
-    _current = id16 & 0xFFFF
+    _current = target
     print("[SET] {}0x{:04X} (type={} id={}) {}".format(
-        (tag + "：") if tag else "", id16, t, i, "已送出" if ok else "送不出去"))
-    if CONFIRM_AFTER_SET and _HAS_MODE_GET:
-        _sleep_ms(CONFIRM_DELAY_MS)
-        info = get_mode(timeout=400)
-        if info is None:
-            print("[SET] ⚠️ 0x3103 沒有回覆 → 確認不了")
-        elif info["mode"] == _current:
-            print("[SET] ✅ 對方回報 0x{:04X}（確認成功）".format(info["mode"]))
-        else:
+        (tag + "：") if tag else "", target, t, i, "已送出" if ok else "送不出去"))
+    if CONFIRM_AFTER_SET:
+        mode, kind = _confirm_set(target, prev)
+        if kind == "ok":
+            _current = target
+            print("[SET] ✅ 對方回報 0x{:04X}（確認成功）".format(target))
+        elif kind == "peer":
+            _current = mode
             print("[SET] ⚠️ 對方回報 0x{:04X}（不是 0x{:04X}）→ 以對方為準".format(
-                info["mode"], _current))
-            _current = info["mode"]
+                mode, target))
+        elif kind == "noreply":
+            print("[SET] ⚠️ 0x3103 沒有回覆 → 假設設定成功，本地保留 0x{:04X}"
+                  .format(target))
+        else:  # old
+            _current = mode
+            print("[SET] ⚠️ 等確認後對方仍是 0x{:04X}（不是 0x{:04X}）→ 以對方為準"
+                  .format(mode, target))
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -805,7 +851,8 @@ def boot():
                           info["running"], info["elapsed_ms"]))
             _current = info["mode"]
         else:
-            print("ℹ️ 對方沒有回 0x3104（MODE_GET 未實作）→ 不做 SET 後確認")
+            print("ℹ️ 對方沒有回 0x3104（MODE_GET 未回應）→ SET 後仍會試一次；"
+                  "沒有回覆就假設成功")
 
     # ── 清單只印出來參考，不是按鈕的前置條件 ──────────────────
     if SHOW_MODE_LIST:
@@ -838,6 +885,13 @@ def loop():
         if a.pressed():
             set_mode(MOVABLE_MODE, "A")
         if b.pressed():
+            # 發送前先讀對方目前模式，再 +1（避免用快取的舊值）
+            info = get_mode(timeout=400)
+            if info is not None:
+                _current = info["mode"]
+                print("[B] 發送前先讀到 0x{:04X}".format(_current))
+            else:
+                print("[B] 發送前讀不到 → 用本地 0x{:04X}".format(_current))
             nxt = next_mode_of(_current)
             set_mode(nxt, "B")
         _sleep_ms(5)

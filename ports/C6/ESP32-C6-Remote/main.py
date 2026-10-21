@@ -63,7 +63,7 @@ except ImportError:                      # pragma: no cover
 #    F. 時序與除錯    CONFIRM_AFTER_SET / CONFIRM_DELAY_MS / RSP_TIMEOUT_MS / RETRIES / ADDR_FILTER / DEBUG
 
 # ══ A. 按鈕接線（兩顆都接 GND：內部上拉、按下＝低電位）══════════
-BTN_MOVABLE_PIN = 11        # ★ 按鈕1「進入可動模式」接哪個 GPIO ← 改成你實際接的
+BTN_MOVABLE_PIN = 13        # ★ 按鈕1「進入可動模式」接哪個 GPIO ← 改成你實際接的
 BTN_NEXT_PIN    = 12        # ★ 按鈕2「下一個模式 +1」接哪個 GPIO ← 改成你實際接的
                             #   S3 要避開：0/3/45/46（strapping）、19/20（USB）、33–37（八線 PSRAM）
                             #   C6 要避開：8/9/15（strapping）、12/13（USB）
