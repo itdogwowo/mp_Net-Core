@@ -58,6 +58,9 @@ class RenderTask(Task):
             sw, sk, ga, sa, ov = self.st_pixel.stats()
             get_log().info("[GATE] render show={} skip={} gate_avg={}us show_avg={}us overhead={:.3f}%".format(
                 sw, sk, ga, sa, ov))
+            for t, csh, csk, cavg in self.st_pixel.ctrl_stats():
+                get_log().info("[GATE] render ctrl {} show={} skip={} avg={}us".format(
+                    t, csh, csk, cavg))
         except Exception:
             pass
         self._fps_t0 = now

@@ -305,6 +305,9 @@ class PixelLabTask(Task):
             sw, sk, ga, sa, ov = self._st_pixel.stats()
             get_log().info("[GATE] lab show={} skip={} gate_avg={}us show_avg={}us overhead={:.3f}%".format(
                 sw, sk, ga, sa, ov))
+            for t, csh, csk, cavg in self._st_pixel.ctrl_stats():
+                get_log().info("[GATE] lab ctrl {} show={} skip={} avg={}us".format(
+                    t, csh, csk, cavg))
         except Exception:
             pass
         pn = self._pca_show_n + self._pca_skip_n

@@ -292,11 +292,15 @@ settings
 
 ### 8.1 方法
 
-- `PixelStreamer` 新增 **1 byte `_dirty`**（小緩衝）：
-  - 寫入者改完 `big_buffer` 後呼叫 `mark_dirty()`。
-  - `show_all()` 前只看 `_dirty[0]`；0 就直接 return False，不搬運、不輸出。
-  - `show_all()` 完成後立刻 `_dirty[0]=0`（渲染完馬上釋放）。
-  - `clear_all()` / `stop_motors()` 用 `force=True` 保證一定送。
+- `PixelStreamer` 的 dirty 是 **per-controller**，不是單一 global flag：
+  - `_dirty = bytearray(len(controllers))`，目前三格：**WS2812 / APA102 / i2c_pixel(PCA)**。
+  - `mark_dirty(which=None)`：可傳 index、`"ws2812"`、`"apa102"`、`"pca9685"`、
+    `"rgb"`、`"apa"`、`"pca"`；不傳 = 全部。
+  - `show_all()` 只對 dirty=1 的 controller 做 `st_load_and_convert` + `st_show`；
+    全部乾淨才整幀 return False。每格做完立刻清 0。
+  - `force=True`（`clear_all` / `stop_motors`）強制全部輸出。
+  - `ctrl_stats()` 回傳每個 controller 的 `(type, show, skip, avg_us)`；log 新增
+    `[GATE] ... ctrl <type> show=... skip=... avg=...us`。
 - 新增大開關 `set_led_enabled(False)` 與 `/led_off` 檔案：
   - 關閉時先 `clear_all()` 推一次中性值（真熄燈），之後 `show_all()` 全跳過。
   - `bus.shared["led_enabled"]` 同步給 `PixelLabTask` / `RenderTask`；兩者連計算都跳過。
@@ -304,38 +308,60 @@ settings
 - `PixelLabTask` 的 PCA 路徑另加 `_pca_last` 小緩衝：
   - 記錄 `(addr, ch, all_ch, base, sel)`；一樣就跳過 `pca.show()`。
   - `[GATE] pca` 會印 show/skip/gate_avg/show_avg/overhead。
+- `PixelLabTask._tick_buffer` 目前 base 是全部燈，所以它 mark all；
+  `RenderTask` 也是整幀，mark all。要只更新單一 type 時，呼叫
+  `mark_dirty("pca9685")` 之類即可（例如 PCA 頁的直接路徑）。
 
-### 8.2 實測（2000 顆 WS2812）
+### 8.2 實測（per-controller）
 
 `/led_off` 開機（只推一次中性幀後就跳過）：
 
 ```
-[GATE] render show=1 skip=0 gate_avg=12us show_avg=79717us overhead=0.015%
-[GATE] lab    show=1 skip=0 gate_avg=12us show_avg=79717us overhead=0.015%
+[GATE] render show=1 skip=0 gate_avg=24us show_avg=79841us overhead=0.030%
+[GATE] render ctrl APA102   show=1 skip=0 avg=9673us
+[GATE] render ctrl WS2812  show=1 skip=0 avg=68100us
+[GATE] render ctrl i2c_pixel show=1 skip=0 avg=2015us
 [FPS] render 0.0/s
 [FPS] lab    0.0/s
 [FPS] pixel  0.0/s
-[FPS] lvgl   137~141/s
+[FPS] lvgl   133~141/s
 ```
 
-REPL 手動開燈、跑一次 dirty → clean → dirty：
+REPL 手動只 mark 某一種：
 
 ```
-st.set_led_enabled(True)      # LED on（先 clear 一次）
-st.show_all()                 # -> True（真正輸出）
-st.show_all()                 # -> False（dirty=0，整幀跳過）
-st.mark_dirty(); st.show_all()# -> True（有修改才輸出）
-st.stats()                    # -> (4, 1, 27, 80172, 0.0337)
+st.show_all()                    # False（全部乾淨）
+st.mark_dirty('pca9685')
+st.show_all()                    # True，只有 i2c_pixel 輸出
+# ctrl: APA102 skip+1, WS2812 skip+1, i2c_pixel show+1（avg 2.23ms）
+
+st.mark_dirty('ws2812')
+st.show_all()                    # True，只有 WS2812（avg 68.16ms）
+
+st.mark_dirty('apa102')
+st.show_all()                    # True，只有 APA102（avg 9.70ms）
+
+st.mark_dirty()
+st.show_all()                    # True，三種全輸出（avg 79.8ms）
 ```
 
-- `gate_avg`：**12～27us**（含 `ticks_us()` 量測本身）
-- `show_avg`：**79.7～80.2ms**（2000 顆 WS2812 的物理上限）
-- gate 佔比：**0.015%～0.034%**（性能下降可忽略）
-- 一次 skip 省下 **約 80ms**；dirty gate 確實讓「沒修改」不渲染。
-- 50fps 仍不可能：80ms/幀 → 約 12.5fps；要 50fps 需 APA102/SPI 或減顆數。
+| controller | 單獨輸出 avg | 備註 |
+|---|---|---|
+| WS2812 | **68.1ms** | 2000 顆，最大瓶頸 |
+| APA102 | **9.7ms** | 2000 顆 SPI |
+| i2c_pixel (PCA) | **2.0～2.4ms** | 16 通道 |
+
+- gate：**24～32us**（含 `ticks_us()` 量測本身）
+- gate 佔比：**0.030%～0.056%**（效能下降可忽略）
+- **PCA 只改一點時只花 ~2.2ms，不再重送 WS2812 的 68ms**；
+  APA 只改一點時只花 ~9.7ms；三種全改才是 ~79.8ms。
+- 50fps 仍不可能：WS2812 2000 單獨就 68ms/幀 → 約 14.7fps；
+  全三種 79.8ms → 約 12.5fps。要 50fps 需 APA102/SPI 或減顆數。
 
 ### 8.3 目前板子狀態
 
 - `/led_off` 已建立：LED 硬體輸出關閉（開機推一次中性值後不再送）。
 - `page/__init__.py` 已停用 APA / RGB 兩頁，PCA 保留。
 - `[FPS] render` 這次也補上了；idle 時是 0。
+- 目前 `[GATE]` 的 `show=1` 就是 `/led_off` 開機那次中性幀；之後
+  `render/lab/pixel` 都是 0，沒有再送 LED。
