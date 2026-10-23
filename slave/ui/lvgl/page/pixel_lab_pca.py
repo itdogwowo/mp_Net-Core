@@ -6,6 +6,18 @@
 # 資料：
 #   pca9685_ctl（driver 建的控制表）→ 清單/掃描
 #   PixelLabTask 直接寫選中的 PCA；本頁只設定 target/ch，不碰硬體
+#
+# 本版依 lvgl-console-ui 的最終模擬結果：
+#   1. 晶片內部改成兩排對稱（14..28 / 76..90）、腳位伸出晶片外、
+#      中央讀數用 22px 並依量測寬度置中（ALL/00 不會壓到右排）。
+#   2. 左卡清單從 y=16 改 30（不壓「目標」標籤與 focus 外框）；
+#      同步數量移到 170，掃描鈕貼底 204。
+#   3. 新增「全部通道」ALL_LED：游標 -1（UI）→ state ch 0xFF（task）。
+#   4. 晶片只留一個框：focus 1 = 琥珀游標框（全部時框晶片本體）、
+#      focus 2 = 藍色已套用框；清單層不畫晶片框。
+#
+# exit = 返回上一層（不是直接離開）：
+#   掃描(2) → channel(1) → 目標清單(0) → launcher
 import time
 import lvgl as lv
 
@@ -15,6 +27,8 @@ from ui.lvgl.registry import register
 from ui.lvgl.page import pixel_lab_common as c
 
 CH_COUNT = 16
+ALL_CH = 0xFF
+CURSOR_ALL = -1
 SCAN_TIMEOUT_MS = 8000
 SEL_BG = 0xD2E3FC
 CURSOR_BG = 0xFFF3CD
@@ -32,10 +46,13 @@ class PcaPage:
         self._scan_pending = False
         self._scan_at = 0
         self._focus = 0
-        self._ch_cursor = 0
+        self._in_area = 0
+        self._ch_cursor = CURSOR_ALL
+        self._cell = 14
         self._last_run = -99
         self._status_lb = None
         self._io_lb = None
+        self._pins_lb = None
         self._sync_lb = None
         self._scan_btn = None
         self._chip = None
@@ -74,7 +91,10 @@ class PcaPage:
     def _applied_ch(self):
         try:
             st = c.state()
-            return int(st.get("ch", 0) or 0) % CH_COUNT
+            raw = int(st.get("ch", 0) or 0) & 0xFF
+            if raw == ALL_CH:
+                return CURSOR_ALL
+            return c.wrap(raw, CH_COUNT)
         except Exception:
             return 0
 
@@ -133,6 +153,12 @@ class PcaPage:
                 self._btns.append(b)
             except Exception:
                 continue
+        # 列高是「字高 + item pad」，pad 是 add_text 之後才設的 →
+        # 全部加完要重排一次，否則列距還是預設值（3 列就超出清單被裁掉）。
+        try:
+            self._list._layoutItems()
+        except Exception:
+            pass
 
         self._sel = 0
         found = False
@@ -236,16 +262,19 @@ class PcaPage:
         except Exception:
             pass
 
-        # ── 左：固定高度清單卡 + 清單外的掃描 ──
+        # ── 左：固定高度清單卡 + 清單外的同步/掃描 ──
         left = u.mk_card(scr, 6, 38, 104, 128)
         u.mk_label(left, "目標", 6, 4, u.TEXT3, u.ZH)
-        self._list, self._btns = u.mk_list(left, 2, 16, 100, 96, ["(載入中)"], font=u.ZH)
+        # 清單從 y=30 開始：原 y=16 會壓到「目標」標籤（4..23），
+        # 清單的 focus 外框再往外 3px 會切到字下緣；30 之後留 7px。
+        self._list, self._btns = u.mk_list(left, 2, 30, 100, 88, ["(載入中)"], font=u.ZH)
         try:
             self._list.set_style_pad_all(1, 0)
         except Exception:
             pass
-        self._sync_lb = u.mk_label(left, "", 6, 116, u.SUCCESS, u.ZH)
-        self._scan_btn = u.mk_btn(scr, "掃描", 6, 174, 104, 28, "secondary")
+        # 同步數量移到原掃描位置（視線先看到），掃描鈕貼底。
+        self._sync_lb = u.mk_label(scr, "", 6, 170, u.SUCCESS, u.ZH)
+        self._scan_btn = u.mk_btn(scr, "掃描", 6, 204, 104, 28, "secondary")
 
         # ── 右：IO + 直放晶片 ──
         right = u.mk_card(scr, 116, 38, 198, 194)
@@ -260,15 +289,30 @@ class PcaPage:
             line.remove_flag(lv.obj.FLAG.SCROLLABLE)
         except Exception:
             pass
-        u.mk_label(right, "IO", 12, 8, u.TEXT3, u.ZH)
-        self._io_lb = u.mk_label(right, "—", 12, 20, u.TEXT, u.ZH)
+        # 兩行（行高 19）：IO 在 6、接腳在 25 → 文字佔到 44
+        u.mk_label(right, "IO", 12, 6, u.TEXT3, u.ZH)
+        self._io_lb = u.mk_label(right, "—", 40, 6, u.TEXT, u.ZH)
+        self._pins_lb = u.mk_label(right, "", 12, 25, u.TEXT3, u.ZH)
 
-        # chip body (vertical)
+        # ── 晶片（設計尺寸 → 實際）────────────────────────────
+        # 設計尺寸 104×138、格子 14、間距 16、腳位 4；S=1.0 照設計；
+        # 其餘全部由它推導，要微調只改這一個數字。
+        S = 1.0
+        CHIP_W = int(round(104 * S))
+        CHIP_H = int(round(138 * S))
+        CELL = int(round(14 * S))
+        PITCH = int(round(16 * S))
+        PIN_W = max(2, int(round(4 * S)))
+        PAD = int(round(4 * S))
+        NUM_FONT = u.F_NUM_L
+        self._cell = CELL
+        chipX = (198 - 2 - CHIP_W) // 2  # 46（扣 1px 邊框）
+        chipY = 48                       # 文字 6..44、晶片 48..186
         chip = lv.obj(right)
-        chip.set_size(104, 138)
-        chip.set_pos(44, 40)
+        chip.set_size(CHIP_W, CHIP_H)
+        chip.set_pos(chipX, chipY)
         chip.set_style_bg_color(u.C(0xFBFCFE), 0)
-        chip.set_style_radius(10, 0)
+        chip.set_style_radius(int(round(10 * S)), 0)
         chip.set_style_border_color(u.C(0xCBD5E1), 0)
         chip.set_style_border_width(1, 0)
         chip.set_style_pad_all(0, 0)
@@ -281,22 +325,23 @@ class PcaPage:
         # notch
         try:
             notch = lv.obj(chip)
-            notch.set_size(5, 5)
-            notch.set_pos(5, 4)
-            notch.set_style_radius(3, 0)
+            notch.set_size(4, 4)
+            notch.set_pos(4, 3)
+            notch.set_style_radius(2, 0)
             notch.set_style_bg_color(u.C(u.TEXT3), 0)
             notch.set_style_border_width(0, 0)
             notch.set_style_pad_all(0, 0)
         except Exception:
             notch = None
 
-        # side pins (inside chip edges; decorative)
+        # side pins：伸出晶片外（畫在晶片內會像虛線邊框）；
+        # 不能掛在 chip 底下（父物件裁切會剪掉負座標），掛在卡片 right 上。
         for i in range(8):
-            y = 10 + i * 16
-            for x in (0, 100):
+            y = chipY + PAD + 2 + i * PITCH + int((CELL - 2) / 2)
+            for x in (chipX - PIN_W, chipX + CHIP_W):
                 try:
-                    pin = lv.obj(chip)
-                    pin.set_size(4, 1)
+                    pin = lv.obj(right)
+                    pin.set_size(PIN_W, 1)
                     pin.set_pos(x, y)
                     pin.set_style_bg_color(u.C(0xB4BDC9), 0)
                     pin.set_style_border_width(0, 0)
@@ -304,56 +349,91 @@ class PcaPage:
                 except Exception:
                     pass
 
-        # 2 columns × 8 squares
+        # 2 columns × 8 squares（兩排對稱；margin 0.13×寬 → 14）
         self._squares = []
+        margin = max(3, int(round(CHIP_W * 0.13)))
+        col_x = [margin, CHIP_W - margin - CELL]
         for idx in range(CH_COUNT):
             col = 0 if idx < 8 else 1
             row = idx % 8
-            x = 18 if col == 0 else 91
-            y = 10 + row * 16
-            track, fill = c.mk_vbar(chip, x, y, 14, 14, 0xD97706)
+            x = col_x[col]
+            y = PAD + 1 + row * PITCH
+            track, fill = c.mk_vbar(chip, x, y, CELL, CELL, 0xD97706)
             self._squares.append({"track": track, "fill": fill, "idx": idx, "x": x, "y": y})
 
         # center channel + selected %
-        self._ch_lb = u.mk_label(chip, "00", 52, 32, 0xD97706, u.F_NUM_XL)
-        self._pct_lb = u.mk_label(chip, "0%", 52, 72, u.TEXT2, u.F_NUM_S)
+        # F_NUM_L 22：量測 "00" 約 24px → (104-24)/2-1 = 39；固定 38 留 1px。
+        # numY = 138/2 - 22px 行高*0.75 ≈ 49；pct 在下一行 +2。
+        self._ch_lb = u.mk_label(chip, "00", 38, 49, 0xD97706, NUM_FONT)
+        self._pct_lb = u.mk_label(chip, "0%", 40, 78, u.TEXT2, u.F_NUM_S)
 
-        # focus frame on the chip
         self._paint_focus()
         return scr
 
     # ── focus / squares ─────────────────────────────────
     def _paint_focus(self):
+        # 第一層：選區域（清單 / 晶片 / 掃描），三區各自有 focus。
+        # 進入區域後：晶片不再畫大框，改用游標框/晶片框（_paint_selected）。
+        list_focus = (self._focus == 0)
+        scan_focus = (self._focus == 2)
+        chip_area = (self._focus == 1)
         try:
-            u.set_focus(self._list, self._focus == 0)
+            u.set_focus(self._list, list_focus)
         except Exception:
             pass
         try:
-            u.set_focus(self._chip, self._focus == 1)
+            u.set_focus(self._chip, chip_area and not self._in_area)
         except Exception:
             pass
         try:
-            u.set_focus(self._scan_btn, self._focus == 2)
+            u.set_focus(self._scan_btn, scan_focus)
         except Exception:
             pass
         self._paint_selected()
 
+    def _set_chip_frame(self, color):
+        try:
+            if color is None:
+                self._chip.set_style_outline_width(0, 0)
+            else:
+                self._chip.set_style_outline_color(u.C(color), 0)
+                self._chip.set_style_outline_width(2, 0)
+                self._chip.set_style_outline_pad(2, 0)
+        except Exception:
+            pass
+
     def _paint_selected(self):
-        # 主色框 = 真正套用的 channel；左/右游標用 warning 框預覽。
+        # 第一層只顯示區域框；晶片上的游標/已套用框只在「進入晶片區」後畫。
+        if not self._in_area:
+            self._set_chip_frame(None)
+            for s in self._squares:
+                try:
+                    s["track"].set_style_outline_width(0, 0)
+                except Exception:
+                    pass
+            return
+        # 晶片上只允許一個框，跟著焦點走：
+        #   晶片區 → 琥珀游標框（單格或「全部」的晶片本體）
+        #   掃描區 → 藍框，停在剛套用的位置
         ch = self._applied_ch()
-        cur = self._ch_cursor if self._focus == 1 else ch
+        cur = self._ch_cursor
+        all_cursor = (self._focus == 1 and cur == CURSOR_ALL)
+        all_applied = (self._focus == 2 and ch == CURSOR_ALL)
+        self._set_chip_frame(u.WARNING if all_cursor else
+                             (u.PRIMARY if all_applied else None))
         for s in self._squares:
             try:
-                if s["idx"] == ch:
-                    s["track"].set_style_outline_color(u.C(u.PRIMARY), 0)
+                color = None
+                if self._focus == 1 and cur != CURSOR_ALL and s["idx"] == cur:
+                    color = u.WARNING
+                elif self._focus == 2 and ch != CURSOR_ALL and s["idx"] == ch:
+                    color = u.PRIMARY
+                if color is None:
+                    s["track"].set_style_outline_width(0, 0)
+                else:
+                    s["track"].set_style_outline_color(u.C(color), 0)
                     s["track"].set_style_outline_width(2, 0)
                     s["track"].set_style_outline_pad(1, 0)
-                elif s["idx"] == cur:
-                    s["track"].set_style_outline_color(u.C(u.WARNING), 0)
-                    s["track"].set_style_outline_width(1, 0)
-                    s["track"].set_style_outline_pad(1, 0)
-                else:
-                    s["track"].set_style_outline_width(0, 0)
             except Exception:
                 pass
 
@@ -362,25 +442,29 @@ class PcaPage:
         base = c.pct(v.get("base_pct", 0))
         ch = self._applied_ch()
         cur = self._ch_cursor if self._focus == 1 else ch
+        sel = c.pct(v.get("sel_pct", 0))
         for s in self._squares:
             i = s["idx"]
             p = base
             if isinstance(pcts, (list, tuple)) and i < len(pcts):
                 p = c.pct(pcts[i])
-            if i == ch:
-                p = c.pct(v.get("sel_pct", p))
-            color = 0xD97706 if i == ch else 0xF0C98A
+            # 亮色/亮度一律跟游標（游標 = -1 時＝全部通道，16 格一起亮）
+            is_cur = (cur == CURSOR_ALL) or (i == cur)
+            if is_cur:
+                p = sel
+            color = 0xD97706 if is_cur else 0xF0C98A
             try:
-                c.set_vbar(s["fill"], 14, 14, p, color)
+                c.set_vbar(s["fill"], self._cell, self._cell, p, color,
+                           x=s["x"], y=s["y"])
             except Exception:
                 pass
-        # 中央是游標數字（左/右會動）；enter 後才會套用到 task。
+        # 中央顯示游標（全部 → ALL）；enter 後才會套用到 task。
         try:
-            self._ch_lb.set_text("{:02d}".format(cur))
+            self._ch_lb.set_text("ALL" if cur == CURSOR_ALL else "{:02d}".format(cur))
         except Exception:
             pass
         pct = v.get("sel_pct", 0)
-        if cur != ch and isinstance(pcts, (list, tuple)) and cur < len(pcts):
+        if cur != CURSOR_ALL and cur != ch and isinstance(pcts, (list, tuple)) and cur < len(pcts):
             pct = pcts[cur]
         try:
             self._pct_lb.set_text("{}%".format(c.pct(pct)))
@@ -412,7 +496,9 @@ class PcaPage:
     # ── 頁面接口 ────────────────────────────────────────
     def on_enter(self):
         self._focus = 0
-        self._ch_cursor = self._applied_ch()
+        self._in_area = 0
+        # 第一次進來：游標停在「全部通道」（ALL_LED），不是 00。
+        self._ch_cursor = CURSOR_ALL
         self._refresh_targets(force=True)
         c.open_page("pca")
         c.touch()
@@ -422,38 +508,56 @@ class PcaPage:
     def on_leave(self):
         c.close_page()
         self._focus = 0
+        self._in_area = 0
 
     def on_enc(self, d):
         if not d:
             return
+        step = int(d)
+        if not self._in_area:
+            # 第一層：左右選區域（目標清單 / 晶片 / 掃描）。
+            self._focus = c.wrap(self._focus + step, 3)
+            c.touch()
+            self._paint_focus()
+            return
         if self._focus == 0:
             n = len(self._targets)
             if n:
-                self._cursor = (self._cursor + int(d)) % n
+                self._cursor = c.wrap(self._cursor + step, n)
                 c.touch()
-                self._sync_list()
+                # 滾動即套用：換目標就 commit（enter 仍可再確認）。
+                self._commit()
         elif self._focus == 1:
-            # 左右只移動 channel 游標；enter 才寫入 state 給 task。
-            self._ch_cursor = (self._ch_cursor + int(d)) % CH_COUNT
+            # 游標順序：ALL → 00 → 01 … → 15 → ALL（繞一圈）
+            n = CH_COUNT + 1
+            pos = 0 if self._ch_cursor == CURSOR_ALL else self._ch_cursor + 1
+            nxt = c.wrap(pos + step, n)
+            self._ch_cursor = CURSOR_ALL if nxt == 0 else nxt - 1
+            # 滾動即套用：換 channel 就 commit（enter 仍可再確認）。
+            st = c.state()
+            st["ch"] = ALL_CH if self._ch_cursor == CURSOR_ALL else c.wrap(self._ch_cursor, CH_COUNT)
             c.touch()
             self._paint_selected()
             self._paint_squares(c.view())
 
     def on_confirm(self):
-        if self._focus == 0:
-            # enter：真正選取目標，然後換到 channel 區。
-            self._commit()
-            self._focus = 1
-            self._ch_cursor = self._applied_ch()
+        if not self._in_area:
+            # 第一層：enter 進入目前選中的區域；掃描是動作，直接觸發。
+            self._in_area = 1
+            if self._focus == 2:
+                self._do_scan()
             self._paint_focus()
-            self._paint_squares(c.view())
+            return None
+        if self._focus == 0:
+            # 清單區：enter 才真正選取目標（停在清單區，exit 可回第一層）。
+            self._commit()
             c.touch()
+            self._paint_focus()
         elif self._focus == 1:
-            # enter：真正選取 channel。
+            # 晶片區：enter 才真正選取 channel（「全部」→ 0xFF = ALL_LED）。
             st = c.state()
-            st["ch"] = int(self._ch_cursor) % CH_COUNT
+            st["ch"] = ALL_CH if self._ch_cursor == CURSOR_ALL else c.wrap(self._ch_cursor, CH_COUNT)
             c.touch()
-            self._focus = 2
             self._paint_focus()
             self._paint_squares(c.view())
         else:
@@ -461,17 +565,12 @@ class PcaPage:
         return None
 
     def on_exit(self):
-        # exit =「返回上一層」，不是直接離開：
-        #   掃描(2) → channel(1) → 目標清單(0) → launcher。
-        # 回 True = 本頁消耗（只退一層）；回 False = 已到最上層，app 才回 launcher。
-        if self._focus == 2:
-            self._focus = 1
+        # exit = 返回上一層：
+        #   區域內 → 第一層（區域選擇）→ launcher。
+        if self._in_area:
+            self._in_area = 0
             self._paint_focus()
             self._paint_squares(c.view())
-            return True
-        if self._focus == 1:
-            self._focus = 0
-            self._paint_focus()
             return True
         return False
 
@@ -485,6 +584,7 @@ class PcaPage:
         txt, col = c.status_text(v)
         c.set_label(self._status_lb, txt, col)
         c.set_label(self._io_lb, v.get("io") or "—")
+        c.set_label(self._pins_lb, v.get("pins") or "")
         self._paint_sync()
         if v.get("mode") == "pca":
             self._paint_squares(v)
@@ -496,8 +596,8 @@ class PcaPage:
 _page = PcaPage()
 
 
-@register(id="pixel_lab_pca", title="PixelLab PCA", icon="sun",
-          desc="PCA9685 · 目標/16 通道", order=4, accent=0xD97706)
+@register(id="pixel_lab_pca", title="PixelLab PCA", icon="gauge",
+          desc="PCA9685", order=1, accent=0xD97706)
 def build():
     return _page.build()
 

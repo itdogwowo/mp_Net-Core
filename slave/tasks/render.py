@@ -16,6 +16,10 @@ class RenderTask(Task):
         self.next_tick_us = 0
         self._neutral_pushed = False   # 停止/暫停是否已推過中性幀（只推一次，防 UART 洪水）
         self._was_active = False       # 🔧 同步起播：追蹤「播放中」上升緣，起播時重設節拍基準
+        self._fps_n = 0
+        self._fps_t0 = time.ticks_ms()
+        self._fps_us = 0
+        self._fps_max = 0
 
     @staticmethod
     def _resolve_interval_ms(sys_cfg):
@@ -100,10 +104,16 @@ class RenderTask(Task):
              self.next_tick_us = now
 
         if time.ticks_diff(now, self.next_tick_us) >= 0:
+            t0 = time.ticks_us()
             if self.hub.read_into(self.st_pixel.big_buffer):
                 self.st_pixel.show_all()
                 self._played_frames += 1
                 self.success += 1
+                dt = time.ticks_diff(time.ticks_us(), t0)
+                self._fps_n += 1
+                self._fps_us += dt
+                if dt > self._fps_max:
+                    self._fps_max = dt
 
             # 用 ticks_add 推進節拍（會 wrap），不能用 `+=`：
             # `+=` 會讓 next_tick_us 變成不 wrap 的普通整數，而 now=ticks_us() 會 wrap，

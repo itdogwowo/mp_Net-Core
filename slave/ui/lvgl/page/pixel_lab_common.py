@@ -59,38 +59,66 @@ def pct(v):
         return 0
 
 
+def wrap(i, n):
+    """Python 的 % 對負數也回非負；游標環繞統一走這支。"""
+    if not n:
+        return 0
+    return ((int(i) % n) + n) % n
+
+
+def _vbar_metrics(w, h):
+    # 原 mk_vbar 是為 34×126 長條寫的（圓角 7、內縮 2）；
+    # 14×14 的 PCA 格子沿用時圓角 7 = 半邊 → 變圓形。這裡按尺寸推導。
+    r = max(2, min(7, int(round(min(w, h) * 0.22))))
+    inset = max(1, min(2, int(round(w * 0.06))))
+    return r, inset
+
+
 def mk_vbar(parent, x, y, w, h, color):
-    """垂直亮度方塊：track + fill。回傳 (track, fill)。"""
+    """垂直亮度方塊：track + fill。回傳 (track, fill)。
+
+    ⚠ fill 是 track 的**兄弟**（掛在同一個 parent），不是子物件。
+      當子物件會被 track 的圓角裁掉：14×14、圓角 3 的格子底部左右各被切 1px，
+      看起來就像填充條被削掉兩端。真機 LVGL 也是裁的，但視覺上不該長這樣。
+    """
+    r, inset = _vbar_metrics(w, h)
     track = lv.obj(parent)
     track.set_size(w, h)
     track.set_pos(x, y)
     track.set_style_bg_color(u.C(u.TRACK), 0)
-    track.set_style_radius(7, 0)
+    track.set_style_radius(r, 0)
     track.set_style_border_color(u.C(u.BORDER), 0)
     track.set_style_border_width(1, 0)
     track.set_style_pad_all(0, 0)
     track.remove_flag(lv.obj.FLAG.SCROLLABLE)
 
-    fill = lv.obj(track)
-    fill.set_size(w - 4, 1)
-    fill.set_pos(2, h - 3)
+    fill = lv.obj(parent)
+    # 不掛自訂屬性到 lv.obj（真機 binding 不一定允許）；
+    # 基準座標由呼叫端在 set_vbar(..., x=, y=) 傳入。
+    fill.set_size(w - inset * 2, 1)
+    fill.set_pos(x + inset, y + h - inset - 1)
     fill.set_style_bg_color(u.C(color), 0)
-    fill.set_style_radius(5, 0)
+    fill.set_style_radius(max(1, int(round(r * 0.7))), 0)
     fill.set_style_border_width(0, 0)
     fill.set_style_pad_all(0, 0)
     fill.remove_flag(lv.obj.FLAG.SCROLLABLE)
     return track, fill
 
 
-def set_vbar(fill, w, h, p, color, color_empty=None):
-    """p=0..100；填滿高度依 p 改變；0 也留 1px 讓 track 不被動態隱藏。"""
-    p = pct(p)
-    fh = int((h - 4) * p / 100.0)
-    if fh < 1:
-        fh = 1
+def set_vbar(fill, w, h, p, color, color_empty=None, x=0, y=0):
+    """p=0..100；填滿高度依 p 改變；0 也留 1px 讓 track 不被動態隱藏。
+
+    fill 是 sibling；x/y 是它相對 parent 的基準（mk_vbar 建構時的位置）。
+    不要用 fill._vbase：真機 lv.obj 不一定允許自訂屬性，會讓 build() 直接失敗。
+    """
     try:
-        fill.set_size(w - 4, fh)
-        fill.set_pos(2, h - 2 - fh)
+        r, inset = _vbar_metrics(w, h)
+        p = pct(p)
+        fh = int((h - inset * 2) * p / 100.0)
+        if fh < 1:
+            fh = 1
+        fill.set_size(w - inset * 2, fh)
+        fill.set_pos(x + inset, y + h - inset - fh)
         fill.set_style_bg_color(u.C(color if p > 0 or not color_empty else color_empty), 0)
     except Exception:
         pass
@@ -184,11 +212,12 @@ class SimplePage:
         close_page()
 
     def on_enc(self, d):
-        # 左右只移動游標/數字；真正選取要按 enter。
+        # 滾動即套用：游標移動的同時就 commit 給 task（enter 仍可再確認）。
         if not d:
             return
         n = self._count if self._count > 0 else 1
         self._cursor = (self._cursor + int(d)) % n
+        state()["index"] = int(self._cursor)
         touch()
         self._paint_index(self._cursor)
 
@@ -209,7 +238,7 @@ class SimplePage:
     def _paint_bar(self, i, p):
         b = self._bars[i]
         color = self.accent if i == 1 else (0xC9BFF0 if self.mode == "apa" else 0x9FE1C8)
-        set_vbar(b["fill"], b["w"], b["h"], p, color)
+        set_vbar(b["fill"], b["w"], b["h"], p, color, x=b["x"], y=b["y"])
         # 百分比放在 fill 頂端附近
         p = pct(p)
         try:

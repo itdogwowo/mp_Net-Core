@@ -37,7 +37,7 @@ _cur_lb = None       # 目前模式顯示
 
 
 @register(id="pixel_controller", title="Pixel 控制", icon="sliders-horizontal",
-          desc="模式設置·列表·可動", order=2, accent=0x1A73E8)
+          desc="模式清單·可動快捷", order=0, accent=0x1A73E8)
 def build():
     global scr, _mode_list, _mode_btns, _cur_idx
     global _bright_sl, _bright_lb, _cur_lb

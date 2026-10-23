@@ -5,8 +5,8 @@ from ui.lvgl.page.pixel_lab_common import SimplePage
 _page = SimplePage("rgb", "PixelLab RGB", "WS2812", 0x0E9F6E)
 
 
-@register(id="pixel_lab_rgb", title="PixelLab RGB", icon="sun",
-          desc="WS2812 · 呼吸/選中", order=3, accent=0x0E9F6E)
+@register(id="pixel_lab_rgb", title="PixelLab RGB", icon="lightbulb",
+          desc="WS2812", order=2, accent=0x0E9F6E)
 def build():
     return _page.build()
 

@@ -354,7 +354,7 @@ def _panel(parent, x, y, w, h):
 
 
 @register(id="remote", title="遙控器", icon="wifi",
-          desc="配對·節點·模式", order=0, accent=0x188038)
+          desc="配對·節點·模式", order=4, accent=0x188038)
 def build():
     global scr, _peer_list, _peer_btns, _peer_rows, _sel
     global _btn_bind, _lb, _last

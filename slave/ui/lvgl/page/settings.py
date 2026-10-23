@@ -25,7 +25,7 @@ _last_txt = {}
 
 
 @register(id="settings", title="系統設定", icon="settings",
-          desc="網路·裝置資訊", order=3, accent=0x7F8C8D)
+          desc="網路·裝置資訊", order=6, accent=0x7F8C8D)
 def build():
     global scr, _wifi_sw, _str_lbs, _last_txt
     _str_lbs = []

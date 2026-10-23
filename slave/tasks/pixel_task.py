@@ -79,6 +79,10 @@ class PixelTask(Task):
         #     mode_id==0（MODE_STOP）→ 停；無 entries（純音效等）→ 熄燈停。
         self._mode_seq = -1     # 已消費到第幾個指令（-1 = 從未收過指令）
         self._cmd_active = False  # 收過指令後 auto 永久讓位（不回 auto）
+        self._fps_n = 0
+        self._fps_t0 = time.ticks_ms()
+        self._fps_us = 0
+        self._fps_max = 0
 
     # ── 啟動：依序初始化 ──────────────────────────
     def on_start(self):
@@ -395,6 +399,11 @@ class PixelTask(Task):
         get_log().info("[Pixel] ▶ show 開始（{} mode(s)）".format(len(self._show_list)))
 
     def _stop(self):
+        # 低優先 PixelLab（owner="test"）持有時不要 clear / 清渲染旗標，
+        # 否則 P1 的幀會被 PixelTask 的停止流程蓋掉（只剩第一粒/整片不亮）。
+        if bus.shared.get("pixel_owner") == "test":
+            self._playing = False
+            return
         self._playing = False
         if bus.shared.get("pixel_owner") == "pixel":
             bus.shared["pixel_owner"] = None
@@ -593,6 +602,7 @@ class PixelTask(Task):
         if view is None:
             # hub 滿（播放端還沒消化）→ 這幀跳過（drop），不阻塞計算核
             return True
+        t0 = time.ticks_us()
         lay = self._lay
         alive = False
         for e in player:
@@ -624,6 +634,11 @@ class PixelTask(Task):
             # 全部 entry 都至少跑完一次（= 長效果結束）→ 本次循環結束
             return False
         hub.commit()
+        dt = time.ticks_diff(time.ticks_us(), t0)
+        self._fps_n += 1
+        self._fps_us += dt
+        if dt > self._fps_max:
+            self._fps_max = dt
         # maxF：本次播放已 commit 幀數達上限 → 強制結束本次循環
         maxf = (self._cur_mode or {}).get("maxF", 0) or 0
         if maxf > 0:
@@ -633,9 +648,23 @@ class PixelTask(Task):
                     e["done"] = True
         return True
 
+    def _fps_log(self):
+        now = time.ticks_ms()
+        if time.ticks_diff(now, self._fps_t0) < 1000:
+            return
+        el = time.ticks_diff(now, self._fps_t0)
+        n = self._fps_n
+        get_log().info("[FPS] pixel {:.1f}/s tick avg {}us max {}us".format(
+            n * 1000.0 / el, self._fps_us // max(n, 1), self._fps_max))
+        self._fps_t0 = now
+        self._fps_n = 0
+        self._fps_us = 0
+        self._fps_max = 0
+
     def loop(self):
         if not self.running:
             return
+        self._fps_log()
         self._consume_cmds()
         # ── 串流優先：stream_active=True（串流載入/播放中）→ 本地模式讓位，
         #    但保持 _playing 狀態不停止；串流結束（stream_active=False）自動恢復。

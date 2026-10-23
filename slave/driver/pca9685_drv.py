@@ -273,7 +273,7 @@ def init_pca9685(sysbus=None):
 
         # ★ 保留廣播位址：只要這條 bus 有實體板，UI 就一定有一個 0x70 目標。
         #   自己建一個控制用的 0x70（播放端不一定有；就算有也不共用，見檔頭）。
-        if phys:
+        if phys or (_PCA_ALL_CALL in addrs):
             hw = _make_raw(i2c, _PCA_ALL_CALL)
             if hw is not None:
                 _add_ctl(ctl, hw, i2c_idx, _PCA_ALL_CALL,
@@ -346,7 +346,7 @@ def refresh_pca_ctl(sysbus=None):
             if addr not in phys_now:
                 phys_now.append(addr)
 
-        if phys_now:
+        if phys_now or (_PCA_ALL_CALL in addrs):
             key = (i2c_idx, _PCA_ALL_CALL)
             brec = by_key.get(key)
             if brec is None:

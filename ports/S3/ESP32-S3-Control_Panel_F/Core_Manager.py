@@ -80,6 +80,10 @@ from tasks.log_task import LogTask
 from tasks.web_ui import WebUITask
 from tasks.control_panel import ControlPanelTask
 from tasks.pixel_control_panel import PixelControlPanelTask
+from tasks.pixel_task import PixelTask
+from tasks.render import RenderTask
+from tasks.pixel_lab_task import PixelLabTask
+from tasks.stream_task import StreamTask
 
 
 def launcher():
@@ -148,6 +152,9 @@ def launcher():
     tm.register_task("network", NetworkTask, default_affinity=(1, 0), layer=0)
     tm.register_task("circuit", CircuitTask, default_affinity=(1, 0), layer=0)
     tm.register_task("now", NowTask, default_affinity=(1, 0), layer=0)
+    # 本板 port config 已 enable WS2812/APA102/PCA9685 → st_pixel 存在，
+    # stream 才不會自行停用（0x30xx 串流播放／live 來源）。
+    tm.register_task("stream", StreamTask, default_affinity=(1, 0), layer=0)
     tm.register_task("fs_scan", FsScanTask,  default_affinity=(0, 1), layer=0)
     from tasks.hw_sample_task import HwSampleTask
     tm.register_task("hw_sample", HwSampleTask, default_affinity=(0, 1), layer=0)
@@ -177,6 +184,16 @@ def launcher():
     #   lvgl     : 面板主 UI（core0-only）。沒有 LCD 時整段跳過（本板 TFT=1）。
     # ═══════════════════════════════════════════════════════════════════
     tm.register_task("web_ui", WebUITask, default_affinity=(0, 0), layer=2)
+
+    # ── pixel 子系統（本板現在是「面板 + 本地燈」共用）──
+    #   port config 已 enable WS2812/APA102/PCA9685 → st_pixel 存在；
+    #   PixelTask 建 layout/pixel_stream hub，RenderTask 從 hub 推硬體，
+    #   PixelLabTask 是低優先測試源（APA/RGB 走 hub；PCA 直接寫 pca9685_ctl）。
+    # 量測後調整：pixel / pixel_lab 移到 Core 1，跟 render 同核；
+    # Core 0 留給 LVGL/UI + 網路，避免 85ms 的 WS2812 show_all 把畫面拖到 10fps。
+    tm.register_task("pixel", PixelTask, default_affinity=(0, 1), layer=2)
+    tm.register_task("render", RenderTask, default_affinity=(0, 1), layer=2)
+    tm.register_task("pixel_lab", PixelLabTask, default_affinity=(0, 1), layer=2)
 
     if bus.has_lcd():
         from tasks.lvgl_task import LvglTask
@@ -209,22 +226,15 @@ def launcher():
     # ▍面板上「刻意不註冊」的任務（要復活就把註解打開）
     #   判準：需要本板沒有的硬體，或屬於「執行裝置」的角色。
     #
-    #   pixel / render : 本地燈效的計算核(core1) + 播放核(core0)。面板沒有
-    #                    WS2812/APA102/PCA9685/uartMotor → st_pixel=None →
-    #                    自行停用。面板要看燈效是「廣播 MODE_SET 給執行裝置」，
-    #                    不是自己播。
-    #   stream         : 0x30xx 串流播放（讀 data.bin 逐幀推燈）。面板不當
-    #                    播放端。
+    #   pixel / render / stream / pixel_lab 已在本 port 註冊（見上方）；若硬體
+    #   沒接，PixelTask/RenderTask/PixelLabTask 會依 st_pixel/服務自行停用。
+    #   要走「面板只發指令」的舊角色，再把上方四行 register 註解掉。
     #   dj / audio_player : 音訊合成 + I2S 播放（config I2S.enable=0，兩者
     #                    on_start 自行停用）。面板沒有音訊硬體。
     #   motor / action : 本板 UART1 已關閉（GPIO41 改作 encoder A），也沒有掛
     #                    電機，不當動作執行端
     #                    （那是 ActionTask1 的角色，見 temp/motor 的 Core_Manager）。
     #
-    #   from tasks.pixel_task import PixelTask
-    #   from tasks.render import RenderTask
-    #   tm.register_task("pixel", PixelTask, default_affinity=(1, 0), layer=1)
-    #   tm.register_task("render", RenderTask, default_affinity=(0, 1), layer=1)
     #   from tasks.dj_task import DjTask
     #   from tasks.audio_player_task import AudioPlayerTask
     #   tm.register_task("dj", DjTask, default_affinity=(0, 1), layer=1)
@@ -233,10 +243,6 @@ def launcher():
     #   from tasks.action_task import ActionTask
     #   tm.register_task("motor", ActionTask1, default_affinity=(1, 0), layer=0)
     #   tm.register_task("action", ActionTask, default_affinity=(1, 0), layer=0)
-    #
-    #   stream 若哪天要留（面板當 master 下發串流），記得它需要 pixel_stream
-    #   hub；hub 只在 st_pixel 存在時建立（見上方），否則 StreamTask 會自行
-    #   warn 並停用。
     # ═══════════════════════════════════════════════════════════════════
 
     tm.finalize()

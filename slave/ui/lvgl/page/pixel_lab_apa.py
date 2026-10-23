@@ -5,8 +5,8 @@ from ui.lvgl.page.pixel_lab_common import SimplePage
 _page = SimplePage("apa", "PixelLab APA", "APA102", 0x6D5BD0)
 
 
-@register(id="pixel_lab_apa", title="PixelLab APA", icon="sun",
-          desc="APA102 · 呼吸/選中", order=2, accent=0x6D5BD0)
+@register(id="pixel_lab_apa", title="PixelLab APA", icon="zap",
+          desc="APA102", order=3, accent=0x6D5BD0)
 def build():
     return _page.build()
 

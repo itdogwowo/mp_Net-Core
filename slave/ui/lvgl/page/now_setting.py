@@ -463,7 +463,7 @@ def _fill(lst, labels):
 
 
 @register(id="now_setting", title="ESP-NOW", icon="sensors",
-          desc="頻道·加密·已選節點", order=2, accent=0x7B1FA2)
+          desc="頻道·加密·已選節點", order=5, accent=0x7B1FA2)
 def build():
     global scr, _opt_list, _sel_list, _opt_btns, _sel_btns
     global _lb, _last, _sw_on, _sw_enc, _oi, _si, _dirty

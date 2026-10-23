@@ -13,6 +13,8 @@ lvgl_task.py — LVGL UI 任務（任務模式）
 LVGL 獨佔 LCD（原與 jpeg_player 互斥二選一，播放器已移除）。
 """
 
+import time
+
 from lib.sys.task import Task
 from lib.sys.sys_bus import bus
 from lib.sys.log_service import get_log
@@ -24,6 +26,10 @@ class LvglTask(Task):
 
     def __init__(self, name, ctx):
         super().__init__(name, ctx)
+        self._fps_n = 0
+        self._fps_t0 = time.ticks_ms()
+        self._fps_us = 0
+        self._fps_max = 0
 
     def on_start(self):
         super().on_start()
@@ -42,14 +48,29 @@ class LvglTask(Task):
         # 直接呼叫 app.step()(不經 board._loop_once,避免其 _sleep 阻塞 runner_loop)。
         # TaskManager 的 runner_loop 每輪結尾已 sleep_ms(0) 讓出,不需要 task 自己 sleep。
         from ui.lvgl import app, board
+        t0 = time.ticks_us()
         try:
             app.step()
         except Exception as e:
             try:
-                from lib.sys.log_service import get_log
                 get_log().error("[LvglTask] loop err: {}".format(e))
             except Exception:
                 print("[LvglTask] loop err:", e)
+        dt = time.ticks_diff(time.ticks_us(), t0)
+        self._fps_n += 1
+        self._fps_us += dt
+        if dt > self._fps_max:
+            self._fps_max = dt
+        now = time.ticks_ms()
+        if time.ticks_diff(now, self._fps_t0) >= 1000:
+            el = time.ticks_diff(now, self._fps_t0)
+            n = self._fps_n
+            get_log().info("[FPS] lvgl {:.1f}/s step avg {}us max {}us".format(
+                n * 1000.0 / el, self._fps_us // max(n, 1), self._fps_max))
+            self._fps_t0 = now
+            self._fps_n = 0
+            self._fps_us = 0
+            self._fps_max = 0
         self.touch += 1
 
     def on_stop(self):

@@ -7,33 +7,48 @@
 #     把本頁 range 歸零（buffer）或把選中的 PCA 16 通道歸零，然後釋放 owner。
 #   - 不恢復上一個模式/直播（沒有 LIFO、沒有 stack、沒有 flags 備份）。
 #
-# 模式：
-#   apa / rgb：走 pixel_stream hub（RenderTask 播放）
-#       base：本頁 type 的所有 cell 用 wwww 呼吸（0..4095）
-#       selected：本頁 index 那顆用 wwww 長亮/2Hz 閃爍
-#       其他 type 的 cell 保持 neutral（燈 0；motor 0x80）
+# 模式（兩個效果都由 lib.sw.effect_core 的波生成工具產生，步進式）：
+#   base   = Effect("lab_base")  正弦，200 幀 = 4s @ 50fps
+#   blink  = Effect("lab_blink") 方波，25 幀 = 0.5s（2Hz）
+#   每 commit 一幀 step += 1；不是用 time.ticks_ms 切時間。
+#
+#   apa / rgb：直接寫 PixelStreamer.big_buffer + show_all()（零拷貝，不經 hub）
+#       RenderTask 用 is_streaming=False / is_ready=True 不取幀，避免 copy 覆蓋
+#       base：全部燈 cell（APA/WS/PCA）一起呼吸；不是只有本頁 type
+#       selected：本頁 index 那顆最後寫入（固定次序；閃爍不會被 base 覆蓋）
 #   pca：直接寫 pca9685_ctl 選中的 PCA（不經 hub）
 #       base：16 通道全部呼吸
-#       selected：選中 channel 長亮/2Hz 閃爍
-#       RenderTask 用 is_streaming=False / is_ready=True 保持不動，
-#       避免 buffer 的 0x70 廣播蓋掉直接寫入的值。
+#       selected：單通道或 ALL 最後寫入（固定次序；閃爍不會被 base 覆蓋）
+#       ALL 時 16 通道一起閃；RenderTask 用 is_streaming=False / is_ready=True
+#       保持不動，避免 buffer 的 0x70 廣播蓋掉直接寫入的值。
 #
 # 選中模式（steady / blink）先固定 blink；未來改 SEL_MODE 即可，
 # UI 不提供切換（使用者定案）。
-import math
 import time
 from array import array
 
 from lib.sys.task import Task
 from lib.sys.sys_bus import bus
 from lib.sys.log_service import get_log
+from lib.sw.effect_core import Effect
 
 FRAME_MS = 20
 LEASE_MS = 3000
-BLINK_HALF_MS = 250          # 2 Hz 方波（on 250 / off 250）
-BREATH_MS = 2000
 SEL_MODE = "blink"           # "blink" | "steady"；未來直接改這裡
 PCA_CH = 16
+ALL_CH = 0xFF
+
+# 兩個效果都由 lib.sw.effect_core（波生成工具）產生，步進式、不是時間切片。
+#   F=10 + end_Time=N → 一個完整週期 N 幀（50fps）。
+#   base：正弦呼吸 200 幀 = 4s；blink：方波 25 幀 = 0.5s（2Hz）。
+BASE_PROGRAM = [{"type": "math_now", "F": 10, "l_max": 4095,
+                 "l_lim": 0, "phi": 0, "end_Time": 200}]
+BLINK_PROGRAM = [{"type": "square_wave_now", "F": 10, "l_max": 4095,
+                  "l_lim": 0, "phi": 0, "end_Time": 25}]
+BASE_PARAMS = {"pixel_n": 1, "step": 1, "spacing": 0, "offset": 0,
+               "speed": 1, "reverse": False, "program": BASE_PROGRAM}
+BLINK_PARAMS = {"pixel_n": 1, "step": 1, "spacing": 0, "offset": 0,
+                "speed": 1, "reverse": False, "program": BLINK_PROGRAM}
 
 TYPE_MAP = {
     "i2c_pixel": "pca9685",
@@ -48,13 +63,15 @@ class PixelLabTask(Task):
     def __init__(self, name, ctx):
         super().__init__(name, ctx)
         self._st_pixel = None
-        self._hub = None
         self._lay = None
         self._disabled = False
 
         self._base = b""
         self._ranges = {}
-        self._table = None
+        self._all_ranges = ()
+        self._base_fx = None
+        self._blink_fx = None
+        self._step = 0
         self._one = array("H", [0])
         self._one_sel = array("H", [0])
         self._sel_off = array("H", [0])
@@ -64,21 +81,27 @@ class PixelLabTask(Task):
         self._next_us = 0
         self._pca_key = None
         self._pca_rec = None
+        self._fps_n = 0
+        self._fps_t0 = time.ticks_ms()
+        self._fps_us = 0
+        self._fps_max = 0
 
     # ── 啟動 ─────────────────────────────────────────────
     def on_start(self):
         super().on_start()
         self._st_pixel = bus.get_service("st_pixel")
-        self._hub = bus.get_service("pixel_stream")
-        if self._st_pixel is None or self._hub is None:
+        if self._st_pixel is None:
             self._disabled = True
-            get_log().warn("[Lab] 無 st_pixel / pixel_stream — PixelLab 停用")
+            get_log().warn("[Lab] 無 st_pixel — PixelLab 停用")
             return
 
         self._ensure_layout()
         self._base = self._build_neutral()
         self._ranges = self._build_ranges()
-        self._table = self._build_table()
+        self._all_ranges = self._build_all_ranges()
+        self._base_fx = Effect("lab_base", BASE_PARAMS)
+        self._blink_fx = Effect("lab_blink", BLINK_PARAMS)
+        self._step = 0
 
         # 初始狀態（頁面 build 前也可能先讀）
         st = bus.shared.get("pixel_lab")
@@ -109,6 +132,38 @@ class PixelLabTask(Task):
             lay = PixelLayout(order, counts)
             bus.shared["pixel_layout"] = lay
         self._lay = lay
+
+    def _build_all_ranges(self):
+        """全部燈 cell（APA/WS/PCA）的連續區段；motor 不在內。
+
+        回傳 [(start, count), ...]；_tick_buffer 用 slice 一次填一段，
+        取代 4016 顆逐顆 scatter（C 層 slice assignment 比 viper 迴圈快）。
+        """
+        offs = array("H")
+        for t in ("apa102", "ws2812", "pca9685"):
+            cnt = int(getattr(self._lay, "counts", {}).get(t, 0) or 0)
+            if cnt <= 0:
+                continue
+            start = int(self._lay.type_offsets[t])
+            for i in range(start, start + cnt):
+                offs.append(i)
+        out = []
+        n = len(offs)
+        if n:
+            start = int(offs[0])
+            prev = start
+            cnt = 1
+            for k in range(1, n):
+                o = int(offs[k])
+                if o == prev + 1:
+                    cnt += 1
+                else:
+                    out.append((start, cnt))
+                    start = o
+                    cnt = 1
+                prev = o
+            out.append((start, cnt))
+        return tuple(out)
 
     def _build_neutral(self):
         """整槽 neutral：燈 0、motor/其他用 controller.neutral_value（W byte）。"""
@@ -181,21 +236,16 @@ class PixelLabTask(Task):
         items = cfg.get("list") or []
         bus_idx = int(rec.get("i2c", 0) or 0) if rec else 0
         s = "I2C{}".format(bus_idx)
+        pins = ""
         if 0 <= bus_idx < len(items):
             g = items[bus_idx].get("GPIO") or {}
-            if g.get("scl") is not None:
-                s += " · SCL:{}".format(g["scl"])
+            parts = []
             if g.get("sda") is not None:
-                s += " · SDA:{}".format(g["sda"])
-        return s
-
-    @staticmethod
-    def _build_table():
-        n = 256
-        tab = array("H", [0]) * n
-        for i in range(n):
-            tab[i] = int((math.sin(2.0 * math.pi * i / n) + 1.0) * 2047.5)
-        return tab
+                parts.append("SDA {}".format(g["sda"]))
+            if g.get("scl") is not None:
+                parts.append("SCL {}".format(g["scl"]))
+            pins = " · ".join(parts)
+        return s, pins
 
     # ── 狀態/視圖 ────────────────────────────────────────
     def _state(self):
@@ -209,7 +259,8 @@ class PixelLabTask(Task):
         return st
 
     def _publish(self, active, busy, mode, base_pct=0, sel_pct=0,
-                 index=0, ch=0, ch_pcts=None, target="", io="", count=0):
+                 index=0, ch=0, ch_pcts=None, target="", io="", count=0,
+                 pins=""):
         v = bus.shared.get("pixel_lab_view")
         if not isinstance(v, dict):
             v = {}
@@ -224,6 +275,7 @@ class PixelLabTask(Task):
         v["ch_pcts"] = ch_pcts
         v["target"] = target
         v["io"] = io or ""
+        v["pins"] = pins or ""
         v["count"] = int(count)
         v["sel_mode"] = SEL_MODE
 
@@ -235,9 +287,23 @@ class PixelLabTask(Task):
                       target="", io="", count=0)
 
     # ── 主迴圈 ───────────────────────────────────────────
+    def _fps_log(self):
+        now = time.ticks_ms()
+        if time.ticks_diff(now, self._fps_t0) < 1000:
+            return
+        el = time.ticks_diff(now, self._fps_t0)
+        n = self._fps_n
+        get_log().info("[FPS] lab {:.1f}/s tick avg {}us max {}us step {}".format(
+            n * 1000.0 / el, self._fps_us // max(n, 1), self._fps_max, self._step))
+        self._fps_t0 = now
+        self._fps_n = 0
+        self._fps_us = 0
+        self._fps_max = 0
+
     def loop(self):
         if not self.running or self._disabled:
             return
+        self._fps_log()
         st = self._state()
         active = bool(st.get("active"))
         owner = bus.shared.get("pixel_owner")
@@ -291,6 +357,7 @@ class PixelLabTask(Task):
         self._active = True
         self._mode = mode
         self._next_us = time.ticks_us()
+        self._step = 0
         if mode == "pca":
             # 不讓 RenderTask 用 buffer（含 0x70 廣播）覆蓋直接寫入
             bus.shared.update({
@@ -301,12 +368,10 @@ class PixelLabTask(Task):
             self._pca_key = None
             self._pca_rec = None
         else:
-            try:
-                self._hub.flush()
-            except Exception:
-                pass
+            # 直接寫 PixelStreamer.big_buffer 再 show_all()，走零拷貝；
+            # RenderTask 不取幀（is_streaming=False），避免它 copy 覆蓋。
             bus.shared.update({
-                "is_streaming": True,
+                "is_streaming": False,
                 "is_ready": True,
                 "is_paused": False,
             })
@@ -318,6 +383,10 @@ class PixelLabTask(Task):
         self._mode = None
         self._pca_key = None
         self._pca_rec = None
+        self._fps_n = 0
+        self._fps_t0 = time.ticks_ms()
+        self._fps_us = 0
+        self._fps_max = 0
 
     def _deactivate(self, zero=True, release=True):
         mode = self._mode
@@ -328,10 +397,6 @@ class PixelLabTask(Task):
         owner = bus.shared.get("pixel_owner")
         if zero and owner == "test":
             if mode in ("apa", "rgb"):
-                try:
-                    self._hub.flush()
-                except Exception:
-                    pass
                 try:
                     self._st_pixel.clear_all()
                 except Exception:
@@ -358,6 +423,10 @@ class PixelLabTask(Task):
 
         self._pca_key = None
         self._pca_rec = None
+        self._fps_n = 0
+        self._fps_t0 = time.ticks_ms()
+        self._fps_us = 0
+        self._fps_max = 0
         if release and bus.shared.get("pixel_owner") == "test":
             bus.shared["pixel_owner"] = None
         if was:
@@ -369,22 +438,28 @@ class PixelLabTask(Task):
         if not r:
             self._deactivate(zero=True, release=True)
             return
-        view = self._hub.get_write_view()
+        # LEDController / PixelStreamer 的零拷貝入口：直接寫 big_buffer。
+        get_view = getattr(self._st_pixel, "get_write_view", None)
+        view = get_view() if get_view is not None else self._st_pixel.big_buffer
         if view is None:
             return
 
+        t0 = time.ticks_us()
         base = self._base_value()
         base_pct = base * 100 // 4095
+        # 一次 C 層 copy 回中性，再把每段燈用 slice 填 base（不逐顆 scatter）。
         try:
             view[:] = self._base
         except Exception:
             pass
-
-        self._one[0] = base
+        pat = bytes((0, 0, base & 0xFF, base >> 8))
         try:
-            self._lay.scatter_offs(view, r["offs"], self._one, "wwww")
+            for start, count in self._all_ranges:
+                a = start << 2
+                b = (start + count) << 2
+                view[a:b] = pat * count
         except Exception as e:
-            get_log().warn("[Lab] scatter range err: {}".format(e))
+            get_log().warn("[Lab] fill all err: {}".format(e))
             return
 
         try:
@@ -393,6 +468,7 @@ class PixelLabTask(Task):
             idx = 0
         idx = max(0, min(idx, r["count"] - 1))
         sv = self._sel_value()
+        # 固定次序：base 先填，選中/閃爍最後寫，閃爍一定不會被 base 覆蓋。
         self._sel_off[0] = r["start"] + idx
         self._one_sel[0] = sv
         try:
@@ -401,10 +477,17 @@ class PixelLabTask(Task):
             get_log().warn("[Lab] scatter selected err: {}".format(e))
             return
         try:
-            self._hub.commit()
-        except Exception:
+            self._st_pixel.show_all()
+        except Exception as e:
+            get_log().warn("[Lab] show_all err: {}".format(e))
             return
+        dt = time.ticks_diff(time.ticks_us(), t0)
+        self._fps_n += 1
+        self._fps_us += dt
+        if dt > self._fps_max:
+            self._fps_max = dt
 
+        self._step += 1
         self._publish(True, False, mode, base_pct,
                       100 if sv else 0, idx, 0, None,
                       "", r["io"], r["count"])
@@ -463,42 +546,64 @@ class PixelLabTask(Task):
         self._pca_rec = rec
         pca = rec.get("pca")
 
+        t0 = time.ticks_us()
         base = self._base_value()
         base_pct = base * 100 // 4095
         try:
             ch = int(st.get("ch", 0) or 0)
         except Exception:
             ch = 0
-        ch = max(0, min(ch, PCA_CH - 1))
+        # 0xFF = ALL_LED（頁面「全部通道」）；其餘 0..15 單通道。
+        all_ch = (ch & 0xFF) == ALL_CH
+        if not all_ch:
+            ch = max(0, min(ch, PCA_CH - 1))
         sv = self._sel_value()
+        # 固定次序：base 先寫，選中/閃爍最後寫，閃爍不會被 base 覆蓋。
         try:
             for i in range(PCA_CH):
                 pca.buf[i] = base
-            pca.buf[ch] = sv
+            if all_ch:
+                for i in range(PCA_CH):
+                    pca.buf[i] = sv
+            else:
+                pca.buf[ch] = sv
             pca.show()
         except Exception as e:
             get_log().warn("[Lab] pca write err: {}".format(e))
             self._publish(False, True, "pca", target="", io="", count=PCA_CH)
             return
+        dt = time.ticks_diff(time.ticks_us(), t0)
+        self._fps_n += 1
+        self._fps_us += dt
+        if dt > self._fps_max:
+            self._fps_max = dt
+        self._step += 1
 
-        pcts = [base_pct] * PCA_CH
-        pcts[ch] = 100 if sv else 0
+        if all_ch:
+            pcts = [100 if sv else 0] * PCA_CH
+        else:
+            pcts = [base_pct] * PCA_CH
+            pcts[ch] = 100 if sv else 0
         name = "0x{:02X}".format(addr)
+        io, pins = self._io_pca(rec)
         self._publish(True, False, "pca", base_pct,
                       100 if sv else 0, 0, ch, pcts,
-                      name, self._io_pca(rec), PCA_CH)
+                      name, io, PCA_CH, pins)
 
     # ── 數值 ─────────────────────────────────────────────
     def _base_value(self):
-        if self._table is None:
+        fx = self._base_fx
+        if fx is None:
             return 0
-        idx = (time.ticks_ms() % BREATH_MS) * 256 // BREATH_MS
-        return int(self._table[idx]) & 0xFFF
+        return int(fx.frame(self._step)[0]) & 0xFFF
 
     def _sel_value(self):
         if SEL_MODE == "steady":
             return 4095
-        return 4095 if (time.ticks_ms() // BLINK_HALF_MS) & 1 == 0 else 0
+        fx = self._blink_fx
+        if fx is None:
+            return 0
+        return int(fx.frame(self._step)[0]) & 0xFFF
 
     def on_stop(self):
         super().on_stop()
