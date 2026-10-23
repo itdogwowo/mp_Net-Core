@@ -46,8 +46,30 @@ class RenderTask(Task):
 
         get_log().info("🔥 [RenderTask] Engine Online | {} ms/幀".format(self.frame_interval_ms))
 
+    def _fps_log(self):
+        now = time.ticks_ms()
+        if time.ticks_diff(now, self._fps_t0) < 1000:
+            return
+        el = time.ticks_diff(now, self._fps_t0)
+        n = self._fps_n
+        get_log().info("[FPS] render {:.1f}/s show avg {}us max {}us".format(
+            n * 1000.0 / el, self._fps_us // max(n, 1), self._fps_max))
+        try:
+            sw, sk, ga, sa, ov = self.st_pixel.stats()
+            get_log().info("[GATE] render show={} skip={} gate_avg={}us show_avg={}us overhead={:.3f}%".format(
+                sw, sk, ga, sa, ov))
+        except Exception:
+            pass
+        self._fps_t0 = now
+        self._fps_n = 0
+        self._fps_us = 0
+        self._fps_max = 0
+
     def loop(self):
         if not self.running: return
+        self._fps_log()
+        if not bus.shared.get("led_enabled", True):
+            return
 
         # 🔧 0x3001 主動同步：slave 只存原始 fps（stream_actions），此處變化時才換算一次節拍
         fps_ov = bus.shared.get("stream_fps_override")
@@ -106,9 +128,14 @@ class RenderTask(Task):
         if time.ticks_diff(now, self.next_tick_us) >= 0:
             t0 = time.ticks_us()
             if self.hub.read_into(self.st_pixel.big_buffer):
-                self.st_pixel.show_all()
-                self._played_frames += 1
-                self.success += 1
+                try:
+                    self.st_pixel.mark_dirty()
+                except Exception:
+                    pass
+                shown = self.st_pixel.show_all()
+                if shown:
+                    self._played_frames += 1
+                    self.success += 1
                 dt = time.ticks_diff(time.ticks_us(), t0)
                 self._fps_n += 1
                 self._fps_us += dt

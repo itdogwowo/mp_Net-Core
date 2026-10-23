@@ -285,3 +285,57 @@ settings
   補上 `("pixel_lab_apa", pixel_lab_apa)`、`("pixel_lab_rgb", pixel_lab_rgb)`。
 - PCA 頁與 `pixel_lab` 任務的 pca 模式不受影響；P1 仍由 Core 1 的
   `pixel_lab` 直接輸出 PCA9685（含 0x70 broadcast）。
+
+---
+
+## 8. 2026-10-24 dirty gate + 真正熄燈（/led_off）
+
+### 8.1 方法
+
+- `PixelStreamer` 新增 **1 byte `_dirty`**（小緩衝）：
+  - 寫入者改完 `big_buffer` 後呼叫 `mark_dirty()`。
+  - `show_all()` 前只看 `_dirty[0]`；0 就直接 return False，不搬運、不輸出。
+  - `show_all()` 完成後立刻 `_dirty[0]=0`（渲染完馬上釋放）。
+  - `clear_all()` / `stop_motors()` 用 `force=True` 保證一定送。
+- 新增大開關 `set_led_enabled(False)` 與 `/led_off` 檔案：
+  - 關閉時先 `clear_all()` 推一次中性值（真熄燈），之後 `show_all()` 全跳過。
+  - `bus.shared["led_enabled"]` 同步給 `PixelLabTask` / `RenderTask`；兩者連計算都跳過。
+  - 要恢復：刪 `/led_off` 後重開，或 REPL `st_pixel.set_led_enabled(True)`。
+- `PixelLabTask` 的 PCA 路徑另加 `_pca_last` 小緩衝：
+  - 記錄 `(addr, ch, all_ch, base, sel)`；一樣就跳過 `pca.show()`。
+  - `[GATE] pca` 會印 show/skip/gate_avg/show_avg/overhead。
+
+### 8.2 實測（2000 顆 WS2812）
+
+`/led_off` 開機（只推一次中性幀後就跳過）：
+
+```
+[GATE] render show=1 skip=0 gate_avg=12us show_avg=79717us overhead=0.015%
+[GATE] lab    show=1 skip=0 gate_avg=12us show_avg=79717us overhead=0.015%
+[FPS] render 0.0/s
+[FPS] lab    0.0/s
+[FPS] pixel  0.0/s
+[FPS] lvgl   137~141/s
+```
+
+REPL 手動開燈、跑一次 dirty → clean → dirty：
+
+```
+st.set_led_enabled(True)      # LED on（先 clear 一次）
+st.show_all()                 # -> True（真正輸出）
+st.show_all()                 # -> False（dirty=0，整幀跳過）
+st.mark_dirty(); st.show_all()# -> True（有修改才輸出）
+st.stats()                    # -> (4, 1, 27, 80172, 0.0337)
+```
+
+- `gate_avg`：**12～27us**（含 `ticks_us()` 量測本身）
+- `show_avg`：**79.7～80.2ms**（2000 顆 WS2812 的物理上限）
+- gate 佔比：**0.015%～0.034%**（性能下降可忽略）
+- 一次 skip 省下 **約 80ms**；dirty gate 確實讓「沒修改」不渲染。
+- 50fps 仍不可能：80ms/幀 → 約 12.5fps；要 50fps 需 APA102/SPI 或減顆數。
+
+### 8.3 目前板子狀態
+
+- `/led_off` 已建立：LED 硬體輸出關閉（開機推一次中性值後不再送）。
+- `page/__init__.py` 已停用 APA / RGB 兩頁，PCA 保留。
+- `[FPS] render` 這次也補上了；idle 時是 0。

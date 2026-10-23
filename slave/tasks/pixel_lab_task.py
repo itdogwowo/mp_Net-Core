@@ -81,6 +81,12 @@ class PixelLabTask(Task):
         self._next_us = 0
         self._pca_key = None
         self._pca_rec = None
+        self._pca_zeroed = False
+        self._pca_last = None
+        self._pca_show_n = 0
+        self._pca_skip_n = 0
+        self._pca_gate_us = 0
+        self._pca_show_us = 0
         self._fps_n = 0
         self._fps_t0 = time.ticks_ms()
         self._fps_us = 0
@@ -295,6 +301,19 @@ class PixelLabTask(Task):
         n = self._fps_n
         get_log().info("[FPS] lab {:.1f}/s tick avg {}us max {}us step {}".format(
             n * 1000.0 / el, self._fps_us // max(n, 1), self._fps_max, self._step))
+        try:
+            sw, sk, ga, sa, ov = self._st_pixel.stats()
+            get_log().info("[GATE] lab show={} skip={} gate_avg={}us show_avg={}us overhead={:.3f}%".format(
+                sw, sk, ga, sa, ov))
+        except Exception:
+            pass
+        pn = self._pca_show_n + self._pca_skip_n
+        if pn:
+            ga = self._pca_gate_us // pn
+            sa = self._pca_show_us // max(self._pca_show_n, 1)
+            ov = (ga * 100000.0 / (ga + sa)) / 1000.0 if (ga + sa) else 0.0
+            get_log().info("[GATE] pca show={} skip={} gate_avg={}us show_avg={}us overhead={:.3f}%".format(
+                self._pca_show_n, self._pca_skip_n, ga, sa, ov))
         self._fps_t0 = now
         self._fps_n = 0
         self._fps_us = 0
@@ -367,6 +386,8 @@ class PixelLabTask(Task):
             })
             self._pca_key = None
             self._pca_rec = None
+            self._pca_zeroed = False
+            self._pca_last = None
         else:
             # 直接寫 PixelStreamer.big_buffer 再 show_all()，走零拷貝；
             # RenderTask 不取幀（is_streaming=False），避免它 copy 覆蓋。
@@ -383,6 +404,8 @@ class PixelLabTask(Task):
         self._mode = None
         self._pca_key = None
         self._pca_rec = None
+        self._pca_zeroed = False
+        self._pca_last = None
         self._fps_n = 0
         self._fps_t0 = time.ticks_ms()
         self._fps_us = 0
@@ -423,6 +446,8 @@ class PixelLabTask(Task):
 
         self._pca_key = None
         self._pca_rec = None
+        self._pca_zeroed = False
+        self._pca_last = None
         self._fps_n = 0
         self._fps_t0 = time.ticks_ms()
         self._fps_us = 0
@@ -437,6 +462,9 @@ class PixelLabTask(Task):
         r = self._ranges.get(mode)
         if not r:
             self._deactivate(zero=True, release=True)
+            return
+        if not bus.shared.get("led_enabled", True):
+            self._step += 1
             return
         # LEDController / PixelStreamer 的零拷貝入口：直接寫 big_buffer。
         get_view = getattr(self._st_pixel, "get_write_view", None)
@@ -476,6 +504,10 @@ class PixelLabTask(Task):
         except Exception as e:
             get_log().warn("[Lab] scatter selected err: {}".format(e))
             return
+        try:
+            self._st_pixel.mark_dirty()
+        except Exception:
+            pass
         try:
             self._st_pixel.show_all()
         except Exception as e:
@@ -546,7 +578,15 @@ class PixelLabTask(Task):
         self._pca_rec = rec
         pca = rec.get("pca")
 
-        t0 = time.ticks_us()
+        if not bus.shared.get("led_enabled", True):
+            if not self._pca_zeroed:
+                self._zero_pca(rec)
+                self._pca_zeroed = True
+            self._pca_last = None
+            self._step += 1
+            return
+        self._pca_zeroed = False
+
         base = self._base_value()
         base_pct = base * 100 // 4095
         try:
@@ -558,6 +598,24 @@ class PixelLabTask(Task):
         if not all_ch:
             ch = max(0, min(ch, PCA_CH - 1))
         sv = self._sel_value()
+        # 小緩衝：記錄這一次 PCA 系列的核心值；一樣就跳過 pca.show()。
+        key = (addr, ch, all_ch, base, sv)
+        t0 = time.ticks_us()
+        if self._pca_last == key:
+            self._pca_skip_n += 1
+            self._pca_gate_us += time.ticks_diff(time.ticks_us(), t0)
+            self._step += 1
+            if all_ch:
+                pcts = [100 if sv else 0] * PCA_CH
+            else:
+                pcts = [base_pct] * PCA_CH
+                pcts[ch] = 100 if sv else 0
+            name = "0x{:02X}".format(addr)
+            io, pins = self._io_pca(rec)
+            self._publish(True, False, "pca", base_pct,
+                          100 if sv else 0, 0, ch, pcts,
+                          name, io, PCA_CH, pins)
+            return
         # 固定次序：base 先寫，選中/閃爍最後寫，閃爍不會被 base 覆蓋。
         try:
             for i in range(PCA_CH):
@@ -572,7 +630,11 @@ class PixelLabTask(Task):
             get_log().warn("[Lab] pca write err: {}".format(e))
             self._publish(False, True, "pca", target="", io="", count=PCA_CH)
             return
-        dt = time.ticks_diff(time.ticks_us(), t0)
+        self._pca_last = key
+        t_end = time.ticks_us()
+        dt = time.ticks_diff(t_end, t0)
+        self._pca_show_n += 1
+        self._pca_show_us += dt
         self._fps_n += 1
         self._fps_us += dt
         if dt > self._fps_max:

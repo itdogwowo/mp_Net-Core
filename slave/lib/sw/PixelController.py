@@ -5,6 +5,12 @@ import gc
 import utime
 import math
 import array
+import os
+
+try:
+    from lib.sys.sys_bus import bus as _sys_bus
+except Exception:
+    _sys_bus = None
 
 # ==================== PixelController ====================
 class PixelController:
@@ -124,6 +130,18 @@ class PixelStreamer:
         self.total_bytes = sum(c.frame_size for c in controllers)
         self.big_buffer = bytearray(self.total_bytes)
         self.offsets = []
+
+        # ── 小緩衝 dirty gate ────────────────────────────────
+        # 1 byte：這一系列是否有人改過 big_buffer。show_all() 前只看這個，
+        # 沒改就跳過整幀（省下 85ms 的 WS2812 寫入）；show_all() 完立刻清 0。
+        self._dirty = bytearray(1)
+        self._dirty[0] = 1          # 上電第一幀一定要送
+        self._led_on = True         # /led_off 或 set_led_enabled(False) 可停硬體輸出
+        self._stat_show = 0
+        self._stat_skip = 0
+        self._stat_gate_us = 0
+        self._stat_show_us = 0
+        self._stat_gate_n = 0
         
         # 預計算偏移量，減少循環中的算力支出
         current_offset = 0
@@ -134,15 +152,68 @@ class PixelStreamer:
     def init(self):
         for c in self.controllers:
             c.st_init()
-        print(f"[Streamer] Ready. Total Buffer: {self.total_bytes} bytes")
+        self._dirty[0] = 1
+        # /led_off 檔案：開機直接熄燈（先推一幀中性值，之後 show_all 全跳過）。
+        try:
+            if os.path.exists("/led_off"):
+                self._led_on = True
+                self.clear_all()
+                self._led_on = False
+                self._dirty[0] = 0
+        except Exception:
+            pass
+        if _sys_bus is not None:
+            try:
+                _sys_bus.shared["led_enabled"] = self._led_on
+            except Exception:
+                pass
+        print(f"[Streamer] Ready. Total Buffer: {self.total_bytes} bytes | led={'on' if self._led_on else 'off'}")
 
     def get_write_view(self):
-        """獲取原始緩衝供外部填充數據"""
+        """獲取原始緩衝供外部填充數據；寫完請呼叫 mark_dirty()。"""
         return self.big_buffer
 
+    def mark_dirty(self):
+        """標記這一系列有修改；show_all() 前會看這 1 byte。"""
+        self._dirty[0] = 1
+
+    def set_led_enabled(self, on):
+        """硬體輸出總開關。關閉時先推一幀中性值（真熄燈），之後 show_all 全跳過。"""
+        on = bool(on)
+        if not on and self._led_on:
+            self._led_on = True
+            try:
+                self.clear_all()
+            except Exception:
+                pass
+        self._led_on = on
+        self._dirty[0] = 0 if not on else 1
+        if _sys_bus is not None:
+            try:
+                _sys_bus.shared["led_enabled"] = on
+            except Exception:
+                pass
+        print("[Streamer] LED", "on" if on else "off")
+
+    def stats(self):
+        """回傳 (show, skip, gate_avg_us, show_avg_us, gate_overhead_pct)，累計。"""
+        gn = self._stat_gate_n
+        gate_avg = self._stat_gate_us // gn if gn else 0
+        show_avg = self._stat_show_us // self._stat_show if self._stat_show else 0
+        total = gate_avg + show_avg
+        overhead = (gate_avg * 100000.0 / total) / 1000.0 if total else 0.0
+        return (self._stat_show, self._stat_skip, gate_avg, show_avg, overhead)
+
     @micropython.native
-    def show_all(self):
-        """執行一幀完整的渲染流程"""
+    def show_all(self, force=False):
+        """執行一幀完整的渲染流程；dirty=0 或 LED 關閉時直接跳過。"""
+        t0 = utime.ticks_us()
+        if not self._led_on or (not force and not self._dirty[0]):
+            self._stat_skip += 1
+            self._stat_gate_us += utime.ticks_diff(utime.ticks_us(), t0)
+            self._stat_gate_n += 1
+            return False
+        t1 = utime.ticks_us()
         buf = self.big_buffer
         offs = self.offsets
         for i in range(len(self.controllers)):
@@ -152,6 +223,13 @@ class PixelStreamer:
             
             # 2. 硬體輸出
             ctrl.st_show()
+        self._dirty[0] = 0          # 渲染完馬上釋放 dirty
+        t2 = utime.ticks_us()
+        self._stat_show += 1
+        self._stat_gate_us += utime.ticks_diff(t1, t0)
+        self._stat_show_us += utime.ticks_diff(t2, t1)
+        self._stat_gate_n += 1
+        return True
 
     def clear_all(self):
         """熄燈/停機：填中性值（燈=0 熄滅，motor=0x80 死區停），再推一幀到硬體。
@@ -171,7 +249,8 @@ class PixelStreamer:
                 buf[o + 1] = 0
                 buf[o + 2] = 0
                 buf[o + 3] = neutral
-        self.show_all()
+        self._dirty[0] = 1
+        self.show_all(force=True)
 
     def stop_motors(self):
         """暫停：電機填中性值（0x80 死區停）歸位，燈保持最後一幀，再推一幀到硬體。
@@ -189,7 +268,8 @@ class PixelStreamer:
             off = offs[i]
             for k in range(c.num_pixels):
                 buf[off + (k << 2) + 3] = neutral
-        self.show_all()
+        self._dirty[0] = 1
+        self.show_all(force=True)
 
     def close(self):
         for c in self.controllers:
@@ -232,6 +312,7 @@ if __name__ == '__main__':
                 source[idx + 3] = int(s)          # W (供 PCA 使用)
             
             # 使用高性能接口渲染
+            streamer.mark_dirty()
             streamer.show_all()
             
             angle += 0.1
