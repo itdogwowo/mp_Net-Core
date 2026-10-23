@@ -171,8 +171,6 @@ slave/tasks/pixel_lab_task.py
 ```
 /ui/lvgl/page/__init__.py
 /ui/lvgl/page/pixel_lab_common.py
-/ui/lvgl/page/pixel_lab_apa.py
-/ui/lvgl/page/pixel_lab_rgb.py
 /ui/lvgl/page/pixel_lab_pca.py
 /ui/lvgl/page/pixel_controller.py
 /ui/lvgl/page/remote.py
@@ -180,6 +178,11 @@ slave/tasks/pixel_lab_task.py
 /ui/lvgl/page/settings.py
 /tasks/pixel_lab_task.py
 ```
+
+> **2026-10-24 暫時停用 APA / RGB 兩頁**：`page/__init__.py` 不再 import
+> `pixel_lab_apa.py`、`pixel_lab_rgb.py`，launcher 不會出現這兩頁；檔案保留。
+> 要恢復時把 `page/__init__.py` 的兩個 try-import 與 `_PAGES_MOD` 兩行加回。
+> 原因：WS2812 2000 的 `show_all()` 約 85ms，50fps 不可能；這兩頁暫時用不着。
 
 ### 3.3 面板/執行端（依 2.2 決策）
 
@@ -232,6 +235,10 @@ slave/tasks/pixel_lab_task.py
 | 主 `pixel` | 0（沒播 mode） | 0（沒播 mode） |
 | 主 `render` | 0（idle） | 0（idle） |
 | 現象 | 畫面被 P1 的 85ms show_all 拖到 10fps | 畫面回到 42.7fps；P1 仍 10.5fps |
+| P1 停用（APA/RGB 頁關閉） | — | **LVGL 143.9fps**、lab 0、pixel 0（2026-10-24 收尾） |
+
+> P1 停用後 LVGL 達 **143.9fps**（step avg 0.54ms），代表 UI 本身已超過 50fps；
+> 50fps 只在 P1 啟動 APA/RGB 的 WS2812 輸出時才會被 85ms show_all 限制。
 
 ### 6.3 結論
 
@@ -255,3 +262,26 @@ slave/tasks/pixel_lab_task.py
 - `slave/tasks/lvgl_task.py`、`pixel_task.py`、`render.py`、`pixel_lab_task.py`
   各有 1 秒一次的 `[FPS]` log；`pixel_lab_task.py` 的 `/bench` 鉤子已移除。
 - 不想要 log 時，把各 task 的 `_fps_log()` 呼叫註解掉即可；不影響燈效。
+
+---
+
+## 7. 2026-10-24 暫時停用 APA / RGB 頁
+
+目前 launcher 只留 5 頁：
+
+```
+pixel_controller
+pixel_lab_pca
+remote
+now_setting
+settings
+```
+
+- `page/__init__.py` 不再 import / 註冊 `pixel_lab_apa`、`pixel_lab_rgb`；
+  launcher 不會出現這兩頁，`app.build_all` 也少建兩個 screen。
+- 兩支檔案 `slave/ui/lvgl/page/pixel_lab_apa.py`、`pixel_lab_rgb.py`
+  仍保留，沒有刪除。
+- 要恢復：在 `page/__init__.py` 把兩段 try-import 加回，並在 `_PAGES_MOD`
+  補上 `("pixel_lab_apa", pixel_lab_apa)`、`("pixel_lab_rgb", pixel_lab_rgb)`。
+- PCA 頁與 `pixel_lab` 任務的 pca 模式不受影響；P1 仍由 Core 1 的
+  `pixel_lab` 直接輸出 PCA9685（含 0x70 broadcast）。
