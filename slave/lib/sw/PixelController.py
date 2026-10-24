@@ -154,6 +154,23 @@ class PixelStreamer:
             self.offsets.append(current_offset)
             current_offset += c.frame_size
 
+        # 初始化就把每個 PixelController 的絕對範圍算好、按 byte 起點排序。
+        # cell = 4 bytes（R,G,B,W）；之後 mark_dirty_range() 可直接用 cell/byte 範圍。
+        self.ranges = []
+        current_offset = 0
+        for i, c in enumerate(controllers):
+            fs = int(c.frame_size)
+            self.ranges.append({
+                "i": i,
+                "type": getattr(c, "pixel_type", "?"),
+                "start_byte": current_offset,
+                "end_byte": current_offset + fs,
+                "start_cell": current_offset >> 2,
+                "count": fs >> 2,
+            })
+            current_offset += fs
+        self.ranges.sort(key=lambda r: r["start_byte"])
+
     def init(self):
         for c in self.controllers:
             c.st_init()
@@ -175,6 +192,12 @@ class PixelStreamer:
             except Exception:
                 pass
         print(f"[Streamer] Ready. Total Buffer: {self.total_bytes} bytes | led={'on' if self._led_on else 'off'}")
+        try:
+            rs = ", ".join("{}[{}+{})".format(r["type"], r["start_cell"], r["count"])
+                           for r in self.ranges)
+            print("[Streamer] ranges: " + rs)
+        except Exception:
+            pass
 
     def get_write_view(self):
         """獲取原始緩衝供外部填充數據；寫完請呼叫 mark_dirty()。"""
@@ -219,6 +242,27 @@ class PixelStreamer:
             if w in ("pca", "pca9685", "i2c", "i2c_pixel") and t == "i2c_pixel":
                 d[i] = 1
                 return
+
+    def mark_dirty_range(self, start, count=1, unit="cell"):
+        """用絕對範圍精準標記：只會 mark 到跟 [start,start+count) 重疊的 controller。
+
+        unit="cell"（預設，4 bytes/cell）或 "byte"。回傳這次新 mark 的 controller 數。
+        """
+        if unit == "byte":
+            s = int(start)
+            e = s + int(count)
+        else:
+            s = int(start) << 2
+            e = s + (int(count) << 2)
+        n = 0
+        for r in self.ranges:
+            if r["end_byte"] <= s or e <= r["start_byte"]:
+                continue
+            i = r["i"]
+            if not self._dirty[i]:
+                self._dirty[i] = 1
+                n += 1
+        return n
 
     def set_led_enabled(self, on):
         """硬體輸出總開關。關閉時先推一幀中性值（真熄燈），之後 show_all 全跳過。"""

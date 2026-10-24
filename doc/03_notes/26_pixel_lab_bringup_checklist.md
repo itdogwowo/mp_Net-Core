@@ -365,3 +365,43 @@ st.show_all()                    # True，三種全輸出（avg 79.8ms）
 - `[FPS] render` 這次也補上了；idle 時是 0。
 - 目前 `[GATE]` 的 `show=1` 就是 `/led_off` 開機那次中性幀；之後
   `render/lab/pixel` 都是 0，沒有再送 LED。
+
+### 8.4 初始化絕對範圍表 + `mark_dirty_range()`
+
+`PixelStreamer.__init__` 現在除了 `offsets`，還建立一份按 **byte 起點排序** 的
+`self.ranges`：
+
+```
+APA102    start_cell 0     count 2000   byte 0..8000
+WS2812    start_cell 2000  count 2000   byte 8000..16000
+i2c_pixel start_cell 4000  count 16     byte 16000..16064
+```
+
+- 每個 entry：`i`（controller index）、`type`、`start_byte`、`end_byte`、
+  `start_cell`、`count`。
+- `mark_dirty_range(start, count=1, unit="cell")`：
+  - 依絕對 cell/byte 範圍，只 mark **跟這個範圍重疊的 controller**。
+  - 回傳這次新 mark 的 controller 數。
+  - 例：`mark_dirty_range(4000, 1)` → 只 mark i2c_pixel；
+    `mark_dirty_range(1999, 2)` → APA102 + WS2812（跨邊界）；
+    `mark_dirty_range(0, 4016)` → 三個全 mark。
+- `show_all()` 仍然只用各 controller 的 `offsets[i]` 做 `st_load_and_convert`
+  與 `st_show`，但只對 dirty=1 的做。
+
+實測（LED on，依序呼叫）：
+
+| 呼叫 | 回傳 mark 數 | 實際輸出 | 單獨 avg |
+|---|---|---|---|
+| `mark_dirty_range(4000, 1)` | 1 | i2c_pixel only | **2.15ms** |
+| `mark_dirty_range(2001, 1)` | 1 | WS2812 only | **68.14ms** |
+| `mark_dirty_range(1999, 2)` | 2 | APA102 + WS2812 | 兩者 |
+| `mark_dirty_range(0, 2000)` | 1 | APA102 only | **9.76ms** |
+| `mark_dirty_range(0, 4016)` | 3 | 全部 | **79.7ms** |
+
+- gate：**29us**；overhead：**0.048%**
+- 這證明「哪個 Object 的範圍被改」可以精準落到 controller，
+  不會 PCA 改一格就重送 WS2812 的 68ms。
+
+目前 `PixelLabTask._tick_buffer` 的 base 是全部燈，所以它仍 `mark_dirty()` 全部；
+`RenderTask` 是整幀，也是全部。要只更新局部時，用 `mark_dirty_range()` 或
+`mark_dirty("pca9685")` 這類入口即可。
