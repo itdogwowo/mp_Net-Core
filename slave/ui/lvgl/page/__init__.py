@@ -21,18 +21,16 @@ try:
 except Exception as _e:
     print("[page] now_setting import skip:", _e)
     now_setting = None
-# 2026-10-24 暫時停用 APA / RGB 兩頁（WS2812 2000 的 50fps 不可能，先用 PCA）。
-# 檔案保留；要恢復時把下面兩個 try-import 與 _PAGES_MOD 的兩行加回即可。
-# try:
-#     from ui.lvgl.page import pixel_lab_apa
-# except Exception as _e:
-#     print("[page] pixel_lab_apa import skip:", _e)
-#     pixel_lab_apa = None
-# try:
-#     from ui.lvgl.page import pixel_lab_rgb
-# except Exception as _e:
-#     print("[page] pixel_lab_rgb import skip:", _e)
-#     pixel_lab_rgb = None
+try:
+    from ui.lvgl.page import pixel_lab_apa
+except Exception as _e:
+    print("[page] pixel_lab_apa import skip:", _e)
+    pixel_lab_apa = None
+try:
+    from ui.lvgl.page import pixel_lab_rgb
+except Exception as _e:
+    print("[page] pixel_lab_rgb import skip:", _e)
+    pixel_lab_rgb = None
 try:
     from ui.lvgl.page import pixel_lab_pca
 except Exception as _e:
@@ -54,6 +52,8 @@ except Exception as _e:
 _PAGES_MOD = [
     ("remote", remote),
     ("now_setting", now_setting),
+    ("pixel_lab_apa", pixel_lab_apa),
+    ("pixel_lab_rgb", pixel_lab_rgb),
     ("pixel_lab_pca", pixel_lab_pca),
     ("settings", settings),
     ("pixel_controller", pixel_controller),

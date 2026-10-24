@@ -118,6 +118,28 @@ class PixelLabTask(Task):
             }
         if not isinstance(bus.shared.get("pixel_lab_view"), dict):
             bus.shared["pixel_lab_view"] = {}
+
+        # 測試用：/bench 內容 rgb / apa / pca；量完移除檔案即可停用。
+        try:
+            import os
+            if "bench" in os.listdir("/"):
+                mode = "rgb"
+                try:
+                    f = open("/bench")
+                    mode = f.read().strip() or "rgb"
+                    f.close()
+                except Exception:
+                    pass
+                if mode not in ("rgb", "apa", "pca"):
+                    mode = "rgb"
+                bus.shared["pixel_lab"] = {
+                    "active": 1, "mode": mode, "index": 0, "ch": 0,
+                    "target": 0x70, "target_bus": 0, "hb": 0,
+                }
+                get_log().info("[Lab] BENCH mode={}".format(mode))
+        except Exception:
+            pass
+
         get_log().info("[Lab] online | ranges={} | total_bytes={}".format(
             sorted(self._ranges.keys()), self._st_pixel.total_bytes))
 

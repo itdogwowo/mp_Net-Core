@@ -439,3 +439,27 @@ mark_dirty('ws2812')               # 所有 WS Object（同 type 多個也各自
   `RenderTask` 是整幀，也是全部。要局部更新時用 `mark_dirty_range()`。
 - WS2812 / APA102 的硬體仍是整條 shift register，所以 Object 沒改就整個 skip；
   PCA 則是 16 通道，單獨更新約 2ms。
+
+---
+
+## 9. 2026-10-24 三頁恢復後 FPS 實測
+
+APA / RGB 兩頁已恢復；`app.build_all` 回到 **8 screens**，launcher 七頁。
+
+| 模式 | `[FPS] lab` | `[FPS] lvgl` | show | 備註 |
+|---|---|---|---|---|
+| RGB 頁 | **10.5/s** | **3.8/s** | 79.8ms | base 全部燈 → 三種 Object 全送；頁面本身很重 |
+| APA 頁 | **10.5/s** | **2.7～5.7/s** | 79.8ms | 同上 |
+| PCA 頁 | **40/s** | **100～113/s** | 3.0～3.3ms | 只送 PCA；頁面負擔小 |
+| P1 停用 | 0 | **127～130/s** | — | 只有開機那次中性幀 |
+
+- RGB/APA 的 **10.5fps** 是 79.8ms/幀的硬體上限（APA 9.7ms + WS 68ms + PCA 2ms）。
+- per-object dirty gate **沒有改善 RGB/APA**：`PixelLabTask._tick_buffer` 的 base 是全部燈，
+  `mark_dirty()` 全部，所以三個 Object 都 dirty。
+- PCA 頁只走 `_tick_pca`，`pca.show()` 約 3ms，`[FPS] lab` 約 **40fps**；
+  UI 維持 100fps 以上。
+- **RGB/APA 頁一開，LVGL 掉到 3～5fps**，這是目前最大問題；頁面更新邏輯需要再查。
+- 50fps 仍未達成：PCA 40fps、RGB/APA 10.5fps；WS2812 2000 單獨 68ms 是硬體上限。
+
+測試用 `/bench`（內容 `rgb` / `apa` / `pca`）觸發 P1；量完已移除 `/bench`，
+P1 回到 idle，LED 保持開啟（`/led_off` 已刪除）。
