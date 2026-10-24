@@ -81,6 +81,7 @@ class PixelLabTask(Task):
 
         self._active = False
         self._mode = None
+        self._pca_target = None
         self._fps_n = 0
         self._fps_t0 = time.ticks_ms()
         self._fps_us = 0
@@ -406,6 +407,7 @@ class PixelLabTask(Task):
         """被直播/模式接手：停止、不寫、不清；owner 不動。"""
         self._active = False
         self._mode = None
+        self._pca_target = None
         try:
             bus.shared.pop("pixel_dirty", None)
         except Exception:
@@ -420,6 +422,7 @@ class PixelLabTask(Task):
         was = self._active
         self._active = False
         self._mode = None
+        self._pca_target = None
 
         owner = bus.shared.get("pixel_owner")
         if zero and owner == "test":
@@ -570,6 +573,18 @@ class PixelLabTask(Task):
         if ctrl is None:
             self._publish(False, True, "pca", target="", io="", count=PCA_CH)
             return
+
+        # 只在 target 改變時印一次，方便確認 0x70 / 0x40 / 0x41 真的切到不同 Object。
+        key = (bus_idx, addr)
+        if self._pca_target != key:
+            self._pca_target = key
+            try:
+                hw_addr = int(getattr(ctrl.hw, "address", -1))
+            except Exception:
+                hw_addr = -1
+            get_log().info("[Lab] pca target bus={} addr=0x{:02X} -> ctrl #{} hw=0x{:02X}{}".format(
+                bus_idx, addr, cidx, hw_addr,
+                " (broadcast)" if addr == 0x70 else ""))
 
         if not bus.shared.get("led_enabled", True):
             self._step += 1

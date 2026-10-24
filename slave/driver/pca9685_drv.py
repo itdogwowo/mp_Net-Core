@@ -297,6 +297,14 @@ def init_pca9685(sysbus=None):
                          online=bool(found))
 
     sysbus.register_service("pca9685_list", pca_list)
+    try:
+        names = []
+        for c in pca_list:
+            a = int(getattr(c.hw, "address", -1))
+            names.append("0x{:02X}{}".format(a, "(bcast)" if a == _PCA_ALL_CALL else ""))
+        get_log().info("PCA9685: {} controller(s): {}".format(len(pca_list), ", ".join(names)))
+    except Exception:
+        pass
     _CFG = items
     old = sysbus.get_service("pca9685_ctl")
     if isinstance(old, list):
