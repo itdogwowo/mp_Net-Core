@@ -5,7 +5,7 @@ mp_Net-Core/
 ├── slave/                    ← 乾淨基礎框架(不綁任何實際項目)
 │     • 通用韌體程式、lib、schedule/vBus 框架、基礎 config.json
 │     • config.json 是「範本」: 20 個服務全 enable=0、腳位全未設定
-│       (改寫原因、以及 -1 與 null 的用法差異見 doc/03_notes/23_config_audit.md §6)
+│       (改寫原因見 config.json 檔頭的 `_comment`；`-1` 與 `null` 不可互換，見文末「GPIO 未設定的兩種寫法」)
 │     • pixel 只留基礎效果 + 一支馬達正弦波效果範本（uart_motor_sine / motor_sine）
 │     • registry.json: auto_play=false（開機不自動播放，純框架）
 │
@@ -60,3 +60,29 @@ python -m mpremote connect COM28 fs cp ports/S3/ESP32-S3-1_18/pixel/modes/xxx.js
 
 > 之後可加一支小工具 `tools/PC/deploy_port.py <COM> <port_name>` 自動化
 > 「全量 slave + delta 覆蓋」，避免手動逐檔。
+
+---
+
+## GPIO「未設定」的兩種寫法（不可混用）
+
+`slave/config.json` 是**不綁板子的範本**（20 個服務全 `enable: 0`、腳位全未設定）。
+driver 對「未設定」的判斷方式不一致，所以 **`-1` 和 `null` 不能互換**，寫錯會在 enable 該服務時才爆：
+
+| 判斷方式 | 意義 | 哪些欄位 | 寫錯的後果 |
+|---|---|---|---|
+| `is not None` | **沒接這條線** → 必須用 `null` | `SPI.GPIO.{sck,mosi,miso}`、`I2C.GPIO.{scl,sda}`、`UART.GPIO.{tx,rx}`、`PCM5102.GPIO.xsmt`、`SDcard.GPIO.{sck,cmd}`、`ENC.GPIO.{a,b}`、`PWM`/`WS2812`/`PIN` 的純量 `GPIO`、`I2S.GPIO.{sck,ws,sd}` | 用 `-1` → `Pin(-1)` 或 claim 到 GPIO -1 |
+| `>= 0` / `> 0` | **未設定／不啟用** → `-1` 安全 | `UART.GPIO.en`、`SDcard.GPIO.data[]`、`APA102.GPIO.spi`、`PCA9685.GPIO.i2c`、`uartMotor.GPIO.uart`、`HUSB238`/`XL9555`/`GT1151Q.GPIO.i2c`、`CircuitDecode.GPIO.uart`、`Network.lan.GPIO.*`、`System.watchdog.btn_bypass_gpio` | 用 `null` 多數能跑（有 default），但 `-1` 才是慣例 |
+
+證據（節錄）：
+
+```python
+# i2c_drv.py —— 用 is not None，所以 -1 會被當成腳位
+scl=Pin(gpio["scl"]) if gpio.get("scl") is not None else None,
+# uart_drv.py —— 用 >= 0，所以 -1 是安全的「不啟用 RS485 DE」
+en = gpio.get("en", -1)
+if en is not None and int(en) >= 0:
+```
+
+> ⚠️ 上方「改完 config 一定要驗」提到的 `tools/PC/config_dryrun.py` / `config_audit.py`
+> 目前**不在 repo**（只存在於 git 歷史）；要驗證請改成人工對照本表 + 開機 log 的 `[BOOT]` 摘要。
+

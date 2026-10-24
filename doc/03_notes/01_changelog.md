@@ -2183,7 +2183,7 @@ ANNOUNCE_EVERY_MS = 10000      # 週期性公告（0 = 只廣播一次）
 - `ui/lvgl/nav.py`：新增 `Nav.focus(i)`（頁面 on_enter 重設焦點）。
 - `page/__init__.py` 不用改（頁面 id 不變）。
 - `doc/02_guides/06_lvgl_ui.md`：頁面說明＋操作方式。
-- `doc/03_notes/24_hw_status_query_plan.md`：加「頁面改版」註記（掃描/0x1409 不變）。
+- `doc/03_notes/21_hw_status_query_plan.md`：加「頁面改版」註記（掃描/0x1409 不變）。
 - `todo/10_i2c_scan.md`：`start`/`stop` 改為已淘汰、`pca9685_ctl` 的用法。
 
 ### 39.5 控制目標：轉動只預覽、確認才套用（2026-10 使用者追加）

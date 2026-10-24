@@ -12,7 +12,7 @@
 | **02_guides** 使用教學 | 要在 slave 上寫功能 / 用模組的人 | 各模組 API、怎麼接、怎麼跑、踩坑 |
 | **03_notes** 筆記 | 維護者 / 想了解設計脈絡的人 | 調查記錄、架構筆記、計劃、變更紀錄 |
 
-**數量**：`01_protocol` 10 份、`02_guides` 18 份、`03_notes` 28 份（含兩組同號）。
+**數量**：`01_protocol` 10 份、`02_guides` 18 份、`03_notes` 26 份（含兩組同號）。
 
 ---
 
@@ -79,16 +79,13 @@
 | [18_pixel_panel_control_path.md](03_notes/18_pixel_panel_control_path.md) | 面板裝置的 pixel 控制路徑（現況盤點 + 設計草案） |
 | [19_remote_control_plan.md](03_notes/19_remote_control_plan.md) | **遙控器強化計劃（配對 / 綁定 / 晶片開關）**：架構共識（配對=建立通道、方向=指令確認）、零件盤點、P0~P7 分階段、關鍵踩坑、環境備忘。**自足文件，可單獨接手** |
 | [20_soft_reboot_residue.md](03_notes/20_soft_reboot_residue.md) | Soft reboot 的資源殘留：哪些會漏、哪些會自己回來 |
-| [21_uart_bench_test_plan.md](03_notes/21_uart_bench_test_plan.md) | **測試手冊**｜單線 UART 四指令測試（兩台 S3 · 燈效驗證 · 逐項期待結果） |
-| [21_uart_test_quick.md](03_notes/21_uart_test_quick.md) | **速查卡**｜同一組單線 UART 測試的短版（現場照著打） |
-| [22_nc4_simulator_audit.md](03_notes/22_nc4_simulator_audit.md) | **稽核紀錄**｜`00_nc4_illustrated.html` 匯流排模擬器 vs 協議文件：已修清單、程式端待辦（回覆位址 / MODE_STOP）、協議文件自身矛盾、重跑方式 |
-| [23_config_audit.md](03_notes/23_config_audit.md) | **稽核紀錄**｜全部 `config.json` 對照韌體程式碼的健檢：失效參數清單、服務 enable／GPIO 總表、4 個真實錯誤、整合方案與執行狀態（含 `config_audit` / `config_dryrun` / `config_prune` 三支工具） |
-| [24_hw_status_query_plan.md](03_notes/24_hw_status_query_plan.md) | 🟢 **已實作（上板待驗）**｜**I2C 地址掃描**：開機掃一次 ＋ `0x1402{type=I2C}` 再掃，結果存 `bus.shared["_i2c_devices"]`（**per-bus**）；**PCA 初始化改讀清單、不重複掃**；`_pca_devices` → `_i2c_devices`；新指令 `0x1409 HW_QUERY_RSP`。§9 附錄保存九種 `type` 設計（本輪不做），§10 實作結果與已知限制 |
-| [25_pixel_lab.md](03_notes/25_pixel_lab.md) | PixelLab：三頁 / 三動作 / 低優先 task / 面板與執行端差異 |
-| [26_pixel_lab_bringup_checklist.md](03_notes/26_pixel_lab_bringup_checklist.md) | **上板前查遺補缺**：build 修正、basic bulb 決策、面板→執行端、4016 config、git |
+| [21_hw_status_query_plan.md](03_notes/21_hw_status_query_plan.md) | 🟢 **已實作（上板待驗）**｜**I2C 地址掃描**：開機掃一次 ＋ `0x1402{type=I2C}` 再掃，結果存 `bus.shared["_i2c_devices"]`（**per-bus**）；**PCA 初始化改讀清單、不重複掃**；`_pca_devices` → `_i2c_devices`；新指令 `0x1409 HW_QUERY_RSP`。§9 附錄保存九種 `type` 設計（本輪不做），§10 實作結果與已知限制 |
+| [22_pixel_lab.md](03_notes/22_pixel_lab.md) | PixelLab：三頁 / 三動作 / 低優先 task / 面板與執行端差異 |
+| [23_pixel_lab_bringup_checklist.md](03_notes/23_pixel_lab_bringup_checklist.md) | **上板前查遺補缺**：build 修正、basic bulb 決策、面板→執行端、4016 config、git |
+| [24_standby_sleep_plan.md](03_notes/24_standby_sleep_plan.md) | **PLAN**｜待機／休眠整合計劃：三模式（app 待機 / lightsleep / deepsleep）、子系統 suspend·resume 順序、config 設計、Phase 1~4 與驗收清單（附 32.8 s 冷開機、0.3 ms 喚醒實測基線） |
 
-> 📌 **`03_notes/` 有兩組同號**：`17_esp_stream_controller.md` / `17_tx_render_center_plan.md`，
-> 以及 `21_uart_bench_test_plan.md` / `21_uart_test_quick.md`（手冊與速查卡，同一主題）。
+> 📌 **`03_notes/` 有兩組同號**：`16_pixel_panel_temp_hacks.md` / `16_upload_bottleneck_model.md`，
+> 以及 `17_esp_stream_controller.md` / `17_tx_render_center_plan.md`。
 > 都是獨立檔案，**請以完整檔名區分**。
 >
 > 📌 **標 `PLAN`／`待設計`／`架構待重整` 者為計劃或未定案文件**，不是現況描述。

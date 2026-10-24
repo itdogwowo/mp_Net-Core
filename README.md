@@ -50,7 +50,7 @@ ESP32-S3 MicroPython slave 專案 — 高效能 Server ⇄ MCU 傳輸控制系�
 - [音訊串流定案計劃](doc/03_notes/13_audio_wav_stream_plan.md) — 0x32xx 設計來源
 - [統一渲染輸出中心（TxCenter）](doc/03_notes/17_tx_render_center_plan.md) — PLAN，做法待設計
 - [遙控器強化計劃](doc/03_notes/19_remote_control_plan.md) — 配對 / 綁定 / 分階段
-- [I2C 地址掃描（已實作）](doc/03_notes/24_hw_status_query_plan.md) — 開機掃一次 ＋ 查詢再掃 → 存 `_i2c_devices`（per-bus）；PCA 改讀它不重掃；遠端走 `0x1409`。**上板待驗**
+- [I2C 地址掃描（已實作）](doc/03_notes/21_hw_status_query_plan.md) — 開機掃一次 ＋ 查詢再掃 → 存 `_i2c_devices`（per-bus）；PCA 改讀它不重掃；遠端走 `0x1409`。**上板待驗**
 
 > `doc/03_notes/` 共 26 份（含兩組同號的歷史遺留），完整清單見 [doc/README.md](doc/README.md)。
 > 舊版文件保留在 `doc/_archive/`，內容以分類目錄下的新版為準。

@@ -578,7 +578,7 @@ def write(self, data):
 
 | 死碼 | 位置 |
 |---|---|
-| ~~`_pca_actions`~~ | ✅ **已解（2026-10）**：`tasks/pixel_control_panel.py` 消費 → `i2c_scan.scan_and_store()` → `_i2c_devices`（見 `03_notes/24_hw_status_query_plan.md`）。`start`/`stop` 兩個 action 仍無人處理 |
+| ~~`_pca_actions`~~ | ✅ **已解（2026-10）**：`tasks/pixel_control_panel.py` 消費 → `i2c_scan.scan_and_store()` → `_i2c_devices`（見 `03_notes/21_hw_status_query_plan.md`）。`start`/`stop` 兩個 action 仍無人處理 |
 | `_ex_ic_slot` / `_ex_ic_pending` | `tasks/control_panel.py`（只讀沒人寫） |
 | `_vbtn1_event` | 兩個生產者、零讀者 |
 | `_wtt_periodic_status` | 永遠是 0 |
