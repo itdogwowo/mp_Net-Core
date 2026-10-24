@@ -18,8 +18,9 @@
 #       base：全部燈 cell（APA/WS/PCA）一起呼吸；不是只有本頁 type
 #       selected：本頁 index 那顆最後寫入（固定次序；閃爍不會被 base 覆蓋）
 #   pca：也走 pixel_stream hub；PixelLab 只決定 target address（0x70 / 指定板）
-#       pca9685_drv 只建一個 0x70 controller；PixelController.set_address()
-#       在同一個 controller / buffer 上切 0x70(ALLCALL) / 0x40 / 0x41
+#       config 支援兩種模式：
+#         - 多 Object（明確列 0x40/0x41）→ 選 address 完全相符的 Object
+#         - 單 Object（0xFF / 0x70 廣播）→ 同一個 controller/buffer set_address(target)
 #       只填該 controller 的 16 個 W cell，commit 後由 RenderTask 統一輸出
 #       pixel_dirty=controller index → RenderTask 只 mark/送這一個 Object
 #       base：16 通道全部呼吸
@@ -548,11 +549,11 @@ class PixelLabTask(Task):
         except Exception:
             bus_idx = 0
 
-        # 0x70 ALLCALL / 0x40/0x41 單板都共用同一個 PCA controller / buffer；
-        # 只透過 PixelController.set_address() 切 address，不建第二個 Object。
+        # 兩種模式都支援：
+        #  1) 多 Object（config 明確列 0x40/0x41）→ 選 address 完全相符的 Object
+        #  2) 單 Object（0xFF / 0x70 廣播）→ 只有一個 controller，set_address(target) 切換
         i2c_list = bus.get_service("i2c_list") or []
-        ctrl = None
-        cidx = -1
+        ctrls = []
         for i, c in enumerate(self._st_pixel.controllers):
             if getattr(c, "pixel_type", "") != "i2c_pixel":
                 continue
@@ -562,31 +563,58 @@ class PixelLabTask(Task):
             if 0 <= bus_idx < len(i2c_list):
                 if getattr(hw, "i2c", None) is not i2c_list[bus_idx]:
                     continue
-            ctrl = c
-            cidx = i
-            break
-        if ctrl is None:
+            ctrls.append((i, c))
+        if not ctrls:
             self._publish(False, True, "pca", target="", io="", count=PCA_CH)
             return
 
-        # 只在 target 改變時切一次 address，避免每幀多寫一次 I2C。
         key = (bus_idx, addr)
-        if self._pca_target != key:
+        ctrl = None
+        cidx = -1
+        for i, c in ctrls:
             try:
-                if not ctrl.set_address(addr):
-                    raise ValueError("set_address not supported")
-            except Exception as e:
-                get_log().warn("[Lab] pca set_address err: {}".format(e))
+                if int(getattr(c.hw, "address", -1)) == addr:
+                    ctrl = c
+                    cidx = i
+                    break
+            except Exception:
+                pass
+
+        if ctrl is not None:
+            # 多 Object / 已對上：直接選它，不改任何 address。
+            if self._pca_target != key:
+                self._pca_target = key
+                try:
+                    hw_addr = int(getattr(ctrl.hw, "address", -1))
+                except Exception:
+                    hw_addr = -1
+                get_log().info("[Lab] pca target bus={} addr=0x{:02X} -> ctrl #{} hw=0x{:02X}{}".format(
+                    bus_idx, addr, cidx, hw_addr,
+                    " (broadcast)" if addr == 0x70 else ""))
+        else:
+            # 單 Object（0xFF / 0x70 廣播）：同一 controller / buffer 切 address。
+            if len(ctrls) != 1:
+                get_log().warn("[Lab] pca target 0x{:02X} not found among {} controllers".format(
+                    addr, len(ctrls)))
                 self._publish(False, True, "pca", target="", io="", count=PCA_CH)
                 return
-            self._pca_target = key
-            try:
-                hw_addr = int(getattr(ctrl.hw, "address", -1))
-            except Exception:
-                hw_addr = -1
-            get_log().info("[Lab] pca target bus={} addr=0x{:02X} -> ctrl #{} hw=0x{:02X}{}".format(
-                bus_idx, addr, cidx, hw_addr,
-                " (broadcast)" if addr == 0x70 else ""))
+            cidx, ctrl = ctrls[0]
+            if self._pca_target != key:
+                try:
+                    if not ctrl.set_address(addr):
+                        raise ValueError("set_address not supported")
+                except Exception as e:
+                    get_log().warn("[Lab] pca set_address err: {}".format(e))
+                    self._publish(False, True, "pca", target="", io="", count=PCA_CH)
+                    return
+                self._pca_target = key
+                try:
+                    hw_addr = int(getattr(ctrl.hw, "address", -1))
+                except Exception:
+                    hw_addr = -1
+                get_log().info("[Lab] pca target bus={} addr=0x{:02X} -> ctrl #{} hw=0x{:02X}{}".format(
+                    bus_idx, addr, cidx, hw_addr,
+                    " (broadcast)" if addr == 0x70 else ""))
 
         if not bus.shared.get("led_enabled", True):
             self._step += 1
