@@ -308,8 +308,6 @@ class PixelLabTask(Task):
             for i, t, csh, csk, cavg, cstart, ccnt in self._st_pixel.ctrl_stats():
                 get_log().info("[GATE] lab ctrl #{} {} [{}+{}) show={} skip={} avg={}us".format(
                     i, t, cstart, ccnt, csh, csk, cavg))
-            cd, cs = self._st_pixel.cell_stats()
-            get_log().info("[GATE] lab cells dirty={} shown={}".format(cd, cs))
         except Exception:
             pass
         pn = self._pca_show_n + self._pca_skip_n

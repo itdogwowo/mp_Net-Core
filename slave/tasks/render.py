@@ -61,8 +61,6 @@ class RenderTask(Task):
             for i, t, csh, csk, cavg, cstart, ccnt in self.st_pixel.ctrl_stats():
                 get_log().info("[GATE] render ctrl #{} {} [{}+{}) show={} skip={} avg={}us".format(
                     i, t, cstart, ccnt, csh, csk, cavg))
-            cd, cs = self.st_pixel.cell_stats()
-            get_log().info("[GATE] render cells dirty={} shown={}".format(cd, cs))
         except Exception:
             pass
         self._fps_t0 = now

@@ -406,41 +406,36 @@ i2c_pixel start_cell 4000  count 16     byte 16000..16064
 `RenderTask` 是整幀，也是全部。要只更新局部時，用 `mark_dirty_range()` 或
 `mark_dirty("pca9685")` 這類入口即可。
 
-### 8.5 每一粒 LED 的 cell dirty + 每個 Object 的 ID/範圍
+### 8.5 每個 PixelController Object 一格（不做每粒）
 
-除了 controller flag，`PixelStreamer` 現在還有：
+依需求，**不做 per-cell**；`cell_dirty` / `mark_dirty_cells` / `cell_stats` /
+`[GATE] cells` 已移除，省下 4016 bytes 的每粒記錄。
 
-- `self.cell_dirty = bytearray(total_bytes >> 2)`：
-  - **每一粒 LED 1 byte**，目前 4016 粒 → 4016 bytes。
-  - `mark_dirty_cells(start, count)` 只設這段；`mark_dirty_range()` 也會同步這段。
-  - `show_all()` 送完某個 controller 後，只清該 controller 的 cell 範圍。
-- `cell_stats()` 回傳 `(目前 dirty cell 數, 累計已送 cell 數)`；
-  log 新增 `[GATE] ... cells dirty=... shown=...`。
+- `_dirty = bytearray(len(controllers))`：**每個 Object 一格**，不是每個 type 一格。
+- `mark_dirty("ws2812")` 會 mark **同 type 的所有 Object**；
+  也可用 `mark_dirty(index)` / `mark_dirty(controller_object)` 指定單一 Object。
+- `mark_dirty_range(start, count)`：只 mark 跟該絕對範圍重疊的 Object；
+  不再記每粒 cell。
 - `ctrl_stats()` 每個 Object 回傳：
   `(index, type, show, skip, avg_us, start_cell, count)`，
-  log 變成 `[GATE] ... ctrl #0 APA102 [0+2000) ...`。
-- `mark_dirty("ws2812")` 之類會 mark **同 type 的所有 Object**；
-  也可用 `mark_dirty(index)` / `mark_dirty(controller_object)` 精準指定單一 Object。
+  log 是 `[GATE] ... ctrl #0 APA102 [0+2000) ...`。
+- `show_all()` 只轉換/輸出 dirty=1 的 Object；沒改的 Object 直接 skip。
 
-實測（LED on）：
+實測（per-object，LED on）：
 
 ```
-CELL0        (0, 12048)
-mark_dirty_cells(4000,1) -> 1 cell，show -> cell 0，shown +16      # PCA only
-mark_dirty_cells(2001,1) -> 1 cell，show -> cell 0，shown +2000    # WS only
-mark_dirty_cells(1999,2) -> 2 cells，show -> cell 0，shown +4000   # APA + WS
-mark_dirty_cells(0,4016) -> 4016 cells，show -> cell 0，shown +4016 # all
-mark_dirty('ws2812')     -> cell 2000                              # 所有 WS Object
-CTRL [(0,'APA102',5,3,10718,0,2000),
-      (1,'WS2812',7,1,69112,2000,2000),
-      (2,'i2c_pixel',5,3,2025,4000,16)]
+st.show_all()                      # False（全部乾淨）
+mark_dirty_range(4000,1) -> 1      # i2c_pixel only（約 2ms）
+mark_dirty_range(2001,1) -> 1      # WS2812 only（約 68ms）
+mark_dirty_range(1999,2) -> 2      # APA102 + WS2812
+mark_dirty_range(0,2000)  -> 1     # APA102 only（約 9.7ms）
+mark_dirty_range(0,4016)  -> 3     # 三個 Object 全送（約 79.8ms）
+mark_dirty('ws2812')               # 所有 WS Object（同 type 多個也各自一格）
 ```
 
-- 這樣已經能分辨「哪一粒 LED 被改」與「哪個 PixelController Object 要送」。
-- WS2812 / APA102 的硬體仍是整條 shift register，所以 cell dirty 只能省下
-  **不需要送的 Object**；PCA 則是 16 通道，單獨更新時只花約 2ms。
 - 多個同 type 的 Object（例如兩個 WS2812）會各自有 `#i`、`start_cell`、`count`，
   不會被合併成一個 type flag。
-
-`PixelLabTask._tick_buffer` 的 base 是全部燈，所以它仍 `mark_dirty()` 全部；
-`RenderTask` 也是整幀。要局部更新時用 `mark_dirty_cells()` / `mark_dirty_range()`。
+- `PixelLabTask._tick_buffer` 的 base 是全部燈，所以它仍 `mark_dirty()` 全部；
+  `RenderTask` 是整幀，也是全部。要局部更新時用 `mark_dirty_range()`。
+- WS2812 / APA102 的硬體仍是整條 shift register，所以 Object 沒改就整個 skip；
+  PCA 則是 16 通道，單獨更新約 2ms。
