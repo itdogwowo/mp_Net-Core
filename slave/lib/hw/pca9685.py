@@ -14,6 +14,7 @@ class PCA9685:
     def __init__(self, i2c, address=0x40, n=16, invert=False):
         self.i2c = i2c
         self.address = address
+        self.broadcast = (address == 0x70)  # ALLCALL
         self.n = n
         self.invert = invert  # 支援邏輯反轉 (共陽極)
         
@@ -24,6 +25,17 @@ class PCA9685:
         
         self.setup()
         self.show()
+
+    def set_address(self, addr):
+        """切換控制目標。0x70 = ALLCALL 廣播；其他 = 單一板。
+
+        只改 address，不動 _buf / reg_buf；同一個 PCA object 可以準確
+        在 0x70 / 0x40 / 0x41 之間切換，不需要為每個地址各建一個 object。
+        """
+        addr = int(addr) & 0x7F
+        self.address = addr
+        self.broadcast = (addr == 0x70)
+        return addr
 
     def setup(self):
         try:

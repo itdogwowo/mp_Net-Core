@@ -481,18 +481,18 @@ P1 回到 idle，LED 保持開啟（`/led_off` 已刪除）。
 | 路徑 | 寫入 | 輸出 |
 |---|---|---|
 | APA / RGB | `pixel_stream.get_write_view()` → `commit()` | `RenderTask` 統一 `read_into(big_buffer)` + `show_all()` |
-| PCA | 依 `target` 選 `i2c_pixel` controller（0x70=廣播、0x40/0x41=單板），填 16 W cells → `commit()` | `RenderTask`，`pixel_dirty=controller index` |
+| PCA | 同一個 `i2c_pixel` controller 呼叫 `set_address(target)`，填 16 W cells → `commit()` | `RenderTask`，`pixel_dirty=controller index` |
 
 - APA/RGB/PCA 都不再自己 `show_all()`，`is_streaming=True` / `is_ready=True`。
 - hub 滿 → `get_write_view()` 回 `None` → 這幀跳過，自然 backpressure。
 - PixelLab 不再需要自己的 `_frame_ms`；輸出節拍只由 `RenderTask` 的
   `System.frame_interval_ms` 控制。
-- **0x70 是 ALLCALL 廣播，特別處理**：
-  - `pca9685_drv` 同時建 **0x70 廣播 controller** 與 **每個實體位址的單獨 controller**
-  - `target=0x70` → 選廣播 Object，所有板子同步
-  - `target=0x40/0x41` → 選該實體 Object，只控制那一顆
-  - 不再把 0x70 的 `hw.address` 改成 0x40（那會失去廣播）
-- PCA 只做「選 target Object」與填 16 W cells；實際 I2C 輸出由
+- **0x70 是 ALLCALL 廣播，特別處理，但只有一個 Object / buffer**：
+  - `PCA9685.set_address(0x70)` → `address=0x70`、`broadcast=True`
+  - `PCA9685.set_address(0x40/0x41)` → `address=0x40/0x41`、`broadcast=False`
+  - `PixelController.set_address()` 轉呼叫 `hw.set_address()`；`_buf` / `reg_buf` 不動
+  - 所以 0x70 / 0x40 / 0x41 共用同一個 16-cell buffer，不會有兩個 Object 對不上
+- PCA 只做「切 address」與填 16 W cells；實際 I2C 輸出由
   `PixelController` / RenderTask 做，不再碰 `pca9685_ctl` 或 `pca.show()`。
 - `pixel_dirty` 讓 RenderTask 只 mark 被改的 Object，PCA 不會重送 WS2812/APA102。
 - 全域 `frame_interval_ms` 從 20 → **33ms（30fps）**。

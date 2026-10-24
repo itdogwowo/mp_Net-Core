@@ -113,6 +113,20 @@ class PixelController:
         elif t == 2: self.hw.show_raw() if hasattr(self.hw, 'show_raw') else self.hw.show()
         elif t == 3: self.hw.show() if hasattr(self.hw, 'show') else self.hw.sync_buffer()
 
+    def set_address(self, addr):
+        """i2c_pixel 專用：切換 PCA target address（0x70=ALLCALL，其餘=單板）。
+
+        同一個 PixelController / buffer 可以準確切 0x70 / 0x40 / 0x41；
+        不需要為每個地址各建一個 PixelController。回傳 True/False。
+        """
+        if self._tid != 3 or self.hw is None:
+            return False
+        fn = getattr(self.hw, "set_address", None)
+        if fn is None:
+            return False
+        fn(addr)
+        return True
+
     def set_brightness(self, value):
         """設定全域亮度 (0-255)。APA102 亮度頭在 _convert 讀此值, 5-bit 封頂由 >>3 做。"""
         self.brightness = max(0, min(255, int(value)))
