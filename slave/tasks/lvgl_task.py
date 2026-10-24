@@ -30,6 +30,9 @@ class LvglTask(Task):
         self._fps_t0 = time.ticks_ms()
         self._fps_us = 0
         self._fps_max = 0
+        # 幀率由全域 System.frame_interval_ms 決定（預設 20ms = 50fps）。
+        self._frame_us = 20000
+        self._next_us = 0
 
     def on_start(self):
         super().on_start()
@@ -40,11 +43,23 @@ class LvglTask(Task):
             return
         from ui.lvgl import board
         board._setup()          # once-only 初始化(platform+字型+頁面+輸入)
-        get_log().info("🖼 [LvglTask] UI online")
+        # 全域幀率：System.frame_interval_ms；不再用代碼硬寫 30fps。
+        try:
+            iv = int((bus.shared.get("System") or {}).get("frame_interval_ms", 20) or 20)
+        except Exception:
+            iv = 20
+        self._frame_us = (iv if iv > 0 else 20) * 1000
+        self._next_us = time.ticks_us()
+        get_log().info("🖼 [LvglTask] UI online | {}ms/幀".format(
+            self._frame_us // 1000))
 
     def loop(self):
         if not self.running:
             return
+        now = time.ticks_us()
+        if time.ticks_diff(now, self._next_us) < 0:
+            return
+        self._next_us = time.ticks_add(self._next_us, self._frame_us)
         # 直接呼叫 app.step()(不經 board._loop_once,避免其 _sleep 阻塞 runner_loop)。
         # TaskManager 的 runner_loop 每輪結尾已 sleep_ms(0) 讓出,不需要 task 自己 sleep。
         from ui.lvgl import app, board

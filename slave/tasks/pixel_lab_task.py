@@ -12,15 +12,17 @@
 #   blink  = Effect("lab_blink") 方波，25 幀 = 0.5s（2Hz）
 #   每 commit 一幀 step += 1；不是用 time.ticks_ms 切時間。
 #
-#   apa / rgb：直接寫 PixelStreamer.big_buffer + show_all()（零拷貝，不經 hub）
-#       RenderTask 用 is_streaming=False / is_ready=True 不取幀，避免 copy 覆蓋
+#   apa / rgb：走 pixel_stream hub（跟 stream/pixel 任務一樣是 producer）
+#       hub.get_write_view() / commit()；RenderTask 統一 read_into + show_all()
+#       hub 滿（RenderTask 未消化）→ get_write_view() 回 None → 自然停
 #       base：全部燈 cell（APA/WS/PCA）一起呼吸；不是只有本頁 type
 #       selected：本頁 index 那顆最後寫入（固定次序；閃爍不會被 base 覆蓋）
-#   pca：直接寫 pca9685_ctl 選中的 PCA（不經 hub）
+#   pca：直接寫 pca9685_ctl 選中的 PCA（direct 特例，不經 hub）
 #       base：16 通道全部呼吸
 #       selected：單通道或 ALL 最後寫入（固定次序；閃爍不會被 base 覆蓋）
 #       ALL 時 16 通道一起閃；RenderTask 用 is_streaming=False / is_ready=True
 #       保持不動，避免 buffer 的 0x70 廣播蓋掉直接寫入的值。
+#       PCA 仍用 System.frame_interval_ms 自己 pacing（RenderTask 不消費）。
 #
 # 選中模式（steady / blink）先固定 blink；未來改 SEL_MODE 即可，
 # UI 不提供切換（使用者定案）。
@@ -63,6 +65,7 @@ class PixelLabTask(Task):
     def __init__(self, name, ctx):
         super().__init__(name, ctx)
         self._st_pixel = None
+        self._hub = None
         self._lay = None
         self._disabled = False
 
@@ -79,6 +82,7 @@ class PixelLabTask(Task):
         self._active = False
         self._mode = None
         self._next_us = 0
+        self._frame_ms = FRAME_MS
         self._pca_key = None
         self._pca_rec = None
         self._pca_zeroed = False
@@ -100,6 +104,8 @@ class PixelLabTask(Task):
             self._disabled = True
             get_log().warn("[Lab] 無 st_pixel — PixelLab 停用")
             return
+        # APA/RGB 走 pixel_stream hub，由 RenderTask 統一輸出（跟 stream/pixel 一樣）。
+        self._hub = bus.get_service("pixel_stream")
 
         self._ensure_layout()
         self._base = self._build_neutral()
@@ -118,6 +124,13 @@ class PixelLabTask(Task):
             }
         if not isinstance(bus.shared.get("pixel_lab_view"), dict):
             bus.shared["pixel_lab_view"] = {}
+
+        # 全域幀率：System.frame_interval_ms（不再硬寫 FRAME_MS）。
+        try:
+            iv = int((bus.shared.get("System") or {}).get("frame_interval_ms", FRAME_MS) or FRAME_MS)
+        except Exception:
+            iv = FRAME_MS
+        self._frame_ms = iv if iv > 0 else FRAME_MS
 
         # 測試用：/bench 內容 rgb / apa / pca；量完移除檔案即可停用。
         try:
@@ -386,11 +399,6 @@ class PixelLabTask(Task):
         if not self._active:
             self._activate(mode)
 
-        now_us = time.ticks_us()
-        if time.ticks_diff(now_us, self._next_us) < 0:
-            return
-        self._next_us = time.ticks_add(now_us, FRAME_MS * 1000)
-
         if mode == "pca":
             self._tick_pca(st)
         else:
@@ -400,10 +408,10 @@ class PixelLabTask(Task):
     def _activate(self, mode):
         self._active = True
         self._mode = mode
-        self._next_us = time.ticks_us()
         self._step = 0
         if mode == "pca":
-            # 不讓 RenderTask 用 buffer（含 0x70 廣播）覆蓋直接寫入
+            # PCA 仍是特例：直接寫 pca9685_ctl，不讓 RenderTask 用 buffer 覆蓋。
+            self._next_us = time.ticks_us()
             bus.shared.update({
                 "is_streaming": False,
                 "is_ready": True,
@@ -414,10 +422,9 @@ class PixelLabTask(Task):
             self._pca_zeroed = False
             self._pca_last = None
         else:
-            # 直接寫 PixelStreamer.big_buffer 再 show_all()，走零拷貝；
-            # RenderTask 不取幀（is_streaming=False），避免它 copy 覆蓋。
+            # APA/RGB 只當 producer：寫 pixel_stream hub，RenderTask 統一 show_all()。
             bus.shared.update({
-                "is_streaming": False,
+                "is_streaming": True,
                 "is_ready": True,
                 "is_paused": False,
             })
@@ -445,16 +452,27 @@ class PixelLabTask(Task):
         owner = bus.shared.get("pixel_owner")
         if zero and owner == "test":
             if mode in ("apa", "rgb"):
-                try:
-                    self._st_pixel.clear_all()
-                except Exception:
-                    pass
+                # 先讓 RenderTask 停止取幀，再 flush + 清燈，避免它又顯示舊 slot。
                 bus.shared.update({
                     "is_streaming": False,
                     "is_ready": False,
                     "is_paused": False,
                 })
+                try:
+                    if self._hub is not None:
+                        self._hub.flush()
+                except Exception:
+                    pass
+                try:
+                    self._st_pixel.clear_all()
+                except Exception:
+                    pass
             else:
+                try:
+                    if self._hub is not None:
+                        self._hub.flush()
+                except Exception:
+                    pass
                 try:
                     self._zero_pca(self._pca_rec)
                 except Exception:
@@ -491,9 +509,11 @@ class PixelLabTask(Task):
         if not bus.shared.get("led_enabled", True):
             self._step += 1
             return
-        # LEDController / PixelStreamer 的零拷貝入口：直接寫 big_buffer。
-        get_view = getattr(self._st_pixel, "get_write_view", None)
-        view = get_view() if get_view is not None else self._st_pixel.big_buffer
+        # 跟 stream/pixel 一樣：只當 producer，寫 hub slot 後 commit；
+        # hub 滿（RenderTask 還沒消化）→ get_write_view 回 None，自然停。
+        if self._hub is None:
+            return
+        view = self._hub.get_write_view()
         if view is None:
             return
 
@@ -530,13 +550,9 @@ class PixelLabTask(Task):
             get_log().warn("[Lab] scatter selected err: {}".format(e))
             return
         try:
-            self._st_pixel.mark_dirty()
-        except Exception:
-            pass
-        try:
-            self._st_pixel.show_all()
+            self._hub.commit()
         except Exception as e:
-            get_log().warn("[Lab] show_all err: {}".format(e))
+            get_log().warn("[Lab] hub commit err: {}".format(e))
             return
         dt = time.ticks_diff(time.ticks_us(), t0)
         self._fps_n += 1
@@ -602,6 +618,12 @@ class PixelLabTask(Task):
         self._pca_key = key
         self._pca_rec = rec
         pca = rec.get("pca")
+
+        # PCA 是 direct 特例，仍需自己的節拍（APA/RGB 已交給 hub/RenderTask）。
+        now_us = time.ticks_us()
+        if time.ticks_diff(now_us, self._next_us) < 0:
+            return
+        self._next_us = time.ticks_add(now_us, self._frame_ms * 1000)
 
         if not bus.shared.get("led_enabled", True):
             if not self._pca_zeroed:

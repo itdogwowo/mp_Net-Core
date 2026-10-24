@@ -12,7 +12,7 @@
         "discovery_port": 9000,
         "ws_stale_ms": 30000,
         "heartbeat_interval": 10000,
-        "frame_interval_ms": 20,
+        "frame_interval_ms": 33,
         "num_pixels": 336,
         "log_interval_ms": 1000,
         "watchdog": {
@@ -74,7 +74,7 @@
             },
             {
                 "id": 2,
-                "baudrate": 30000000,
+                "baudrate": 40000000,
                 "phase": 0,
                 "polarity": 0,
                 "GPIO": { "sck": 8, "mosi": null, "miso": null },
