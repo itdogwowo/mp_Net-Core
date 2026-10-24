@@ -138,6 +138,10 @@ class PixelStreamer:
         self._dirty = bytearray(len(controllers))
         for i in range(len(self._dirty)):
             self._dirty[i] = 1      # 上電第一幀全送
+        # 每一粒 LED（cell）的 dirty：1 byte/cell，總共 total_bytes/4。
+        # 用來精準知道「哪幾粒」被改；controller flag 則是「這個 Object 要不要送」。
+        self.cell_dirty = bytearray(self.total_bytes >> 2)
+        self._stat_cells_shown = 0
         self._led_on = True         # /led_off 或 set_led_enabled(False) 可停硬體輸出
         self._stat_show = 0
         self._stat_skip = 0
@@ -176,6 +180,7 @@ class PixelStreamer:
             c.st_init()
         for i in range(len(self._dirty)):
             self._dirty[i] = 1
+        self.cell_dirty[:] = b"\x01" * len(self.cell_dirty)
         # /led_off 檔案：開機直接熄燈（先推一幀中性值，之後 show_all 全跳過）。
         try:
             if os.path.exists("/led_off"):
@@ -184,6 +189,7 @@ class PixelStreamer:
                 self._led_on = False
                 for i in range(len(self._dirty)):
                     self._dirty[i] = 0
+                self.cell_dirty[:] = b"\x00" * len(self.cell_dirty)
         except Exception:
             pass
         if _sys_bus is not None:
@@ -193,7 +199,7 @@ class PixelStreamer:
                 pass
         print(f"[Streamer] Ready. Total Buffer: {self.total_bytes} bytes | led={'on' if self._led_on else 'off'}")
         try:
-            rs = ", ".join("{}[{}+{})".format(r["type"], r["start_cell"], r["count"])
+            rs = ", ".join("#{} {}[{}+{})".format(r["i"], r["type"], r["start_cell"], r["count"])
                            for r in self.ranges)
             print("[Streamer] ranges: " + rs)
         except Exception:
@@ -203,48 +209,57 @@ class PixelStreamer:
         """獲取原始緩衝供外部填充數據；寫完請呼叫 mark_dirty()。"""
         return self.big_buffer
 
-    def mark_dirty(self, which=None):
-        """標記某個 controller 有修改；which=None/\"all\" 代表全部。
+    def _mark_cells(self, i):
+        start = self.offsets[i] >> 2
+        cnt = self.controllers[i].frame_size >> 2
+        if cnt:
+            self.cell_dirty[start:start + cnt] = b"\x01" * cnt
 
-        which 可用 index、pixel_type（WS2812/APA102/i2c_pixel），
-        或頁面別名（rgb / apa / pca）。
+    def mark_dirty(self, which=None):
+        """標記有修改；which=None/\"all\" 代表全部。
+
+        which 可用 index、PixelController object、pixel_type
+        （WS2812/APA102/i2c_pixel），或頁面別名（rgb / apa / pca）。
+        同一個 type 有多個 Object 時，會全部 mark。
         """
         d = self._dirty
         n = len(d)
         if which is None:
             for i in range(n):
                 d[i] = 1
+            self.cell_dirty[:] = b"\x01" * len(self.cell_dirty)
             return
         if isinstance(which, int):
             if 0 <= which < n:
                 d[which] = 1
+                self._mark_cells(which)
             return
         for i in range(n):
             if self.controllers[i] is which:
                 d[i] = 1
+                self._mark_cells(i)
                 return
         w = str(which).lower()
         if w in ("all", "*", ""):
             for i in range(n):
                 d[i] = 1
+            self.cell_dirty[:] = b"\x01" * len(self.cell_dirty)
             return
         for i in range(n):
             t = str(getattr(self.controllers[i], "pixel_type", "")).lower()
-            if t == w:
+            hit = (t == w)
+            if not hit and w in ("rgb", "ws", "ws2812") and t == "ws2812":
+                hit = True
+            if not hit and w in ("apa", "apa102") and t == "apa102":
+                hit = True
+            if not hit and w in ("pca", "pca9685", "i2c", "i2c_pixel") and t == "i2c_pixel":
+                hit = True
+            if hit:
                 d[i] = 1
-                return
-            if w in ("rgb", "ws", "ws2812") and t == "ws2812":
-                d[i] = 1
-                return
-            if w in ("apa", "apa102") and t == "apa102":
-                d[i] = 1
-                return
-            if w in ("pca", "pca9685", "i2c", "i2c_pixel") and t == "i2c_pixel":
-                d[i] = 1
-                return
+                self._mark_cells(i)
 
     def mark_dirty_range(self, start, count=1, unit="cell"):
-        """用絕對範圍精準標記：只會 mark 到跟 [start,start+count) 重疊的 controller。
+        """用絕對範圍精準標記：cell dirty 只設這段，controller 只 mark 重疊的。
 
         unit="cell"（預設，4 bytes/cell）或 "byte"。回傳這次新 mark 的 controller 數。
         """
@@ -254,6 +269,15 @@ class PixelStreamer:
         else:
             s = int(start) << 2
             e = s + (int(count) << 2)
+        cd = self.cell_dirty
+        sc = s >> 2
+        ec = (e + 3) >> 2
+        if sc < 0:
+            sc = 0
+        if ec > len(cd):
+            ec = len(cd)
+        if ec > sc:
+            cd[sc:ec] = b"\x01" * (ec - sc)
         n = 0
         for r in self.ranges:
             if r["end_byte"] <= s or e <= r["start_byte"]:
@@ -263,6 +287,10 @@ class PixelStreamer:
                 self._dirty[i] = 1
                 n += 1
         return n
+
+    def mark_dirty_cells(self, start, count=1):
+        """每粒 LED 的 dirty 入口（cell 為單位）。"""
+        return self.mark_dirty_range(start, count, "cell")
 
     def set_led_enabled(self, on):
         """硬體輸出總開關。關閉時先推一幀中性值（真熄燈），之後 show_all 全跳過。"""
@@ -276,6 +304,7 @@ class PixelStreamer:
         self._led_on = on
         for i in range(len(self._dirty)):
             self._dirty[i] = 0 if not on else 1
+        self.cell_dirty[:] = (b"\x00" if not on else b"\x01") * len(self.cell_dirty)
         if _sys_bus is not None:
             try:
                 _sys_bus.shared["led_enabled"] = on
@@ -293,14 +322,19 @@ class PixelStreamer:
         return (self._stat_show, self._stat_skip, gate_avg, show_avg, overhead)
 
     def ctrl_stats(self):
-        """每個 controller 的 (pixel_type, show, skip, avg_us)。"""
+        """每個 Object 的 (index, type, show, skip, avg_us, start_cell, count)。"""
         out = []
         for i, c in enumerate(self.controllers):
             n = self._stat_ctrl_show[i]
             avg = self._stat_ctrl_us[i] // n if n else 0
-            out.append((getattr(c, "pixel_type", "?"), n,
-                        self._stat_ctrl_skip[i], avg))
+            out.append((i, getattr(c, "pixel_type", "?"), n,
+                        self._stat_ctrl_skip[i], avg,
+                        self.offsets[i] >> 2, c.frame_size >> 2))
         return out
+
+    def cell_stats(self):
+        """(目前 dirty cell 數, 累計已送 cell 數)。"""
+        return (self.cell_dirty.count(b"\x01"), self._stat_cells_shown)
 
     @micropython.native
     def show_all(self, force=False):
@@ -339,6 +373,11 @@ class PixelStreamer:
             # 2. 硬體輸出
             ctrl.st_show()
             d[i] = 0            # 這一格渲染完馬上釋放 dirty
+            start = offs[i] >> 2
+            cnt = ctrl.frame_size >> 2
+            if cnt:
+                self.cell_dirty[start:start + cnt] = b"\x00" * cnt
+                self._stat_cells_shown += cnt
             self._stat_ctrl_show[i] += 1
             self._stat_ctrl_us[i] += utime.ticks_diff(utime.ticks_us(), ct0)
         t2 = utime.ticks_us()

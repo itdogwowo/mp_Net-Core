@@ -58,9 +58,11 @@ class RenderTask(Task):
             sw, sk, ga, sa, ov = self.st_pixel.stats()
             get_log().info("[GATE] render show={} skip={} gate_avg={}us show_avg={}us overhead={:.3f}%".format(
                 sw, sk, ga, sa, ov))
-            for t, csh, csk, cavg in self.st_pixel.ctrl_stats():
-                get_log().info("[GATE] render ctrl {} show={} skip={} avg={}us".format(
-                    t, csh, csk, cavg))
+            for i, t, csh, csk, cavg, cstart, ccnt in self.st_pixel.ctrl_stats():
+                get_log().info("[GATE] render ctrl #{} {} [{}+{}) show={} skip={} avg={}us".format(
+                    i, t, cstart, ccnt, csh, csk, cavg))
+            cd, cs = self.st_pixel.cell_stats()
+            get_log().info("[GATE] render cells dirty={} shown={}".format(cd, cs))
         except Exception:
             pass
         self._fps_t0 = now
