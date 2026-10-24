@@ -131,8 +131,17 @@ class RenderTask(Task):
         if time.ticks_diff(now, self.next_tick_us) >= 0:
             t0 = time.ticks_us()
             if self.hub.read_into(self.st_pixel.big_buffer):
+                # PixelLab 之類的 producer 可指定 pixel_dirty，只送被改的 Object；
+                # 其他 producer 沒指定就維持整幀 mark all。
                 try:
-                    self.st_pixel.mark_dirty()
+                    dirty = bus.shared.pop("pixel_dirty", None)
+                except Exception:
+                    dirty = None
+                try:
+                    if dirty is None:
+                        self.st_pixel.mark_dirty()
+                    else:
+                        self.st_pixel.mark_dirty(dirty)
                 except Exception:
                     pass
                 shown = self.st_pixel.show_all()

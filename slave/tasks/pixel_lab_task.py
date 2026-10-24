@@ -17,12 +17,12 @@
 #       hub 滿（RenderTask 未消化）→ get_write_view() 回 None → 自然停
 #       base：全部燈 cell（APA/WS/PCA）一起呼吸；不是只有本頁 type
 #       selected：本頁 index 那顆最後寫入（固定次序；閃爍不會被 base 覆蓋）
-#   pca：直接寫 pca9685_ctl 選中的 PCA（direct 特例，不經 hub）
+#   pca：也走 pixel_stream hub；PixelLab 只決定 target address（0x70 / 指定板）
+#       找 st_pixel 裡同一條 I2C 的 i2c_pixel controller；必要時改 hw.address=target
+#       只填該 controller 的 16 個 W cell，commit 後由 RenderTask 統一輸出
+#       pixel_dirty=controller index → RenderTask 只 mark/送這一個 Object
 #       base：16 通道全部呼吸
 #       selected：單通道或 ALL 最後寫入（固定次序；閃爍不會被 base 覆蓋）
-#       ALL 時 16 通道一起閃；RenderTask 用 is_streaming=False / is_ready=True
-#       保持不動，避免 buffer 的 0x70 廣播蓋掉直接寫入的值。
-#       PCA 仍用 System.frame_interval_ms 自己 pacing（RenderTask 不消費）。
 #
 # 選中模式（steady / blink）先固定 blink；未來改 SEL_MODE 即可，
 # UI 不提供切換（使用者定案）。
@@ -34,7 +34,6 @@ from lib.sys.sys_bus import bus
 from lib.sys.log_service import get_log
 from lib.sw.effect_core import Effect
 
-FRAME_MS = 20
 LEASE_MS = 3000
 SEL_MODE = "blink"           # "blink" | "steady"；未來直接改這裡
 PCA_CH = 16
@@ -81,16 +80,6 @@ class PixelLabTask(Task):
 
         self._active = False
         self._mode = None
-        self._next_us = 0
-        self._frame_ms = FRAME_MS
-        self._pca_key = None
-        self._pca_rec = None
-        self._pca_zeroed = False
-        self._pca_last = None
-        self._pca_show_n = 0
-        self._pca_skip_n = 0
-        self._pca_gate_us = 0
-        self._pca_show_us = 0
         self._fps_n = 0
         self._fps_t0 = time.ticks_ms()
         self._fps_us = 0
@@ -124,13 +113,6 @@ class PixelLabTask(Task):
             }
         if not isinstance(bus.shared.get("pixel_lab_view"), dict):
             bus.shared["pixel_lab_view"] = {}
-
-        # 全域幀率：System.frame_interval_ms（不再硬寫 FRAME_MS）。
-        try:
-            iv = int((bus.shared.get("System") or {}).get("frame_interval_ms", FRAME_MS) or FRAME_MS)
-        except Exception:
-            iv = FRAME_MS
-        self._frame_ms = iv if iv > 0 else FRAME_MS
 
         # 測試用：/bench 內容 rgb / apa / pca；量完移除檔案即可停用。
         try:
@@ -345,13 +327,6 @@ class PixelLabTask(Task):
                     i, t, cstart, ccnt, csh, csk, cavg))
         except Exception:
             pass
-        pn = self._pca_show_n + self._pca_skip_n
-        if pn:
-            ga = self._pca_gate_us // pn
-            sa = self._pca_show_us // max(self._pca_show_n, 1)
-            ov = (ga * 100000.0 / (ga + sa)) / 1000.0 if (ga + sa) else 0.0
-            get_log().info("[GATE] pca show={} skip={} gate_avg={}us show_avg={}us overhead={:.3f}%".format(
-                self._pca_show_n, self._pca_skip_n, ga, sa, ov))
         self._fps_t0 = now
         self._fps_n = 0
         self._fps_us = 0
@@ -410,17 +385,12 @@ class PixelLabTask(Task):
         self._mode = mode
         self._step = 0
         if mode == "pca":
-            # PCA 仍是特例：直接寫 pca9685_ctl，不讓 RenderTask 用 buffer 覆蓋。
-            self._next_us = time.ticks_us()
+            # PCA 也走同一條 hub；PixelLabTask 只決定 address，RenderTask 統一輸出。
             bus.shared.update({
-                "is_streaming": False,
+                "is_streaming": True,
                 "is_ready": True,
                 "is_paused": False,
             })
-            self._pca_key = None
-            self._pca_rec = None
-            self._pca_zeroed = False
-            self._pca_last = None
         else:
             # APA/RGB 只當 producer：寫 pixel_stream hub，RenderTask 統一 show_all()。
             bus.shared.update({
@@ -428,16 +398,17 @@ class PixelLabTask(Task):
                 "is_ready": True,
                 "is_paused": False,
             })
+            bus.shared["pixel_dirty"] = None
         get_log().info("[Lab] activate {}".format(mode))
 
     def _preempt(self):
         """被直播/模式接手：停止、不寫、不清；owner 不動。"""
         self._active = False
         self._mode = None
-        self._pca_key = None
-        self._pca_rec = None
-        self._pca_zeroed = False
-        self._pca_last = None
+        try:
+            bus.shared.pop("pixel_dirty", None)
+        except Exception:
+            pass
         self._fps_n = 0
         self._fps_t0 = time.ticks_ms()
         self._fps_us = 0
@@ -468,29 +439,25 @@ class PixelLabTask(Task):
                 except Exception:
                     pass
             else:
+                bus.shared.update({
+                    "is_streaming": False,
+                    "is_ready": False,
+                    "is_paused": False,
+                })
                 try:
                     if self._hub is not None:
                         self._hub.flush()
                 except Exception:
                     pass
                 try:
-                    self._zero_pca(self._pca_rec)
-                except Exception:
-                    pass
-                try:
                     self._st_pixel.clear_all()
                 except Exception:
                     pass
-                bus.shared.update({
-                    "is_streaming": False,
-                    "is_ready": False,
-                    "is_paused": False,
-                })
 
-        self._pca_key = None
-        self._pca_rec = None
-        self._pca_zeroed = False
-        self._pca_last = None
+        try:
+            bus.shared.pop("pixel_dirty", None)
+        except Exception:
+            pass
         self._fps_n = 0
         self._fps_t0 = time.ticks_ms()
         self._fps_us = 0
@@ -525,7 +492,8 @@ class PixelLabTask(Task):
             view[:] = self._base
         except Exception:
             pass
-        pat = bytes((0, 0, base & 0xFF, base >> 8))
+        # W 是 8-bit；APA102/WS2812/PCA 的 _convert 再各自展成硬體格式。
+        pat = bytes((0, 0, base & 0xFF, (base >> 4) & 0xFF))
         try:
             for start, count in self._all_ranges:
                 a = start << 2
@@ -565,38 +533,7 @@ class PixelLabTask(Task):
                       100 if sv else 0, idx, 0, None,
                       "", r["io"], r["count"])
 
-    # ── PCA direct ───────────────────────────────────────
-    def _find_pca(self, addr, bus_idx):
-        ctl = bus.get_service("pca9685_ctl")
-        if not isinstance(ctl, list):
-            return None
-        for r in ctl:
-            try:
-                if int(r.get("addr", -1)) == addr and int(r.get("i2c", 0)) == bus_idx:
-                    return r
-            except Exception:
-                continue
-        for r in ctl:
-            try:
-                if int(r.get("addr", -1)) == addr:
-                    return r
-            except Exception:
-                continue
-        return None
-
-    def _zero_pca(self, rec):
-        if not rec:
-            return
-        pca = rec.get("pca")
-        if pca is None:
-            return
-        try:
-            for i in range(PCA_CH):
-                pca.buf[i] = 0
-            pca.show()
-        except Exception:
-            pass
-
+    # ── PCA（跟 APA/RGB 一樣走 hub）──────────────────────
     def _tick_pca(self, st):
         try:
             addr = int(st.get("target", 0x70) or 0)
@@ -606,34 +543,57 @@ class PixelLabTask(Task):
             bus_idx = int(st.get("target_bus", 0) or 0)
         except Exception:
             bus_idx = 0
-        rec = self._find_pca(addr, bus_idx)
-        if rec is None or rec.get("pca") is None:
-            # 目標不見了：不要亂寫，顯示被接手/等待
+
+        # 找同一條 bus 的 i2c_pixel controller；address 相符優先，否則用第一個
+        # 再把它的 address 改成 target（這就是 PixelLab 對 PCA 唯一的操作）。
+        i2c_list = bus.get_service("i2c_list") or []
+        ctrl = None
+        cidx = -1
+        fallback = None
+        fallback_idx = -1
+        for i, c in enumerate(self._st_pixel.controllers):
+            if getattr(c, "pixel_type", "") != "i2c_pixel":
+                continue
+            hw = getattr(c, "hw", None)
+            if hw is None:
+                continue
+            if 0 <= bus_idx < len(i2c_list):
+                if getattr(hw, "i2c", None) is not i2c_list[bus_idx]:
+                    continue
+            try:
+                if int(getattr(hw, "address", -1)) == addr:
+                    ctrl = c
+                    cidx = i
+                    break
+            except Exception:
+                pass
+            if fallback is None:
+                fallback = c
+                fallback_idx = i
+        if ctrl is None:
+            ctrl = fallback
+            cidx = fallback_idx
+        if ctrl is None:
+            self._publish(False, True, "pca", target="", io="", count=PCA_CH)
+            return
+        try:
+            ctrl.hw.address = addr
+        except Exception as e:
+            get_log().warn("[Lab] pca set address err: {}".format(e))
             self._publish(False, True, "pca", target="", io="", count=PCA_CH)
             return
 
-        key = (int(rec.get("i2c", 0) or 0), addr)
-        if self._pca_key is not None and self._pca_key != key:
-            self._zero_pca(self._pca_rec)
-        self._pca_key = key
-        self._pca_rec = rec
-        pca = rec.get("pca")
-
-        # PCA 是 direct 特例，仍需自己的節拍（APA/RGB 已交給 hub/RenderTask）。
-        now_us = time.ticks_us()
-        if time.ticks_diff(now_us, self._next_us) < 0:
-            return
-        self._next_us = time.ticks_add(now_us, self._frame_ms * 1000)
-
         if not bus.shared.get("led_enabled", True):
-            if not self._pca_zeroed:
-                self._zero_pca(rec)
-                self._pca_zeroed = True
-            self._pca_last = None
             self._step += 1
             return
-        self._pca_zeroed = False
 
+        if self._hub is None:
+            return
+        view = self._hub.get_write_view()
+        if view is None:
+            return
+
+        t0 = time.ticks_us()
         base = self._base_value()
         base_pct = base * 100 // 4095
         try:
@@ -645,43 +605,35 @@ class PixelLabTask(Task):
         if not all_ch:
             ch = max(0, min(ch, PCA_CH - 1))
         sv = self._sel_value()
-        # 小緩衝：記錄這一次 PCA 系列的核心值；一樣就跳過 pca.show()。
-        key = (addr, ch, all_ch, base, sv)
-        t0 = time.ticks_us()
-        if self._pca_last == key:
-            self._pca_skip_n += 1
-            self._pca_gate_us += time.ticks_diff(time.ticks_us(), t0)
-            self._step += 1
-            if all_ch:
-                pcts = [100 if sv else 0] * PCA_CH
-            else:
-                pcts = [base_pct] * PCA_CH
-                pcts[ch] = 100 if sv else 0
-            name = "0x{:02X}".format(addr)
-            io, pins = self._io_pca(rec)
-            self._publish(True, False, "pca", base_pct,
-                          100 if sv else 0, 0, ch, pcts,
-                          name, io, PCA_CH, pins)
-            return
-        # 固定次序：base 先寫，選中/閃爍最後寫，閃爍不會被 base 覆蓋。
+
+        # 只改這個 PCA controller 的 16 個 W cell；RenderTask 只送這一個 Object。
+        # i2c_pixel 的 PixelController._convert 會把 W(0-255) 展成 12-bit：
+        #   (w << 4) | (w >> 4) → base(0-4095)
+        start_cell = self._st_pixel.offsets[cidx] >> 2
+        w_base = (base >> 4) & 0xFF
+        w_sel = (sv >> 4) & 0xFF
         try:
             for i in range(PCA_CH):
-                pca.buf[i] = base
+                view[((start_cell + i) << 2) + 3] = w_base
             if all_ch:
                 for i in range(PCA_CH):
-                    pca.buf[i] = sv
+                    view[((start_cell + i) << 2) + 3] = w_sel
             else:
-                pca.buf[ch] = sv
-            pca.show()
+                view[((start_cell + ch) << 2) + 3] = w_sel
         except Exception as e:
-            get_log().warn("[Lab] pca write err: {}".format(e))
+            get_log().warn("[Lab] pca fill err: {}".format(e))
             self._publish(False, True, "pca", target="", io="", count=PCA_CH)
             return
-        self._pca_last = key
-        t_end = time.ticks_us()
-        dt = time.ticks_diff(t_end, t0)
-        self._pca_show_n += 1
-        self._pca_show_us += dt
+
+        # 只有這個 Object 被改；RenderTask 依 pixel_dirty 只 mark 它。
+        bus.shared["pixel_dirty"] = cidx
+        try:
+            self._hub.commit()
+        except Exception as e:
+            get_log().warn("[Lab] pca hub commit err: {}".format(e))
+            return
+
+        dt = time.ticks_diff(time.ticks_us(), t0)
         self._fps_n += 1
         self._fps_us += dt
         if dt > self._fps_max:
@@ -694,7 +646,7 @@ class PixelLabTask(Task):
             pcts = [base_pct] * PCA_CH
             pcts[ch] = 100 if sv else 0
         name = "0x{:02X}".format(addr)
-        io, pins = self._io_pca(rec)
+        io, pins = self._io_pca({"i2c": bus_idx})
         self._publish(True, False, "pca", base_pct,
                       100 if sv else 0, 0, ch, pcts,
                       name, io, PCA_CH, pins)

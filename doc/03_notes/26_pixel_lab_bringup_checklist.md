@@ -310,10 +310,11 @@ settings
   - `RenderTask` 統一 `read_into(big_buffer)` + `show_all()`
   - hub 滿（RenderTask 未消化）→ `get_write_view()` 回 `None` → 自然停
   - `is_streaming=True`、`is_ready=True`，不再自己 `show_all()`
-- `PixelLabTask` 的 PCA 路徑仍是 direct 特例：
-  - 直接 `pca.show()`，`is_streaming=False`
-  - 用 `_pca_last` 小緩衝跳過相同值
-  - 用 `System.frame_interval_ms` 自己 pacing（RenderTask 不消費）
+- `PixelLabTask` 的 PCA 也走 `pixel_stream` hub：
+  - 依 `target` address 找 `st_pixel` 內的 `i2c_pixel` PixelController
+  - 只填該 controller 的 16 個 W cell
+  - `pixel_dirty=controller index`，RenderTask 只 mark / 送這一個 Object
+  - 不再直接 `pca.show()`，也不需要自己的 frame interval
 
 ### 8.2 實測（per-controller）
 
@@ -408,7 +409,8 @@ i2c_pixel start_cell 4000  count 16     byte 16000..16064
 `PixelLabTask` 的 APA/RGB 已經改走 `pixel_stream` hub：
 `get_write_view()` → `commit()`，由 `RenderTask` 統一 `show_all()`。
 hub 滿時 `get_write_view()` 回 `None`，producer 自然停，不需要自己 mark all。
-PCA 仍是 direct 特例，直接 `pca.show()`。
+PCA 也走同一條 hub：只填目標 address 的 16 個 W cell，並設定
+`pixel_dirty=controller index`，RenderTask 只送該 Object。
 
 ### 8.5 每個 PixelController Object 一格（不做每粒）
 
@@ -439,8 +441,8 @@ mark_dirty('ws2812')               # 所有 WS Object（同 type 多個也各自
 
 - 多個同 type 的 Object（例如兩個 WS2812）會各自有 `#i`、`start_cell`、`count`，
   不會被合併成一個 type flag。
-- `PixelLabTask` APA/RGB 已改走 hub → RenderTask，`show_all()` 由 RenderTask 統一呼叫；
-  hub 滿自然停。PCA 仍 direct，因此 PCA 頁仍可 40fps，但 RenderTask 不參與。
+- `PixelLabTask` APA/RGB 與 PCA 都已改走 hub → RenderTask，`show_all()` 由
+  RenderTask 統一呼叫；hub 滿自然停。PCA 用 `pixel_dirty` 只送目標 Object。
 - WS2812 / APA102 的硬體仍是整條 shift register，所以 Object 沒改就整個 skip；
   PCA 則是 16 通道，單獨更新約 2ms。
 
@@ -479,17 +481,19 @@ P1 回到 idle，LED 保持開啟（`/led_off` 已刪除）。
 | 路徑 | 寫入 | 輸出 |
 |---|---|---|
 | APA / RGB | `pixel_stream.get_write_view()` → `commit()` | `RenderTask` 統一 `read_into(big_buffer)` + `show_all()` |
-| PCA | direct `pca.show()`（特例） | 自己輸出，`is_streaming=False` |
+| PCA | 找同一條 I2C 的 `i2c_pixel` controller，必要時 `hw.address=target`，填 16 W cells → `commit()` | `RenderTask`，`pixel_dirty=controller index` |
 
-- APA/RGB 不再自己 `show_all()`，`is_streaming=True` / `is_ready=True`。
+- APA/RGB/PCA 都不再自己 `show_all()`，`is_streaming=True` / `is_ready=True`。
 - hub 滿 → `get_write_view()` 回 `None` → 這幀跳過，自然 backpressure。
-- APA/RGB 不再需要自己的 `_frame_ms`；輸出節拍只由 `RenderTask` 的
+- PixelLab 不再需要自己的 `_frame_ms`；輸出節拍只由 `RenderTask` 的
   `System.frame_interval_ms` 控制。
-- PCA 仍是 direct，保留 `_pca_last` 與自己的 `frame_interval_ms` pacing。
+- PCA 只做「改 `hw.address` / target」與填 16 W cells；實際 I2C 輸出由
+  `PixelController` / RenderTask 做，不再碰 `pca9685_ctl` 或 `pca.show()`。
+- `pixel_dirty` 讓 RenderTask 只 mark 被改的 Object，PCA 不會重送 WS2812/APA102。
 - 全域 `frame_interval_ms` 從 20 → **33ms（30fps）**。
   - `LvglTask`：讀全域，不再硬寫 30fps。
   - `RenderTask`：讀全域。
-  - `PixelLabTask`：APA/RGB 交給 RenderTask；PCA direct 仍讀全域。
+  - `PixelLabTask`：只當 producer，不再讀 frame interval。
 - APA102 SPI id2：30MHz → **40MHz**（尚未上板驗證）。
 
 ### 預期數字（尚未實測）
@@ -497,11 +501,11 @@ P1 回到 idle，LED 保持開啟（`/led_off` 已刪除）。
 | 模式 | `[FPS] lvgl` | `[FPS] render` | `[FPS] lab` |
 |---|---|---|---|
 | RGB / APA | 30 | ~12.5（79.8ms show） | ~12.5（producer，hub 滿即停） |
-| PCA | 30 | 0（RenderTask 不消費） | ~30（direct） |
+| PCA | 30 | ~30（只送 PCA，約 3ms） | ~30（producer） |
 | P1 off | 30 | 0 | 0 |
 
 - `frame_interval_ms=33` 是上限，不是保證；RGB/APA 的 `show_all()` 仍是 79.8ms，
   所以實際輸出約 12.5fps。
-- PCA direct 可到 30fps（`pca.show()` 約 3ms），但 RenderTask 不參與。
+- PCA 只 mark 目標 controller，`show_all()` 約 3ms，可到 30fps。
 - **40MHz / 30fps 尚未上板測試**：板子目前沒有列舉 `/dev/cu.usbmodem*`，
   需 power cycle 後才能量 `[GATE] ctrl #0 APA102` 與三頁 FPS。
