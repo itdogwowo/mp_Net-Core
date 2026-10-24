@@ -650,6 +650,12 @@ class PixelTask(Task):
 
     def _fps_log(self):
         now = time.ticks_ms()
+        if not bus.shared.get("pixel_debug"):
+            self._fps_t0 = now
+            self._fps_n = 0
+            self._fps_us = 0
+            self._fps_max = 0
+            return
         if time.ticks_diff(now, self._fps_t0) < 1000:
             return
         el = time.ticks_diff(now, self._fps_t0)

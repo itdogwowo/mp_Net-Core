@@ -50,6 +50,9 @@ class PcaPage:
         self._ch_cursor = CURSOR_ALL
         self._cell = 14
         self._last_run = -99
+        self._last_targets = -99
+        self._last_pcts = None
+        self._sub_lb = None
         self._status_lb = None
         self._io_lb = None
         self._pins_lb = None
@@ -255,7 +258,7 @@ class PcaPage:
         self.scr = scr
 
         u.mk_label(scr, "PixelLab PCA", 6, 2, u.TEXT, u.ZH)
-        u.mk_label(scr, "PCA9685", 6, 21, u.TEXT3, u.ZH)
+        self._sub_lb = u.mk_label(scr, "PCA9685", 6, 21, u.TEXT3, u.ZH)
         self._status_lb = u.mk_label(scr, "待機", 0, 5, u.TEXT3, u.ZH)
         try:
             self._status_lb.align(lv.ALIGN.TOP_RIGHT, -6, 4)
@@ -389,6 +392,18 @@ class PcaPage:
             u.set_focus(self._scan_btn, scan_focus)
         except Exception:
             pass
+        # 第一層要清楚告訴使用者「哪一區可以按 OK 進入」。
+        if not self._in_area:
+            hint = ("目標：OK 進入" if self._focus == 0 else
+                    "LED 控制：OK 進入" if self._focus == 1 else
+                    "掃描：OK 執行")
+        else:
+            hint = "PCA9685"
+        try:
+            if self._sub_lb is not None:
+                self._sub_lb.set_text(hint)
+        except Exception:
+            pass
         self._paint_selected()
 
     def _set_chip_frame(self, color):
@@ -405,7 +420,9 @@ class PcaPage:
     def _paint_selected(self):
         # 第一層只顯示區域框；晶片上的游標/已套用框只在「進入晶片區」後畫。
         if not self._in_area:
-            self._set_chip_frame(None)
+            # 第一層：晶片（LED 控制）也要跟清單/掃描一樣有藍框，
+            # 否則使用者不知道這一區可以按 OK 進入。
+            self._set_chip_frame(u.PRIMARY if self._focus == 1 else None)
             for s in self._squares:
                 try:
                     s["track"].set_style_outline_width(0, 0)
@@ -448,9 +465,9 @@ class PcaPage:
             p = base
             if isinstance(pcts, (list, tuple)) and i < len(pcts):
                 p = c.pct(pcts[i])
-            # 亮色/亮度一律跟游標（游標 = -1 時＝全部通道，16 格一起亮）
+            # 亮色跟游標；但「ALL」顯示呼吸 base，不是 selected 閃爍。
             is_cur = (cur == CURSOR_ALL) or (i == cur)
-            if is_cur:
+            if cur != CURSOR_ALL and i == cur:
                 p = sel
             color = 0xD97706 if is_cur else 0xF0C98A
             try:
@@ -463,7 +480,8 @@ class PcaPage:
             self._ch_lb.set_text("ALL" if cur == CURSOR_ALL else "{:02d}".format(cur))
         except Exception:
             pass
-        pct = v.get("sel_pct", 0)
+        # ALL 的中央百分比顯示呼吸 base；單一選取才顯示 selected。
+        pct = v.get("base_pct", 0) if cur == CURSOR_ALL else v.get("sel_pct", 0)
         if cur != CURSOR_ALL and cur != ch and isinstance(pcts, (list, tuple)) and cur < len(pcts):
             pct = pcts[cur]
         try:
@@ -497,8 +515,11 @@ class PcaPage:
     def on_enter(self):
         self._focus = 0
         self._in_area = 0
-        # 第一次進來：游標停在「全部通道」（ALL_LED），不是 00。
+        # 一開始進入 = 選取 ALL：所有通道一起呼吸。
         self._ch_cursor = CURSOR_ALL
+        st = c.state()
+        st["ch"] = ALL_CH
+        c.touch()
         self._refresh_targets(force=True)
         c.open_page("pca")
         c.touch()
@@ -506,6 +527,11 @@ class PcaPage:
         self._paint_sync()
 
     def on_leave(self):
+        # 離開頁面 = 回到 ALL（所有通道一起呼吸），不是停在最後單一通道。
+        st = c.state()
+        st["ch"] = ALL_CH
+        self._ch_cursor = CURSOR_ALL
+        c.touch()
         c.close_page()
         self._focus = 0
         self._in_area = 0
@@ -525,7 +551,7 @@ class PcaPage:
             if n:
                 self._cursor = c.wrap(self._cursor + step, n)
                 c.touch()
-                # 滾動即套用：換目標就 commit（enter 仍可再確認）。
+                # 滾動即套用；enter 不再重複 commit。
                 self._commit()
         elif self._focus == 1:
             # 游標順序：ALL → 00 → 01 … → 15 → ALL（繞一圈）
@@ -533,7 +559,7 @@ class PcaPage:
             pos = 0 if self._ch_cursor == CURSOR_ALL else self._ch_cursor + 1
             nxt = c.wrap(pos + step, n)
             self._ch_cursor = CURSOR_ALL if nxt == 0 else nxt - 1
-            # 滾動即套用：換 channel 就 commit（enter 仍可再確認）。
+            # 滾動即套用；enter 不再重複 commit。
             st = c.state()
             st["ch"] = ALL_CH if self._ch_cursor == CURSOR_ALL else c.wrap(self._ch_cursor, CH_COUNT)
             c.touch()
@@ -544,22 +570,23 @@ class PcaPage:
         if not self._in_area:
             # 第一層：enter 進入目前選中的區域；掃描是動作，直接觸發。
             self._in_area = 1
+            if self._focus == 1:
+                # 剛進入 LED 選取時仍視為 ALL；滾動才標記特定通道。
+                self._ch_cursor = CURSOR_ALL
+                st = c.state()
+                st["ch"] = ALL_CH
+                c.touch()
             if self._focus == 2:
                 self._do_scan()
             self._paint_focus()
             return None
         if self._focus == 0:
-            # 清單區：enter 才真正選取目標（停在清單區，exit 可回第一層）。
-            self._commit()
-            c.touch()
-            self._paint_focus()
+            # 清單區也是滾動即套用；enter 只留在區內，不再重複 commit。
+            return None
         elif self._focus == 1:
-            # 晶片區：enter 才真正選取 channel（「全部」→ 0xFF = ALL_LED）。
-            st = c.state()
-            st["ch"] = ALL_CH if self._ch_cursor == CURSOR_ALL else c.wrap(self._ch_cursor, CH_COUNT)
-            c.touch()
-            self._paint_focus()
-            self._paint_squares(c.view())
+            # 晶片區已經是「滾動即套用」；再按 OK 會變成第二套選擇邏輯，
+            # 跟 on_enc 衝突，所以這裡不再 commit，直接留給滾動。
+            return None
         else:
             self._do_scan()
         return None
@@ -569,6 +596,11 @@ class PcaPage:
         #   區域內 → 第一層（區域選擇）→ launcher。
         if self._in_area:
             self._in_area = 0
+            # 退出 LED 選取 = 回到 ALL（所有通道一起呼吸）。
+            self._ch_cursor = CURSOR_ALL
+            st = c.state()
+            st["ch"] = ALL_CH
+            c.touch()
             self._paint_focus()
             self._paint_squares(c.view())
             return True
@@ -579,18 +611,25 @@ class PcaPage:
             self._last_run = run
             c.touch()
         self._poll_scan()
-        self._refresh_targets()
+        # 清單不需要每幀重建；掃描結果/清單只要約每 1 秒更新一次。
+        if run - self._last_targets >= 30:
+            self._last_targets = run
+            self._refresh_targets()
         v = c.view()
         txt, col = c.status_text(v)
         c.set_label(self._status_lb, txt, col)
         c.set_label(self._io_lb, v.get("io") or "—")
         c.set_label(self._pins_lb, v.get("pins") or "")
         self._paint_sync()
-        if v.get("mode") == "pca":
-            self._paint_squares(v)
-        else:
-            # 尚未開始/被接手：保持最後顯示，但焦點/清單仍更新
-            self._paint_selected()
+        # 16 格只在值真的變了才重畫，避免每幀 16 次 set_vbar 拖垮 LVGL。
+        pcts = (v.get("base_pct"), v.get("sel_pct"), v.get("ch"))
+        if pcts != self._last_pcts:
+            self._last_pcts = pcts
+            if v.get("mode") == "pca":
+                self._paint_squares(v)
+            else:
+                # 尚未開始/被接手：保持最後顯示，但焦點/清單仍更新
+                self._paint_selected()
 
 
 _page = PcaPage()

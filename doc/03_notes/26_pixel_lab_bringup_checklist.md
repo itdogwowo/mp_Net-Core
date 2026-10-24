@@ -224,7 +224,7 @@ slave/tasks/pixel_lab_task.py
   `lvgl` / `network` / `now` / `cpanel` / `pixel_cpanel` 在 Core 0。
 - 用 `/bench` 旗標自動啟動 P1 RGB（index 0、全部燈 base），量測後已移除
   bench 鉤子；`/bench` 檔本身留在板上也不再生效。
-- FPS log 由各 task 每 1 秒輸出一次（`[FPS] lvgl/lab/pixel/render`）。
+- FPS/GATE log 由 `bus.shared["pixel_debug"]` 控制；平常關閉，只有 `/bench` 測試才開。
 
 ### 6.2 量測結果
 
@@ -260,8 +260,9 @@ slave/tasks/pixel_lab_task.py
 ### 6.4 目前留著的量測程式
 
 - `slave/tasks/lvgl_task.py`、`pixel_task.py`、`render.py`、`pixel_lab_task.py`
-  各有 1 秒一次的 `[FPS]` log；`pixel_lab_task.py` 的 `/bench` 鉤子已移除。
-- 不想要 log 時，把各 task 的 `_fps_log()` 呼叫註解掉即可；不影響燈效。
+  的 `[FPS]` / `[GATE]` log 都只在 `pixel_debug=True` 時輸出；平常完全關閉。
+- `pixel_lab_task.on_start()` 只有在 `/bench` 存在時才設 `pixel_debug=True`；
+  移除 `/bench` 後重啟即恢復安靜。
 
 ---
 
@@ -514,3 +515,51 @@ P1 回到 idle，LED 保持開啟（`/led_off` 已刪除）。
 - PCA 只 mark 目標 controller，`show_all()` 約 3ms，可到 30fps。
 - **40MHz / 30fps 尚未上板測試**：板子目前沒有列舉 `/dev/cu.usbmodem*`，
   需 power cycle 後才能量 `[GATE] ctrl #0 APA102` 與三頁 FPS。
+
+---
+
+## 11. 2026-10-24 PCA UI / ALL / 呼吸最終語義
+
+### 11.1 頁面只標記 state，不控制 buffer
+
+PCA 頁只寫：
+
+- `pixel_lab["ch"]` / `target` / `target_bus` / `active` / `hb`
+
+只讀：
+
+- `pixel_lab_view` 的 `base_pct` / `sel_pct` / `ch_pcts` / `ch` / `mode`
+
+實際 16 個 W cell 由 `PixelLabTask._tick_pca()` 寫入 `pixel_stream` slot，
+`RenderTask` 統一 `show_all()`；頁面完全不碰 `big_buffer` / hub / `pca.show()`。
+
+### 11.2 ALL / 單一 / 進出頁面
+
+| 狀態 | 行為 |
+|---|---|
+| 進入頁面 `on_enter()` | `ch=ALL`，16 通道一起呼吸 |
+| 第一層按 OK 進入 LED 區 | `ch=ALL`，仍是全部呼吸 |
+| LED 區滾動 | 才標記單一通道；該通道閃爍，其餘呼吸 |
+| 退出 LED 區 `on_exit()` | 回到 `ch=ALL` |
+| 離開頁面 `on_leave()` | 回到 `ch=ALL` |
+| LED 區按 OK | 不再重複 commit（滾動即套用） |
+
+`_tick_pca()`：
+
+- ALL：`ch_pcts = [base_pct]*16`、`sel_pct=0`、不寫 `w_sel`
+- 單一：16 格 base，選中格 `w_sel`
+- `all_ch` 接受 `0xFF` 與 `PCA_CH(16)`
+
+### 11.3 呼吸 / 閃爍
+
+- `BASE_PROGRAM` `end_Time=60`（1.2s @50fps / 2s @30fps）
+- `_base_value()` 取 `//3`，呼吸亮度為原本 1/3
+- `_sel_value()` 維持全亮；閃爍只套在單一選取通道
+- 頁面 `_paint_squares()`：ALL 顯示 base（不是 sel）；單一才在選中格顯示 sel；
+  中央百分比 ALL 顯示 `base_pct`，單一顯示 `sel_pct`
+
+### 11.4 Log / 測試
+
+- `pixel_debug=False` 時 `[FPS]` / `[GATE]` / `[GATE] ctrl` 全部不輸出
+- `/bench` 存在時 `on_start` 設 `pixel_debug=True`，測試完移除 `/bench` 重啟即關閉
+- 一般操作不應再看到每秒洗版的 FPS/GATE log

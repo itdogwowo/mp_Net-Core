@@ -77,7 +77,12 @@ class LvglTask(Task):
         if dt > self._fps_max:
             self._fps_max = dt
         now = time.ticks_ms()
-        if time.ticks_diff(now, self._fps_t0) >= 1000:
+        if not bus.shared.get("pixel_debug"):
+            self._fps_t0 = now
+            self._fps_n = 0
+            self._fps_us = 0
+            self._fps_max = 0
+        elif time.ticks_diff(now, self._fps_t0) >= 1000:
             el = time.ticks_diff(now, self._fps_t0)
             n = self._fps_n
             get_log().info("[FPS] lvgl {:.1f}/s step avg {}us max {}us".format(

@@ -43,9 +43,9 @@ ALL_CH = 0xFF
 
 # 兩個效果都由 lib.sw.effect_core（波生成工具）產生，步進式、不是時間切片。
 #   F=10 + end_Time=N → 一個完整週期 N 幀（50fps）。
-#   base：正弦呼吸 200 幀 = 4s；blink：方波 25 幀 = 0.5s（2Hz）。
+#   base：正弦呼吸 60 幀 = 1.2s @50fps / 2s @30fps；blink：方波 25 幀 = 0.5s（2Hz）。
 BASE_PROGRAM = [{"type": "math_now", "F": 10, "l_max": 4095,
-                 "l_lim": 0, "phi": 0, "end_Time": 200}]
+                 "l_lim": 0, "phi": 0, "end_Time": 60}]
 BLINK_PROGRAM = [{"type": "square_wave_now", "F": 10, "l_max": 4095,
                   "l_lim": 0, "phi": 0, "end_Time": 25}]
 BASE_PARAMS = {"pixel_n": 1, "step": 1, "spacing": 0, "offset": 0,
@@ -134,7 +134,8 @@ class PixelLabTask(Task):
                     "active": 1, "mode": mode, "index": 0, "ch": 0,
                     "target": 0x70, "target_bus": 0, "hb": 0,
                 }
-                get_log().info("[Lab] BENCH mode={}".format(mode))
+                bus.shared["pixel_debug"] = True
+                get_log().info("[Lab] BENCH mode={} (debug log on)".format(mode))
         except Exception:
             pass
 
@@ -315,6 +316,12 @@ class PixelLabTask(Task):
     # ── 主迴圈 ───────────────────────────────────────────
     def _fps_log(self):
         now = time.ticks_ms()
+        if not bus.shared.get("pixel_debug"):
+            self._fps_t0 = now
+            self._fps_n = 0
+            self._fps_us = 0
+            self._fps_max = 0
+            return
         if time.ticks_diff(now, self._fps_t0) < 1000:
             return
         el = time.ticks_diff(now, self._fps_t0)
@@ -634,7 +641,7 @@ class PixelLabTask(Task):
         except Exception:
             ch = 0
         # 0xFF = ALL_LED（頁面「全部通道」）；其餘 0..15 單通道。
-        all_ch = (ch & 0xFF) == ALL_CH
+        all_ch = (ch & 0xFF) == ALL_CH or ch == PCA_CH
         if not all_ch:
             ch = max(0, min(ch, PCA_CH - 1))
         sv = self._sel_value()
@@ -648,10 +655,8 @@ class PixelLabTask(Task):
         try:
             for i in range(PCA_CH):
                 view[((start_cell + i) << 2) + 3] = w_base
-            if all_ch:
-                for i in range(PCA_CH):
-                    view[((start_cell + i) << 2) + 3] = w_sel
-            else:
+            # ALL = 16 通道一起呼吸（base）；閃爍只套在單一選取通道。
+            if not all_ch:
                 view[((start_cell + ch) << 2) + 3] = w_sel
         except Exception as e:
             get_log().warn("[Lab] pca fill err: {}".format(e))
@@ -674,14 +679,16 @@ class PixelLabTask(Task):
         self._step += 1
 
         if all_ch:
-            pcts = [100 if sv else 0] * PCA_CH
+            pcts = [base_pct] * PCA_CH
+            sel_pct = 0
         else:
             pcts = [base_pct] * PCA_CH
             pcts[ch] = 100 if sv else 0
+            sel_pct = 100 if sv else 0
         name = "0x{:02X}".format(addr)
         io, pins = self._io_pca({"i2c": bus_idx})
         self._publish(True, False, "pca", base_pct,
-                      100 if sv else 0, 0, ch, pcts,
+                      sel_pct, 0, ch, pcts,
                       name, io, PCA_CH, pins)
 
     # ── 數值 ─────────────────────────────────────────────
@@ -689,7 +696,8 @@ class PixelLabTask(Task):
         fx = self._base_fx
         if fx is None:
             return 0
-        return int(fx.frame(self._step)[0]) & 0xFFF
+        # 呼吸亮度只取 1/3；閃爍 selected 仍用 _sel_value() 全亮。
+        return (int(fx.frame(self._step)[0]) & 0xFFF) // 3
 
     def _sel_value(self):
         if SEL_MODE == "steady":
