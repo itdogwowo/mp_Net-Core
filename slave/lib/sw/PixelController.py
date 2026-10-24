@@ -48,7 +48,9 @@ class PixelController:
         # APA102 亮度頭 (0xE0|bri>>3) 在 _convert 讀此值。
         self.brightness = 255
 
-
+    def st_init(self):
+        """硬體初始化 hook；PixelStreamer.init() 會逐一呼叫。"""
+        return None
 
     @micropython.native
     def st_load_and_convert(self, source_buffer, offset: int):
