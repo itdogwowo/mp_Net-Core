@@ -154,6 +154,9 @@ def _scan_and_register(i2c, i2c_idx, item, pca_list, sysbus):
       2. 建立「單一」0x70 廣播 controller。每幀 show() 對 0x70 寫一筆 64
          bytes, 所有板子同時收到並各自寫入自己的 LED0~LED15 (16 通道 / 12-bit
          完全獨立, 等同控制一顆晶片; 只是每顆板子內容相同)。
+      3. 另外為每個實體位址各建一個單獨 controller（0x70 廣播 + 0x40/0x41
+         單板並存），讓 PixelLab 可以依 target 選 0x70 或單一板，不必改
+         0x70 的 address。
 
     廣播要生效的關鍵 (社群踩坑): 每個晶片的 ALLCALL(MODE1 bit0) 都必須是 1,
     但重刷韌體通常不斷電, 舊程式若寫過 MODE1=0x00/0x10 就會把它關掉。因此
@@ -189,6 +192,19 @@ def _scan_and_register(i2c, i2c_idx, item, pca_list, sysbus):
     bcast = _register_pca(i2c, _PCA_ALL_CALL, item, pca_list)
     if bcast is not None:
         get_log().info("PCA9685: 0x70 broadcast controller ({} physical board(s))".format(len(found)))
+
+    # 3. 每個實體位址再各建一個單獨 controller（跟 0x70 廣播並存）。
+    #    0x70 是 ALLCALL，不能拿來當某顆板子的 address；要單獨控制 0x40/0x41
+    #    時必須有對應的 PixelController，否則只能改 0x70 的 address（會失去廣播）。
+    for addr in found:
+        pca = wake.get(addr)
+        if pca is None:
+            continue
+        try:
+            ctrl = _make_controller(pca, item)
+            pca_list.append(ctrl)
+        except Exception as e:
+            get_log().error("PCA9685@{} controller error: {}".format(hex(addr), e))
     return bcast, wake
 
 

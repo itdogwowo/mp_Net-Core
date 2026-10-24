@@ -18,7 +18,8 @@
 #       base：全部燈 cell（APA/WS/PCA）一起呼吸；不是只有本頁 type
 #       selected：本頁 index 那顆最後寫入（固定次序；閃爍不會被 base 覆蓋）
 #   pca：也走 pixel_stream hub；PixelLab 只決定 target address（0x70 / 指定板）
-#       找 st_pixel 裡同一條 I2C 的 i2c_pixel controller；必要時改 hw.address=target
+#       pca9685_drv 同時建 0x70 廣播 + 每個實體位址的 i2c_pixel controller
+#       依 target 選對應 Object（0x70=廣播，0x40/0x41=單板），不改 address
 #       只填該 controller 的 16 個 W cell，commit 後由 RenderTask 統一輸出
 #       pixel_dirty=controller index → RenderTask 只 mark/送這一個 Object
 #       base：16 通道全部呼吸
@@ -544,13 +545,12 @@ class PixelLabTask(Task):
         except Exception:
             bus_idx = 0
 
-        # 找同一條 bus 的 i2c_pixel controller；address 相符優先，否則用第一個
-        # 再把它的 address 改成 target（這就是 PixelLab 對 PCA 唯一的操作）。
+        # 0x70 是 ALLCALL 廣播；0x40/0x41 是單獨板。
+        # pca9685_drv 已同時建 0x70 + 每個實體位址的 PixelController，
+        # 這裡只依 target 選對應 Object，不改任何 address。
         i2c_list = bus.get_service("i2c_list") or []
         ctrl = None
         cidx = -1
-        fallback = None
-        fallback_idx = -1
         for i, c in enumerate(self._st_pixel.controllers):
             if getattr(c, "pixel_type", "") != "i2c_pixel":
                 continue
@@ -567,19 +567,7 @@ class PixelLabTask(Task):
                     break
             except Exception:
                 pass
-            if fallback is None:
-                fallback = c
-                fallback_idx = i
         if ctrl is None:
-            ctrl = fallback
-            cidx = fallback_idx
-        if ctrl is None:
-            self._publish(False, True, "pca", target="", io="", count=PCA_CH)
-            return
-        try:
-            ctrl.hw.address = addr
-        except Exception as e:
-            get_log().warn("[Lab] pca set address err: {}".format(e))
             self._publish(False, True, "pca", target="", io="", count=PCA_CH)
             return
 
